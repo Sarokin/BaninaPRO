@@ -1,0 +1,19 @@
+# Telepítő és adatbázis-séma – nem kerül a repóba
+setup.php
+sql/
+
+# Éles konfiguráció (adatbázis-jelszó) – minta: includes/config.example.php
+includes/config.php
+
+# Adatbázis-mentések (éles adatok) – a mappa védőfájljai maradnak
+DBBCKP/*
+!DBBCKP/.htaccess
+!DBBCKP/index.php
+
+# Tevékenységnaplók (felhasználók, IP-címek) – a mappa védőfájljai maradnak
+LOG/*
+!LOG/.htaccess
+!LOG/index.php
+
+# Rendszerfájlok
+.DS_Store
