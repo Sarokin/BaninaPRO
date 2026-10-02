@@ -1,0 +1,69 @@
+# BaninaPRO – helyi fejlesztői környezet
+#
+#   docker compose up -d --build      indítás
+#   docker compose down               leállítás (az adatok megmaradnak)
+#   docker compose down -v            leállítás + az adatbázis és a napló/mentés kötet TÖRLÉSE
+#
+#   Alkalmazás:  http://localhost:8080   (kezdő admin: admin / BaninaPRO-2026!)
+#   phpMyAdmin:  http://localhost:8081   (automatikus belépés root-ként)
+#   MySQL:       localhost:3307          (baninapr_DATA / baninapro_helyi)
+#
+# A portok csak a saját gépről érhetők el (127.0.0.1). Az itteni jelszavak csak a helyi
+# adatbázishoz tartoznak – az éles beállítások az includes/config.php-ban vannak, ahhoz nem nyúl.
+
+services:
+  app:
+    build: ./docker
+    container_name: baninapro-app
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./:/var/www/html
+      - ./docker/config.php:/var/www/html/includes/config.php:ro
+      - adatok:/var/lib/baninapro          # LOG + DBBCKP (nem a projekt mappái)
+    restart: unless-stopped
+
+  db:
+    image: mysql:latest
+    container_name: baninapro-db
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_ROOT_PASSWORD: baninapro_root
+      MYSQL_DATABASE: baninapr_DATA
+      MYSQL_USER: baninapr_DATA
+      MYSQL_PASSWORD: baninapro_helyi
+      TZ: Europe/Budapest
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - db-adatok:/var/lib/mysql
+      # első indításkor (üres adatbázisnál) létrehozza a táblákat és a kezdő admint
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pbaninapro_root"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: baninapro-phpmyadmin
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PMA_HOST: db
+      PMA_USER: root
+      PMA_PASSWORD: baninapro_root
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "127.0.0.1:8081:80"
+    restart: unless-stopped
+
+volumes:
+  db-adatok:
+  adatok:

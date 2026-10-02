@@ -12,16 +12,23 @@ Glossary: `ceg` = company, `kotes` = deal/batch grouping incoming invoices, `bej
 
 ## Commands
 
-There is no build, lint or test tooling, and PHP/MySQL are not installed locally on this machine. Changes are verified by deploying to a PHP 8 + MySQL host. Useful commands where PHP is available:
+There is no build, lint or test tooling. PHP/MySQL are not installed on the host. Run everything through the Docker environment (`docker-compose.yml` + `docker/`): PHP 8.3 + Apache, MySQL `latest`, and phpMyAdmin.
 
 ```sh
-php -l includes/api_bejovo.php              # syntax-check a file
-php -S localhost:8000                        # local dev server (WebAuthn works on localhost without HTTPS)
-mysql -u root -p < sql/schema.sql            # fresh schema + initial admin (admin / BaninaPRO-2026!)
-php -q cron_mentes.php                       # make a full DB backup now (the nightly cron runs this at 03:00)
-php -q cron_mentes.php lista                 # list backups
-php -q cron_mentes.php vissza 20260929_0300.sql   # restore (an automatic backup is taken first)
+docker compose up -d --build                 # app http://localhost:8080 · phpMyAdmin http://localhost:8081 · MySQL localhost:3307
+docker compose down                          # stop (data kept)   ·   down -v also wipes the DB + log/backup volume
+docker exec baninapro-app php -l includes/api_bejovo.php          # syntax-check a file
+docker exec baninapro-app php -q cron_mentes.php                  # full DB backup now (prod cron runs this at 03:00)
+docker exec baninapro-app php -q cron_mentes.php lista            # list backups
+docker exec baninapro-app php -q cron_mentes.php vissza <file>.sql   # restore (an automatic backup is taken first)
+docker exec baninapro-app tail -f /var/lib/baninapro/LOG/$(date +%Y%m%d).txt   # activity/error log
 ```
+
+Docker details:
+- The container mounts `docker/config.php` over `includes/config.php`, with DB host `db`, a local password and `APP_DEBUG = true`. **The production `includes/config.php` is never used in Docker.** If you add a constant to `config.php`, add it to `docker/config.php` and `includes/config.example.php` too.
+- Logs and backups go to the `adatok` volume (`/var/lib/baninapro/{LOG,DBBCKP}`), not to the project's `LOG/` and `DBBCKP/`, which hold real production data.
+- On first start (empty DB volume) MySQL runs `sql/schema.sql` from `docker-entrypoint-initdb.d`. The initial login is `admin` / `BaninaPRO-2026!`. To re-run it, `docker compose down -v` first.
+- PHP is pinned to 8.3: PHP 8.4 emits deprecations for the implicit nullable params (`string $x = null`), and with `APP_DEBUG` these break JSON responses.
 
 Set `APP_DEBUG = true` in `includes/config.php` to get detailed errors in API responses. It must be `false` in production. `includes/config.php` holds the real production DB credentials, so never copy them elsewhere.
 
