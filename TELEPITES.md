@@ -6,7 +6,7 @@ a keresők és AI-robotok elől teljesen elzárt, bejelentkezéshez kötött ren
 
 ---
 
-## 1. Mit kapsz (fájlok)
+## 1. Mit kapsz (fájlok:)
 
 ```
 baninapro/

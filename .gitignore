@@ -17,3 +17,7 @@ LOG/*
 
 # Rendszerfájlok
 .DS_Store
+
+# Frontend tesztek (Playwright) – csak helyben, nem kerülnek a repóba
+tests/
+docker-compose.teszt.yml
