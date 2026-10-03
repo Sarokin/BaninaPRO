@@ -3,18 +3,21 @@
 #  BaninaPRO – szerver telepítő és frissítő
 #
 #  Egy friss (szűz) Ubuntu Serverből egyetlen futtatással kész BaninaPRO szerver lesz:
-#  magyar nyelv és billentyűzet, LXQt asztal automatikus belépéssel, AnyDesk, Docker Engine,
-#  SSH, és a BaninaPRO a szerveren a http://localhost címen (80-as port), kész adatbázissal.
+#  magyar nyelv és billentyűzet, LXQt asztal automatikus belépéssel, AnyDesk, Docker Engine, SSH,
+#  és a BaninaPRO kész adatbázissal, a belső hálózat bármely gépéről elérhetően:
+#    BaninaPRO:   http://<a szerver IP-címe>        vagy  http://baninapro.local
+#    phpMyAdmin:  http://<a szerver IP-címe>:8081   (root + a szerver saját jelszava – az összegzés kiírja)
+#  Szerverként üzemel: soha nem alszik el, nincs képernyővédő, áramszünet után magától bekapcsol (ahol a
+#  BIOS engedi), az AnyDesk mindig fut, és egy őrszem 2 percenként ellenőrzi a BaninaPRO-t: ha nem érhető el,
+#  emberi beavatkozás nélkül helyreállítja (konténerek indítása, újraindítása, a Docker újraindítása,
+#  végső esetben – ritkán – a gép újraindítása). Napló: /var/log/baninapro-orszem.log
 #
-#  ELŐKÉSZÜLET (egyszer, kézzel):
+#  ELŐKÉSZÜLET (egyszer, kézzel) – a repó nyilvános, a letöltéshez nem kell GitHub-fiók vagy -kulcs:
 #    1. Ubuntu Server telepítése – felhasználó: baninapro, gépnév: baninapro
-#    2. GitHub-hozzáférés a gépen (SSH-kulcs), a kettő közül az egyik:
-#       a) a régi szerver kulcsát átmásolod (a GitHubon már fent van, nem kell újra felvenni):
-#            install -d -m 700 ~/.ssh && scp baninapro@REGI_GEP:.ssh/id_ed25519* ~/.ssh/
-#       b) új kulcs:  ssh-keygen -t ed25519 , majd a ~/.ssh/id_ed25519.pub tartalmát
-#          felveszed: GitHub → Settings → SSH and GPG keys → New SSH key
-#    3. git clone git@github.com:Sarokin/BaninaPRO.git ~/BaninaPRO
-#    (Az adatbázis-séma – sql/schema.sql – a repóval együtt jön, külön nem kell másolni.)
+#    2. git clone https://github.com/Sarokin/BaninaPRO.git ~/BaninaPRO
+#       (ha a git még nincs fent: sudo apt install -y git)
+#    Az adatbázis-séma (sql/schema.sql) a repóval együtt jön. Ha csak ezt az egy fájlt töltöd le és
+#    futtatod, a script magától letölti a repót a ~/BaninaPRO mappába, és onnan folytatja.
 #
 #  FUTTATÁS – első telepítés és később minden frissítés is ugyanez:
 #    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
@@ -27,6 +30,8 @@
 #  adatbázis-táblák –, a script megpróbálja magától rendbe tenni, és csak akkor áll meg, ha ez sem megy.
 #  A képernyőn folyamatjelző mutatja, hol tart; a parancsok teljes kimenete a naplóba kerül:
 #  /var/log/baninapro-szerver.log  (hibánál a napló utolsó sorai a képernyőn is megjelennek).
+#  A végén – hiba esetén is – összegzés: minden lépés eredménye, és hogy a szerveren milyen címen érhető el
+#  az oldal és a phpMyAdmin. Az összegzés a ~/BaninaPRO-osszegzes.txt fájlba is elmentődik.
 # =============================================================================
 set -Eeuo pipefail
 umask 022
@@ -35,10 +40,21 @@ umask 022
 GEPNEV="baninapro"
 IDOZONA="Europe/Budapest"
 NYELV="hu_HU.UTF-8"
-APP_PORT="127.0.0.1:80"              # csak a szerverről érhető el: http://localhost
+# elérés: a BaninaPRO és a phpMyAdmin a belső hálózat bármely gépéről (a MySQL csak a szerveren belülről)
+APP_PORT="80"                         # BaninaPRO:  http://<a szerver IP-címe>  vagy  http://baninapro.local
+PMA_PORT="8081"                       # phpMyAdmin: http://<a szerver IP-címe>:8081 – jelszóval (root)
+TITOK_MAPPA="/etc/baninapro"          # a szerver saját adatbázis-jelszavai és beállítófájlja – nincsenek a gitben
+ORSZEM="/usr/local/sbin/baninapro-orszem"   # az őrszem: 2 percenként ellenőriz, és ha kell, helyreállít
+ALAP_DB_ROOT="baninapro_root"         # a docker-compose.yml nyilvános root-jelszava – csak a lecseréléséhez kell
+# napi állapotjelentés e-mailben (a mentés 03:00-kor fut, utána); a címet és a Gmail-alkalmazásjelszót a script
+# az elején egyszer megkérdezi, és a szerveren tárolja (/etc/msmtprc, /etc/baninapro – a nyilvános repóba nem kerül)
+JELENTES_IDO="03:30"
+JELENTO="/usr/local/sbin/baninapro-jelentes"
+SMTP_HOST="smtp.gmail.com"
+SMTP_PORT="587"
 MENTES_CRON="0 3 * * *"              # éjszakai adatbázis-mentés, mint az éles cron
-# a GitHub-fiókban regisztrált kulcs, amivel a szerver a repót húzza (a privát kulcs NINCS a repóban!)
-GITHUB_KULCS="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKFsn3fg7hguHnecoXSTovFR7ZMDm8Frmt0/rbr72EId baninapro@baninapro"
+# a nyilvános GitHub-repó: innen jön a kód és minden frissítés (https – kulcs és jelszó nélkül)
+REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
 # tartalék, ha az AnyDesk csomagtárolója nem működne (ha ez a változat már nincs fent, a legfrissebbet keresi meg)
 ANYDESK_DEB="https://deb.anydesk.com/pool/main/a/anydesk/anydesk_8.1.0_amd64.deb"
 NAPLO="/var/log/baninapro-szerver.log"
@@ -69,6 +85,11 @@ UJRAINDITAS=0 ELSO_INDITAS=0 ARCH="" CEL_FELH="" CEL_HOME="" ANYDESK_JELSZO="" T
 UTOLSO_PARANCS=""
 FIGYELMEZTETESEK=()
 LEPESEK=()
+# az összegzéshez: az épp futó lépés sorszáma, a lépések eredménye (ok / figy:N), az esetleges hibaüzenet
+AKT_I=0 OSSZEGZES_KESZ=0 HIBA_UZENET=""
+DB_ROOT_JELSZO="" DB_APP_JELSZO="" EMAIL_CIM="" EMAIL_JELSZO="" JELENTES_CIM="" EMAIL_UJ=0
+LEPES_ALLAPOT=()
+OSSZ_SOROK=()
 AKT_LEPES="előkészítés" AKT_ROVID="előkészítés" AKT_MUVELET=""
 # folyamatjelző: a lépések súlya ≈ a várható időtartamuk másodpercben
 OSSZ_SULY=0 KESZ_SULY=0 AKT_SULY=0 LEPES_KEZDET=0
@@ -128,6 +149,7 @@ naplo_vege() {   # a napló utolsó sorai a képernyőre – így látszik, mit 
     tail -n "${1:-15}" "$NAPLO" 2>/dev/null | sed 's/^/    | /' >&3 || true
 }
 hiba() {
+    HIBA_UZENET="$*"
     torol
     printf '\n%s%s HIBA [%s]: %s%s\n' "$C_PIROS" "$S_HIBA" "$AKT_LEPES" "$*" "$C_N" >&3
     printf '  A hiba javítása után a script nyugodtan újrafuttatható. Napló: %s\n' "$NAPLO" >&3
@@ -137,6 +159,7 @@ hiba() {
 varatlan_hiba() {   # $1 = kilépési kód, $2 = sor, $3 = parancs
     local parancs="$3"
     if [[ $parancs == return* && -n $UTOLSO_PARANCS ]]; then parancs="$UTOLSO_PARANCS"; fi
+    HIBA_UZENET="váratlan hiba ($2. sor, kilépési kód: $1): $parancs"
     naplo_vege 15
     printf '\n%s%s Váratlan hiba [%s] – %s. sor, kilépési kód: %s%s\n    Parancs: %s\n' \
         "$C_PIROS" "$S_HIBA" "$AKT_LEPES" "$2" "$1" "$C_N" "$parancs" >&3
@@ -467,11 +490,53 @@ sema_biztosit() {
     sema_rendben
 }
 
+# A repó címe a nyilvános https-cím legyen – egy régebbi, SSH-val klónozott példánynál is –, így a frissítéshez
+# nem kell GitHub-kulcs. Más repóra mutató címhez nem nyúl.
+repo_cim_beallit() {
+    local url
+    [[ -d $REPO/.git ]] || return 0
+    url="$(felh git -C "$REPO" remote get-url origin 2>/dev/null || true)"
+    if [[ $url == "$REPO_URL" ]]; then return 0; fi
+    if [[ -z $url ]]; then
+        felh git -C "$REPO" remote add origin "$REPO_URL" || return 0
+    elif [[ ${url,,} =~ github\.com[:/]sarokin/baninapro(\.git)?/?$ ]]; then
+        felh git -C "$REPO" remote set-url origin "$REPO_URL" || return 0
+    else
+        info "A repó címe nem a nyilvános BaninaPRO-repó ($url) – nem módosítom."
+        return 0
+    fi
+    ok "A repó címe: $REPO_URL (a frissítéshez nem kell GitHub-kulcs)"
+}
+
+# A script nem a BaninaPRO repóból fut (pl. csak ezt a fájlt töltötték le): letölti a nyilvános repót a felhasználó
+# mappájába (~/BaninaPRO) – ha ott már van, frissíti –, és az ottani példánnyal folytatja.
+repo_teljes() { [[ -f $REPO/docker-compose.yml && -f $REPO/docker/Dockerfile && -f $REPO/docker/config.php ]]; }
+repo_letoltes() {
+    local cel="$CEL_HOME/BaninaPRO" uj
+    uj="$cel/SERVER SETUP AND UPDATE/szerver_beallitas.sh"
+    info "A script nem a BaninaPRO mappájából fut – a repót letöltöm ide: $cel"
+    if ! command -v git >/dev/null; then telepit git || hiba "A git nem telepíthető: $(apt_hibak)"; fi
+    AKT_MUVELET="a BaninaPRO letöltése (git clone)"
+    if [[ -d $cel/.git ]]; then
+        fut felh git -C "$cel" pull --ff-only || true
+    elif [[ -e $cel ]]; then
+        hiba "A(z) $cel már létezik, de nem git-repó – nevezd át vagy töröld, majd futtasd újra."
+    else
+        ujraprobal 3 felh git -C "$CEL_HOME" clone "$REPO_URL" "$cel" || hiba "A repó nem tölthető le: $REPO_URL"
+    fi
+    AKT_MUVELET=""
+    [[ -f $uj ]] || hiba "A letöltött repóban nincs meg a telepítő: $uj"
+    ok "BaninaPRO letöltve: $cel – onnan folytatom."
+    rm -rf "$TMPD"
+    exec bash "$uj"
+}
+
 # git pull; ha helyben lévő fájlok állnak az útjában, félrerakja őket (.git/baninapro-felrerakva), és újrapróbálja
 git_frissit() {
     local kezdet szoveg fajlok=() f hova
+    repo_cim_beallit
     kezdet="$(naplo_meret)"
-    if fut felh git -C "$REPO" pull --ff-only; then return 0; fi
+    if ujraprobal 2 felh git -C "$REPO" pull --ff-only; then return 0; fi
     szoveg="$(naplo_resz "$kezdet")"
     hova="$REPO/.git/baninapro-felrerakva/$(date +%Y%m%d_%H%M%S)"
     if grep -q 'untracked working tree files would be overwritten' <<<"$szoveg"; then
@@ -494,7 +559,7 @@ git_frissit() {
 }
 
 # ---- Egyéb segédek ------------------------------------------------------------
-# parancs futtatása a cél felhasználó nevében (git, ssh – az ő kulcsával, kérdezés nélkül)
+# parancs futtatása a cél felhasználó nevében (a repó az övé, a git is az ő nevében fut), kérdezés nélkül
 felh() {
     sudo -u "$CEL_FELH" -H env GIT_TERMINAL_PROMPT=0 \
         GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20' "$@"
@@ -512,12 +577,15 @@ kontener_naplok() {   # a konténerek utolsó naplósorai a képernyőre és a n
     done
 }
 
-# kulcs=érték beállítása egy INI-fájl [User] szakaszában (AccountsService)
+# kulcs=érték beállítása egy INI-fájl szakaszában ($4, alapból [User] – AccountsService); ha kell, létrehozza
 ini_beallit() {
-    if grep -q "^$2=" "$1"; then
-        sed -i "s|^$2=.*|$2=$3|" "$1"
+    local f=$1 k=$2 v=$3 sz=${4:-User}
+    [[ -f $f ]] || printf '[%s]\n' "$sz" > "$f"
+    grep -q "^\[$sz\]" "$f" || printf '\n[%s]\n' "$sz" >> "$f"
+    if grep -q "^$k=" "$f"; then
+        sed -i "s|^$k=.*|$k=$v|" "$f"
     else
-        sed -i "/^\[User\]/a $2=$3" "$1"
+        sed -i "/^\[$sz\]/a $k=$v" "$f"
     fi
 }
 
@@ -542,18 +610,18 @@ elofeltetelek() {
     [[ -d $CEL_HOME ]] || hiba "Nem található a(z) $CEL_FELH felhasználó saját mappája."
     ok "Felhasználó: $CEL_FELH ($CEL_HOME)"
 
-    if [[ ! -f $REPO/docker-compose.yml || ! -f $REPO/docker/Dockerfile || ! -f $REPO/docker/config.php ]]; then
-        # véletlenül törölt fájlok: vissza a gitből
-        felh git -C "$REPO" checkout HEAD -- docker-compose.yml docker >/dev/null 2>&1 || true
-    fi
-    [[ -f $REPO/docker-compose.yml && -f $REPO/docker/Dockerfile && -f $REPO/docker/config.php ]] \
-        || hiba "A script nem a BaninaPRO repó „SERVER SETUP AND UPDATE” mappájából fut ($REPO)."
-    ok "BaninaPRO mappa: $REPO"
-
     AKT_MUVELET="internetkapcsolat ellenőrzése"
     internet_van || hiba "Nincs internetkapcsolat (a github.com nem érhető el) – ellenőrizd a hálózatot, majd futtasd újra."
     AKT_MUVELET=""
     ok "Internetkapcsolat rendben"
+
+    if ! repo_teljes; then
+        # véletlenül törölt fájlok: vissza a gitből
+        felh git -C "$REPO" checkout HEAD -- docker-compose.yml docker >/dev/null 2>&1 || true
+    fi
+    # ha a script nem a repóból fut (pl. csak ezt a fájlt töltötték le): letölti a repót, és onnan folytatja
+    repo_teljes || repo_letoltes
+    ok "BaninaPRO mappa: $REPO"
 
     # első telepítéshez (asztal + Docker + képek) jóval több hely kell, mint egy frissítéshez
     if van_csomag lightdm && { van_csomag docker-ce || van_csomag docker.io; }; then minimum=2; fi
@@ -613,22 +681,48 @@ frissites_elokeszites() {
     fi
 }
 
-# Minden kérdés az elején, utána már nem kell a géphez nyúlni.
+# Minden kérdés az elején, utána már nem kell a géphez nyúlni. Csak azt kérdezi, ami még nincs beállítva.
 kerdesek() {
-    if van_csomag anydesk || [[ ! -t 0 ]]; then return 0; fi
-    cim "Egy kérdés az elején (utána már nem kell a géphez nyúlni)"
-    local masodszor=""
-    torol
-    printf '  AnyDesk jelszó a felügyelet nélküli eléréshez (Enter = kihagyás): ' >&3
-    read -r -s ANYDESK_JELSZO || true
-    printf '\n' >&3
-    if [[ -n $ANYDESK_JELSZO ]]; then
-        printf '  Még egyszer: ' >&3
-        read -r -s masodszor || true
+    local masodszor="" kell_anydesk=0 kell_email=0
+    [[ -t 0 ]] || return 0
+    van_csomag anydesk || kell_anydesk=1
+    [[ -s $TITOK_MAPPA/email ]] || kell_email=1
+    (( kell_anydesk || kell_email )) || return 0
+    cim "Kérdések az elején (utána már nem kell a géphez nyúlni)"
+    if (( kell_anydesk )); then
+        torol
+        printf '  AnyDesk jelszó a felügyelet nélküli eléréshez (Enter = kihagyás): ' >&3
+        read -r -s ANYDESK_JELSZO || true
         printf '\n' >&3
-        if [[ $ANYDESK_JELSZO != "$masodszor" ]]; then
-            figy "A két jelszó nem egyezik – az AnyDesk jelszót most nem állítom be."
-            ANYDESK_JELSZO=""
+        if [[ -n $ANYDESK_JELSZO ]]; then
+            printf '  Még egyszer: ' >&3
+            read -r -s masodszor || true
+            printf '\n' >&3
+            if [[ $ANYDESK_JELSZO != "$masodszor" ]]; then
+                figy "A két jelszó nem egyezik – az AnyDesk jelszót most nem állítom be."
+                ANYDESK_JELSZO=""
+            fi
+        fi
+    fi
+    if (( kell_email )); then
+        torol
+        printf '  Napi állapotjelentés e-mailben (%s-kor) – a Gmail-címed (Enter = kihagyás): ' "$JELENTES_IDO" >&3
+        read -r EMAIL_CIM || true
+        EMAIL_CIM="${EMAIL_CIM// /}"
+        if [[ -n $EMAIL_CIM && $EMAIL_CIM != *@*.* ]]; then
+            figy "Ez nem e-mail-cím ($EMAIL_CIM) – az e-mail-jelentést most nem állítom be."
+            EMAIL_CIM=""
+        fi
+        if [[ -n $EMAIL_CIM ]]; then
+            printf '  A Gmail-fiók alkalmazásjelszava (Google-fiók → Biztonság → Kétlépcsős azonosítás →\n' >&3
+            printf '  Alkalmazásjelszavak; 16 betű, a szóközök nem számítanak): ' >&3
+            read -r -s EMAIL_JELSZO || true
+            printf '\n' >&3
+            EMAIL_JELSZO="${EMAIL_JELSZO// /}"
+            if [[ -z $EMAIL_JELSZO ]]; then
+                figy "Alkalmazásjelszó nélkül az e-mail-jelentést most nem állítom be."
+                EMAIL_CIM=""
+            fi
         fi
     fi
 }
@@ -647,16 +741,18 @@ lepesek_listaja() {
         "lepes_bongeszo|90|Firefox böngésző (magyar, kezdőlap: http://localhost)"
         "lepes_anydesk|30|AnyDesk – mindig fut, a géppel együtt indul"
         "lepes_docker|90|Docker Engine – mindig fut, a géppel együtt indul"
-        "lepes_ssh|15|SSH: távoli belépés és GitHub-kulcs"
-        "lepes_energia|2|Alvó mód tiltása (a szerver mindig elérhető)"
-        "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis (localhost:80)"
+        "lepes_ssh|15|Hálózat: SSH, gépnév ($GEPNEV.local), GitHub-elérés"
+        "lepes_energia|5|Energia: soha nem alszik el, nincs képernyővédő, áramszünet után bekapcsol"
+        "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis – a belső hálózatról is elérhető"
         "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00)"
-        "lepes_ellenorzes|45|Végső ellenőrzés: oldal, API, adatbázis"
+        "lepes_orszem|5|Őrszem: ha a BaninaPRO nem érhető el, magától helyreállítja"
+        "lepes_jelentes|20|Napi állapotjelentés e-mailben ($JELENTES_IDO)"
+        "lepes_ellenorzes|45|Végső ellenőrzés: oldal, API, adatbázis, hálózat"
     )
 }
 
 futtat_lepesek() {
-    local i=0 db=${#LEPESEK[@]} e fv suly nev
+    local i=0 db=${#LEPESEK[@]} e fv suly nev elotte n
     OSSZ_SULY=0
     for e in "${LEPESEK[@]}"; do
         IFS='|' read -r fv suly nev <<<"$e"
@@ -672,9 +768,12 @@ futtat_lepesek() {
     for e in "${LEPESEK[@]}"; do
         i=$(( i + 1 ))
         IFS='|' read -r fv suly nev <<<"$e"
-        AKT_LEPES="$i/$db $nev" AKT_ROVID="$i/$db" AKT_SULY=$suly LEPES_KEZDET=$SECONDS
+        AKT_LEPES="$i/$db $nev" AKT_ROVID="$i/$db" AKT_SULY=$suly LEPES_KEZDET=$SECONDS AKT_I=$i
         cim "[$i/$db] $nev"
+        elotte=${#FIGYELMEZTETESEK[@]}
         "$fv"
+        n=$(( ${#FIGYELMEZTETESEK[@]} - elotte ))
+        if (( n )); then LEPES_ALLAPOT[i]="figy:$n"; else LEPES_ALLAPOT[i]="ok"; fi
         KESZ_SULY=$(( KESZ_SULY + suly ))
     done
     AKT_SULY=0
@@ -976,11 +1075,22 @@ anydesk_szolgaltatas() {
     # a csomag telepítője másolja a helyére – ha egy félbemaradt telepítés miatt hiányzik, pótolom
     if [[ ! -f $egyseg && -f /usr/share/anydesk/files/systemd/anydesk.service ]]; then
         cp /usr/share/anydesk/files/systemd/anydesk.service "$egyseg"
-        systemctl daemon-reload || true
     fi
+    # mindig fusson: a géppel indul, és ha bármiért leállna, a systemd 5 mp múlva újraindítja
+    mkdir -p /etc/systemd/system/anydesk.service.d
+    cat > /etc/systemd/system/anydesk.service.d/50-baninapro.conf <<'EOF'
+# BaninaPRO szerver: az AnyDesk mindig fusson – ha leáll, magától újraindul (a szerver_beallitas.sh írta)
+[Unit]
+StartLimitIntervalSec=0
+
+[Service]
+Restart=always
+RestartSec=5
+EOF
+    systemctl daemon-reload || true
     if systemctl enable --now anydesk \
         || { systemctl reset-failed anydesk || true; systemctl restart anydesk; }; then
-        ok "AnyDesk fut, és a géppel együtt indul"
+        ok "AnyDesk fut, a géppel együtt indul, és ha leállna, magától újraindul"
     else
         figy "Az AnyDesk szolgáltatás nem indult el (systemctl status anydesk) – a gép újraindítása után általában rendben van."
     fi
@@ -1084,13 +1194,20 @@ docker_inditas() {
     docker info >/dev/null 2>&1
 }
 
-# docker compose: ha hiányzik, csomagból pótolja, végső esetben a Docker GitHub-oldaláról tölti le
+# docker compose: ha hiányzik vagy túl régi, csomagból pótolja, végső esetben a Docker GitHub-oldaláról tölti le
+# (a szerver docker-compose.override.yml-je a 2.24.4-es változattól ismert „!override” jelölést használja)
+compose_eleg_uj() {
+    local v
+    v="$(docker compose version --short 2>/dev/null || true)"
+    v="${v#v}"
+    [[ -n $v && $(printf '%s\n' 2.24.4 "$v" | sort -V | head -n 1) == 2.24.4 ]]
+}
 compose_biztosit() {
     local cel=/usr/local/lib/docker/cli-plugins/docker-compose arch
-    if docker compose version >/dev/null 2>&1; then return 0; fi
-    info "Hiányzik a „docker compose” bővítmény – pótolom…"
+    if compose_eleg_uj; then return 0; fi
+    info "A „docker compose” bővítmény hiányzik vagy túl régi – pótolom…"
     if van_csomag docker-ce; then telepit_opcionalis docker-compose-plugin; else telepit_opcionalis docker-compose-v2; fi
-    if docker compose version >/dev/null 2>&1; then return 0; fi
+    if compose_eleg_uj; then return 0; fi
     case $ARCH in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; armhf) arch=armv7 ;; *) arch=$ARCH ;; esac
     install -d -m 755 "$(dirname "$cel")"
     AKT_MUVELET="docker compose letöltése"
@@ -1098,7 +1215,7 @@ compose_biztosit() {
         chmod 755 "$cel"
     fi
     AKT_MUVELET=""
-    docker compose version >/dev/null 2>&1 || hiba "Hiányzik a „docker compose” bővítmény, és nem sikerült pótolni."
+    compose_eleg_uj || hiba "A „docker compose” bővítmény hiányzik vagy túl régi, és nem sikerült pótolni."
     ok "docker compose pótolva (a Docker GitHub-oldaláról)"
 }
 
@@ -1114,44 +1231,30 @@ lepes_ssh() {
     fi
     ok "SSH szerver fut – távoli belépés: ssh $CEL_FELH@$GEPNEV"
 
-    # a gép saját kulcsa, amivel a GitHubról húzza a repót
-    local mappa="$CEL_HOME/.ssh" kulcs="$CEL_HOME/.ssh/id_ed25519" url
-    install -d -m 700 -o "$CEL_FELH" -g "$(id -gn "$CEL_FELH")" "$mappa"
-    if [[ ! -f $kulcs ]]; then
-        felh ssh-keygen -q -t ed25519 -N "" -C "$CEL_FELH@$GEPNEV" -f "$kulcs"
-        info "Új SSH kulcs készült: $kulcs"
-    fi
-    if [[ ! -f $kulcs.pub ]]; then
-        ssh-keygen -y -f "$kulcs" > "$kulcs.pub"
-        chown "$CEL_FELH:" "$kulcs.pub"
-    fi
-    chmod 600 "$kulcs"
-    chmod 644 "$kulcs.pub"
-    if [[ $(awk '{print $2}' "$kulcs.pub") == "$(awk '{print $2}' <<<"$GITHUB_KULCS")" ]]; then
-        ok "A gépen a GitHubon regisztrált baninapro kulcs van"
+    # a gép neve a belső hálózaton: baninapro.local – akkor is megtalálható, ha a router más IP-címet ad neki
+    telepit_opcionalis avahi-daemon
+    if systemctl enable --now avahi-daemon >/dev/null 2>&1; then
+        ok "A gép a belső hálózaton $GEPNEV.local néven is elérhető"
     else
-        info "A gép kulcsa nem a korábban regisztrált baninapro kulcs: $(cat "$kulcs.pub")"
+        figy "A $GEPNEV.local név nem kapcsolható be (avahi-daemon) – a gép az IP-címével érhető el."
     fi
 
+    # a frissítés (git pull) a nyilvános GitHub-repóból megy, https-en – GitHub-kulcs nem kell
+    repo_cim_beallit
     AKT_MUVELET="GitHub elérés ellenőrzése"
-    fut felh ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 git@github.com || true
-    AKT_MUVELET=""
-    if grep -q "successfully authenticated" <<<"$(tail -n 5 "$NAPLO")"; then
-        ok "GitHub elérés a kulccsal rendben"
-        # ha https-sel lett klónozva, átállítjuk SSH-ra, hogy a frissítés (git pull) jelszó nélkül menjen
-        url="$(felh git -C "$REPO" remote get-url origin 2>/dev/null || true)"
-        if [[ $url == https://github.com/* ]]; then
-            felh git -C "$REPO" remote set-url origin "git@github.com:${url#https://github.com/}"
-            ok "A repó címe SSH-ra állítva: git@github.com:${url#https://github.com/}"
-        fi
+    if ujraprobal 2 felh git -C "$REPO" ls-remote --exit-code origin HEAD; then
+        ok "GitHub elérés rendben – a frissítések innen jönnek: $REPO_URL"
     else
-        figy "A GitHub nem fogadja el a gép kulcsát – a frissítéshez (git pull) vedd fel: GitHub → Settings → SSH and GPG keys → New SSH key → $(cat "$kulcs.pub")"
+        figy "A GitHub-repó most nem érhető el ($REPO_URL) – a következő futás újra megpróbálja a frissítést."
     fi
+    AKT_MUVELET=""
 }
 
 lepes_energia() {
-    systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
-    mkdir -p /etc/systemd/logind.conf.d
+    local f
+    # 1) soha ne aludjon el: alvó és hibernált állapot letiltva – rendszerszinten és a bejelentkezés-kezelőben is
+    systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
+    mkdir -p /etc/systemd/logind.conf.d /etc/systemd/sleep.conf.d
     cat > /etc/systemd/logind.conf.d/50-baninapro.conf <<'EOF'
 # BaninaPRO szerver: soha ne aludjon el (a szerver_beallitas.sh írta)
 [Login]
@@ -1162,7 +1265,78 @@ HandleSuspendKey=ignore
 HandleHibernateKey=ignore
 IdleAction=ignore
 EOF
-    ok "Alvó mód és hibernálás letiltva – a szerver mindig elérhető"
+    cat > /etc/systemd/sleep.conf.d/50-baninapro.conf <<'EOF'
+# BaninaPRO szerver: soha ne aludjon el (a szerver_beallitas.sh írta)
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no
+AllowSuspendThenHibernate=no
+AllowHybridSleep=no
+EOF
+    ok "Alvó mód és hibernálás letiltva – a gép soha nem alszik el"
+
+    # 2) soha ne legyen képernyővédő, és a kijelző se kapcsoljon ki: az X szerverben, a LightDM-ben és a munkamenetben
+    mkdir -p /etc/X11/xorg.conf.d /etc/lightdm/lightdm.conf.d
+    cat > /etc/X11/xorg.conf.d/10-baninapro-kepernyo.conf <<'EOF'
+# BaninaPRO szerver: nincs képernyővédő és kijelző-kikapcsolás (a szerver_beallitas.sh írta)
+Section "ServerFlags"
+        Option "BlankTime"   "0"
+        Option "StandbyTime" "0"
+        Option "SuspendTime" "0"
+        Option "OffTime"     "0"
+EndSection
+EOF
+    cat > /etc/lightdm/lightdm.conf.d/60-baninapro-kepernyo.conf <<'EOF'
+# BaninaPRO szerver: az X szerver képernyővédő és energiatakarékos kijelző nélkül indul (a szerver_beallitas.sh írta)
+[Seat:*]
+xserver-command=X -s 0 -dpms
+EOF
+    # a bejelentkezett munkamenetben is (ha egy program mégis bekapcsolná): xset induláskor, az LXQt energiakezelője
+    # tétlenségi műveletek nélkül, az xscreensaver (ha fent van) kikapcsolva
+    felh mkdir -p "$CEL_HOME/.config/autostart" "$CEL_HOME/.config/lxqt"
+    cat > "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=BaninaPRO: nincs képernyővédő
+Exec=sh -c "xset s off; xset s noblank; xset -dpms"
+NoDisplay=true
+EOF
+    f="$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
+    ini_beallit "$f" enableIdlenessWatcher false General
+    ini_beallit "$f" enableIdlenessBacklightWatcher false General
+    ini_beallit "$f" enableLidWatcher false General
+    if command -v xscreensaver >/dev/null; then
+        f="$CEL_HOME/.xscreensaver"
+        if [[ -f $f ]] && grep -q '^mode:' "$f"; then sed -i 's/^mode:.*/mode:\t\toff/' "$f"; else printf 'mode:\t\toff\n' >> "$f"; fi
+        chown "$CEL_FELH:" "$f"
+    fi
+    chown "$CEL_FELH:" "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" "$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
+    ok "Képernyővédő és kijelző-kikapcsolás letiltva"
+
+    # 3) áramszünet után magától bekapcsol: ez a BIOS beállítása – ahol a gép engedi, innen állítja be
+    aram_utan_bekapcsol
+}
+
+# Áramszünet után magától bekapcsol: ez a gép BIOS/UEFI-beállítása („Restore on AC Power Loss”). Ahol a firmware
+# engedi (Dell, HP, Lenovo: /sys/class/firmware-attributes), innen állítja be; máshol megmondja, mit kell a BIOS-ban.
+aram_utan_bekapcsol() {
+    local a nev ertek talalt="" minta='acpwrrcvry|afterpower(loss|failure)|after.power.(loss|failure)|restoreon.*ac|ac.*power.*(loss|recovery)|power.*(loss|failure).*(action|recovery)'
+    for a in /sys/class/firmware-attributes/*/attributes/*; do
+        [[ -f $a/current_value && -f $a/possible_values ]] || continue
+        nev="$(basename "$a")"
+        [[ ${nev,,} =~ $minta ]] || continue
+        ertek="$(tr ';,' '\n\n' < "$a/possible_values" | grep -ixE 'on|power on|always on|alwayson|poweron|turn on' | head -n 1 || true)"
+        [[ -n $ertek ]] || continue
+        if [[ $(cat "$a/current_value" 2>/dev/null) == "$ertek" ]] || { printf '%s' "$ertek" > "$a/current_value"; } 2>/dev/null; then
+            talalt="$nev = $ertek"
+            break
+        fi
+    done
+    if [[ -n $talalt ]]; then
+        ok "Áramszünet után a gép magától bekapcsol (BIOS: $talalt)"
+    else
+        figy "Az áramszünet utáni automatikus bekapcsolást ennél a gépnél egyszer a BIOS-ban kell beállítani: bekapcsoláskor F2 / Del / F10 → Power vagy Advanced → „Restore on AC Power Loss” / „After Power Failure” / „AC Power Recovery” → Power On, majd mentés (F10)."
+    fi
 }
 
 lepes_baninapro() {
@@ -1176,30 +1350,50 @@ lepes_baninapro() {
         ok "Adatbázis-séma megvan – első induláskor létrejönnek a táblák és a kezdő admin"
     fi
 
-    # 2) szerver-kiegészítés a docker-compose.yml mellé (a compose magától betölti): 80-as port, fix projektnév
+    # 2) a szerver saját adatbázis-jelszavai és az alkalmazás szerverre szabott beállítófájlja (nincsenek a gitben)
+    titkok_biztosit
+    szerver_config
+
+    # 3) szerver-kiegészítés a docker-compose.yml mellé (a compose magától betölti): belső hálózati elérés,
+    #    jelszavas phpMyAdmin, a szerver saját jelszavai, rögzített projektnév (így a kötetek neve sem változik)
     cat > "$REPO/docker-compose.override.yml" <<EOF
 # BaninaPRO szerver – a "SERVER SETUP AND UPDATE/$(basename "$SCRIPT")" írja minden futáskor, kézzel ne módosítsd.
-# A docker compose a docker-compose.yml mellé automatikusan betölti: az alkalmazás a szerveren
-# a http://localhost (80-as port) címen is elérhető. A rögzített projektnévvel a kötetek neve sem változik.
+# A docker compose a docker-compose.yml mellé automatikusan betölti. A szerveren:
+#  - a BaninaPRO ($APP_PORT) és a phpMyAdmin ($PMA_PORT) a belső hálózatról is elérhető, a MySQL csak a gépen belülről;
+#  - a phpMyAdmin jelszót kér (nincs automatikus root-belépés), az adatbázis a szerver saját jelszavait használja;
+#  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva).
 name: $PROJEKT
 services:
   app:
-    ports:
+    ports: !override
       - "$APP_PORT:80"
+    volumes:
+      - $TITOK_MAPPA/config.php:/var/www/html/includes/config.php:ro
+  db:
+    environment:
+      MYSQL_ROOT_PASSWORD: "$DB_ROOT_JELSZO"
+      MYSQL_PASSWORD: "$DB_APP_JELSZO"
+  phpmyadmin:
+    ports: !override
+      - "$PMA_PORT:80"
+    environment: !override
+      PMA_HOST: db
+      UPLOAD_LIMIT: 64M
 EOF
     chown "$CEL_FELH:" "$REPO/docker-compose.override.yml"
+    chmod 600 "$REPO/docker-compose.override.yml"
     # a git ne lássa új fájlnak (helyi kizárás, a .gitignore-hoz nem nyúl)
     if [[ -d $REPO/.git ]] && ! grep -qx 'docker-compose.override.yml' "$REPO/.git/info/exclude" 2>/dev/null; then
         install -d -o "$CEL_FELH" -g "$(id -gn "$CEL_FELH")" "$REPO/.git/info"
         echo 'docker-compose.override.yml' >> "$REPO/.git/info/exclude"
         chown "$CEL_FELH:" "$REPO/.git/info/exclude"
     fi
-    ok "Szerver-beállítás: docker-compose.override.yml (BaninaPRO a $APP_PORT címen)"
+    ok "Szerver-beállítás: BaninaPRO a $APP_PORT-as, phpMyAdmin a $PMA_PORT-es porton – a belső hálózatról is (jelszóval)"
 
-    # 3) a 80-as port legyen szabad (ha a BaninaPRO már fut rajta, az rendben van)
+    # 4) a 80-as port legyen szabad (ha a BaninaPRO már fut rajta, az rendben van)
     port80_felszabadit
 
-    # 4) építés és indítás – átmeneti hálózati hibánál újrapróbálja
+    # 5) építés és indítás – átmeneti hálózati hibánál újrapróbálja
     AKT_MUVELET="az alkalmazás építése (PHP 8.3 + Apache)"
     if ! ujraprobal 3 dc build --pull app; then
         # ha az alapkép frissítése nem megy, a meglévővel is felépülhet
@@ -1221,11 +1415,40 @@ EOF
     dc ps || true
     ok "Konténerek elindítva"
 
-    # 5) adatbázis: a táblák és a kezdő admin – ami hiányzik, azt a sémából pótolja
+    # 6) adatbázis: a szerver jelszavai, a táblák és a kezdő admin – ami hiányzik, azt pótolja
     if ! adatbazis_rendbe; then
         kontener_naplok
         hiba "Az adatbázis nem készült el (a MySQL nem indult el, vagy a táblák nem hozhatók létre)."
     fi
+}
+
+# A szerver saját, erős adatbázis-jelszavai: a repóban lévő alapjelszavak nyilvánosak, a belső hálózatról elérhető
+# phpMyAdmin mellett nem maradhatnak. Egyszer készülnek, utána mindig ugyanazok (csak a root olvashatja).
+titkok_biztosit() {
+    local f="$TITOK_MAPPA/titkok"
+    install -d -m 700 "$TITOK_MAPPA"
+    if ! grep -qE '^DB_ROOT_JELSZO=[A-Za-z0-9]{16,}$' "$f" 2>/dev/null || ! grep -qE '^DB_APP_JELSZO=[A-Za-z0-9]{16,}$' "$f"; then
+        printf '# BaninaPRO szerver – adatbázis-jelszavak (a szerver_beallitas.sh készítette, ne add ki)\nDB_ROOT_JELSZO=%s\nDB_APP_JELSZO=%s\n' \
+            "$(veletlen_jelszo)" "$(veletlen_jelszo)" > "$f"
+    fi
+    chmod 600 "$f"
+    DB_ROOT_JELSZO="$(sed -n 's/^DB_ROOT_JELSZO=//p' "$f")"
+    DB_APP_JELSZO="$(sed -n 's/^DB_APP_JELSZO=//p' "$f")"
+}
+veletlen_jelszo() { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24 || true; }
+
+# az alkalmazás szerverre szabott beállítófájlja: a docker/config.php a szerver adatbázis-jelszavával, és
+# hibakijelzés nélkül (a belső hálózatról elérhető szerveren a részletes hibák nem látszhatnak)
+szerver_config() {
+    local f="$TITOK_MAPPA/config.php"
+    sed -e "s/^define('DB_PASS', *'[^']*');/define('DB_PASS', '$DB_APP_JELSZO');/" \
+        -e "s/^define('APP_DEBUG', *true);/define('APP_DEBUG', false);/" "$REPO/docker/config.php" > "$f.uj"
+    grep -q "^define('DB_PASS', '$DB_APP_JELSZO');" "$f.uj" \
+        || hiba "A szerver beállítófájlja nem készült el (a docker/config.php DB_PASS sora nem a várt formájú)."
+    # az alkalmazás (www-data, 33) olvassa a konténerben
+    chown root:33 "$f.uj"
+    chmod 640 "$f.uj"
+    mv -f "$f.uj" "$f"
 }
 
 # a 80-as port: ha egy másik webszerver (apache2, nginx…) foglalja, leállítja és kikapcsolja
@@ -1254,6 +1477,17 @@ db_kesz() {
     docker exec "$DB_KONTENER" sh -c 'mysqladmin ping -h 127.0.0.1 --protocol=TCP -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1
 }
 db_szam() { db_sql -e "$1" 2>/dev/null | tr -dc '0-9' || true; }
+# Régebbi, a nyilvános alapjelszóval (docker-compose.yml) létrehozott adatbázis: a root-jelszó átállítása a szerver
+# saját jelszavára (a konténer a MYSQL_ROOT_PASSWORD-ben már ezt kapja, de az csak üres adatbázisnál érvényesül)
+db_root_atallitas() {
+    docker exec -i "$DB_KONTENER" sh -c 'exec mysql -uroot -p"$1"' _ "$ALAP_DB_ROOT" <<EOF || return 1
+ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY '$DB_ROOT_JELSZO';
+ALTER USER IF EXISTS 'root'@'%' IDENTIFIED BY '$DB_ROOT_JELSZO';
+FLUSH PRIVILEGES;
+EOF
+    db_sql -e 'SELECT 1' >/dev/null 2>&1 || return 1
+    ok "Adatbázis: a nyilvános alapjelszó helyett a szerver saját root-jelszava él"
+}
 
 # Az adatbázis rendbetétele: megvárja a MySQL-t, és ha hiányoznak táblák vagy a kezdő admin, a sémából pótolja.
 # A séma csak CREATE TABLE IF NOT EXISTS és ON DUPLICATE KEY beszúrásokból áll, így meglévő adatokhoz nem nyúl.
@@ -1273,6 +1507,11 @@ adatbazis_rendbe() {
             varj 2
         done
         db_kesz || { AKT_MUVELET=""; return 1; }
+    fi
+    # a root-jelszó: egy régebbi, a nyilvános alapjelszóval létrehozott adatbázisnál a szerver saját jelszavára állítja
+    if ! db_sql -e 'SELECT 1' >/dev/null 2>&1 && ! db_root_atallitas; then
+        AKT_MUVELET=""
+        return 1
     fi
     tablak="$(db_szam 'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()')"
     felhasznalok="$(db_szam 'SELECT COUNT(*) FROM felhasznalok')"
@@ -1310,6 +1549,387 @@ EOF
     ok "Éjszakai adatbázis-mentés: minden nap 03:00 (napló: /var/log/baninapro-mentes.log)"
 }
 
+# Az őrszem: 2 percenként ellenőrzi, hogy a BaninaPRO elérhető-e (oldal + adatbázis), és ha nem, emberi beavatkozás
+# nélkül helyreállítja. A script a beállításokkal együtt íródik ki; a systemd-időzítő futtatja.
+orszem_iras() {
+    {
+        printf '#!/bin/bash\n# BaninaPRO őrszem – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
+        printf 'REPO=%q\nAPP_KONTENER=%q\nAPP_PORT=%q\nJELENTO=%q\n' "$REPO" "$APP_KONTENER" "$APP_PORT" "$JELENTO"
+        cat <<'EOF'
+# Ha a BaninaPRO nem érhető el, lépcsőzetesen helyreállítja: a hiányzó / leállt konténerek indítása → a konténerek
+# újraindítása → a Docker újraindítása (legfeljebb félóránként) → ha 1 órán át sem sikerül, a gép újraindítása
+# (legfeljebb 6 óránként). Ha nem sikerül, e-mailben riaszt (ha a napi jelentés be van állítva), és szól, ha helyreállt.
+NAPLO=/var/log/baninapro-orszem.log
+ALLAPOT=/var/lib/baninapro-orszem
+mkdir -p "$ALLAPOT"
+# egyszerre csak egy fusson; amíg a telepítő dolgozik (ő is ezt a zárat fogja), nem avatkozik be
+exec 9>/run/baninapro-orszem.lock
+flock -n 9 || exit 0
+
+naplo() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$NAPLO"; }
+dc() { (cd "$REPO" && timeout 600 docker compose "$@") >> "$NAPLO" 2>&1; }
+rendben() {
+    [[ $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$APP_PORT/" || true) == 200 ]] || return 1
+    timeout 30 docker exec "$APP_KONTENER" php -r 'require "/var/www/html/includes/db.php"; db_val("SELECT 1");' >/dev/null 2>&1
+}
+var_rendben() {   # legfeljebb $1 másodpercig vár, hogy helyreálljon
+    local i
+    for (( i = 0; i < $1; i += 10 )); do rendben && return 0; sleep 10; done
+    rendben
+}
+mp_ota() { echo $(( $(date +%s) - $(cat "$1" 2>/dev/null || echo 0) )); }
+helyreallt() {
+    naplo "Helyreállt: $1"
+    if [[ -f $ALLAPOT/riasztva ]]; then
+        rm -f "$ALLAPOT/riasztva"
+        "$JELENTO" riasztas "A BaninaPRO újra elérhető ($1)." >> "$NAPLO" 2>&1 || true
+    fi
+    rm -f "$ALLAPOT/hiba_ota"
+    exit 0
+}
+
+# a napló ne nőjön a végtelenségig
+if [[ -f $NAPLO ]] && (( $(stat -c %s "$NAPLO") > 5000000 )); then mv -f "$NAPLO" "$NAPLO.1"; fi
+
+if rendben; then
+    rm -f "$ALLAPOT/hiba_ota"
+    if [[ -f $ALLAPOT/riasztva ]]; then helyreallt "magától"; fi
+    exit 0
+fi
+[[ -f $ALLAPOT/hiba_ota ]] || date +%s > "$ALLAPOT/hiba_ota"
+naplo "A BaninaPRO nem érhető el – helyreállítás…"
+
+# kevés hely: a felesleg törlése (a konténerekhez és a kötetekhez – az adatokhoz – nem nyúl)
+if (( $(df -Pk / | awk 'NR == 2 { print int($4 / 1024) }') < 2048 )); then
+    naplo "Kevés a szabad hely – a felesleg törlése"
+    docker image prune -f >> "$NAPLO" 2>&1
+    docker builder prune -f >> "$NAPLO" 2>&1
+    journalctl --vacuum-size=200M >> "$NAPLO" 2>&1
+    apt-get clean
+fi
+# 1) a Docker fusson
+if ! timeout 30 docker info >/dev/null 2>&1; then
+    naplo "A Docker nem válaszol – indítás"
+    systemctl reset-failed containerd docker >/dev/null 2>&1
+    systemctl restart containerd docker >> "$NAPLO" 2>&1
+    sleep 10
+fi
+# 2) a hiányzó vagy leállt konténerek indítása
+dc up -d --remove-orphans
+var_rendben 120 && helyreallt "a konténerek indítása után"
+# 3) a konténerek újraindítása
+naplo "Még mindig nem érhető el – a konténerek újraindítása"
+dc restart
+var_rendben 180 && helyreallt "a konténerek újraindítása után"
+# 4) a Docker újraindítása – legfeljebb félóránként
+if (( $(mp_ota "$ALLAPOT/docker_ujrainditas") > 1800 )); then
+    naplo "Még mindig nem érhető el – a Docker újraindítása"
+    date +%s > "$ALLAPOT/docker_ujrainditas"
+    systemctl restart containerd docker >> "$NAPLO" 2>&1
+    sleep 15
+    dc up -d --remove-orphans
+    var_rendben 240 && helyreallt "a Docker újraindítása után"
+fi
+# 5) riasztás e-mailben – ha már 10 perce nem jó (legfeljebb 6 óránként)
+if (( $(mp_ota "$ALLAPOT/hiba_ota") > 600 && $(mp_ota "$ALLAPOT/riasztva") > 21600 )); then
+    date +%s > "$ALLAPOT/riasztva"
+    "$JELENTO" riasztas "A BaninaPRO $(( $(mp_ota "$ALLAPOT/hiba_ota") / 60 )) perce nem érhető el, és az őrszem még nem tudta helyreállítani. Ha 1 órán belül sem sikerül, újraindítja a gépet." >> "$NAPLO" 2>&1 || true
+fi
+# 6) végső eset: ha már 1 órája nem jó, a gép újraindítása (legfeljebb 6 óránként)
+if (( $(mp_ota "$ALLAPOT/hiba_ota") > 3600 && $(mp_ota "$ALLAPOT/gep_ujrainditas") > 21600 )); then
+    naplo "1 órája nem érhető el – a gép újraindítása"
+    date +%s > "$ALLAPOT/gep_ujrainditas"
+    sync
+    systemctl reboot
+    exit 0
+fi
+naplo "Most nem sikerült helyreállítani – a következő ellenőrzés újra megpróbálja."
+exit 1
+EOF
+    } > "$ORSZEM.uj"
+    chmod 755 "$ORSZEM.uj"
+    mv -f "$ORSZEM.uj" "$ORSZEM"
+}
+
+lepes_orszem() {
+    orszem_iras
+    cat > /etc/systemd/system/baninapro-orszem.service <<EOF
+[Unit]
+Description=BaninaPRO őrszem – a szolgáltatás ellenőrzése és helyreállítása
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$ORSZEM
+TimeoutStartSec=20min
+EOF
+    cat > /etc/systemd/system/baninapro-orszem.timer <<'EOF'
+[Unit]
+Description=BaninaPRO őrszem – 2 percenként
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now baninapro-orszem.timer
+    ok "Őrszem: 2 percenként ellenőrzi a BaninaPRO-t, és ha nem érhető el, magától helyreállítja (napló: /var/log/baninapro-orszem.log)"
+}
+
+# Napi állapotjelentés e-mailben (és az őrszem értesítései). A levelet a curl beépített SMTP-küldése viszi a Gmailen
+# keresztül – külön program, modul vagy licenc nem kell hozzá. Asztali ikon is készül a kézi futtatáshoz.
+lepes_jelentes() {
+    local asztal
+    install -d -m 700 "$TITOK_MAPPA"
+    if [[ -n $EMAIL_CIM && -n $EMAIL_JELSZO ]]; then
+        (
+            umask 077
+            printf 'EMAIL_CIM=%s\n' "$EMAIL_CIM" > "$TITOK_MAPPA/email"
+            printf 'machine %s login %s password %s\n' "$SMTP_HOST" "$EMAIL_CIM" "$EMAIL_JELSZO" > "$TITOK_MAPPA/smtp.netrc"
+        )
+        EMAIL_JELSZO=""
+        EMAIL_UJ=1
+    fi
+    jelento_iras
+
+    cat > /etc/systemd/system/baninapro-jelentes.service <<EOF
+[Unit]
+Description=BaninaPRO napi állapotjelentés e-mailben
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$JELENTO napi
+TimeoutStartSec=15min
+EOF
+    cat > /etc/systemd/system/baninapro-jelentes.timer <<EOF
+[Unit]
+Description=BaninaPRO napi állapotjelentés – minden nap $JELENTES_IDO
+
+[Timer]
+OnCalendar=*-*-* $JELENTES_IDO:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now baninapro-jelentes.timer
+
+    # asztali ikon: az ellenőrzés és a jelentés kézzel, terminálablakban (a sudo-szabály csak erre az egy parancsra szól)
+    printf '%s ALL=(root) NOPASSWD: %s kezi\n' "$CEL_FELH" "$JELENTO" > "$TMPD/sudoers"
+    if visudo -cf "$TMPD/sudoers" >/dev/null 2>&1; then
+        install -m 440 -o root -g root "$TMPD/sudoers" /etc/sudoers.d/baninapro-jelentes
+    else
+        figy "A kézi ellenőrzés sudo-szabálya nem állítható be – az asztali ikon jelszót fog kérni."
+    fi
+    asztal="$(asztal_mappa)"
+    ikon_iras "$asztal/baninapro-ellenorzes.desktop"
+    felh mkdir -p "$CEL_HOME/.local/share/applications"
+    ikon_iras "$CEL_HOME/.local/share/applications/baninapro-ellenorzes.desktop"
+    ok "Asztali ikon: „BaninaPRO ellenőrzés” ($asztal) – kézzel is lefuttatja az ellenőrzést, és elküldi a jelentést"
+
+    JELENTES_CIM="$(sed -n 's/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null || true)"
+    if [[ -n $JELENTES_CIM ]]; then
+        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIM"
+    else
+        figy "A napi állapotjelentés e-mail nélkül készül (/var/log/baninapro-jelentes/) – az e-mailhez futtasd újra a scriptet, és add meg a Gmail-címed és az alkalmazásjelszót."
+    fi
+}
+
+# a felhasználó asztal-mappája (magyarul általában ~/Asztal) az xdg-user-dirs szerint – ha kell, létrehozza
+asztal_mappa() {
+    local m=""
+    command -v xdg-user-dirs-update >/dev/null || telepit_opcionalis xdg-user-dirs
+    felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dirs-update >/dev/null 2>&1 || true
+    m="$(felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dir DESKTOP 2>/dev/null || true)"
+    if [[ -z $m || $m == "$CEL_HOME" || $m != "$CEL_HOME"/* ]]; then m="$CEL_HOME/Asztal"; fi
+    felh mkdir -p "$m"
+    echo "$m"
+}
+ikon_iras() {
+    cat > "$1" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=BaninaPRO ellenőrzés
+Comment=A szerver ellenőrzése, és az állapotjelentés elküldése e-mailben
+Exec=sudo $JELENTO kezi
+Icon=utilities-system-monitor
+Terminal=true
+Categories=System;Monitor;
+EOF
+    chown "$CEL_FELH:" "$1"
+    chmod 755 "$1"
+}
+
+# A jelentő script (a beállításokkal együtt íródik ki)
+jelento_iras() {
+    {
+        printf '#!/bin/bash\n# BaninaPRO állapotjelentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
+        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nSMTP_HOST=%q\nSMTP_PORT=%q\n' \
+            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$SMTP_HOST" "$SMTP_PORT"
+        cat <<'EOF'
+# Ellenőrzi a szervert, és az eredményt e-mailben elküldi:
+#   baninapro-jelentes napi             minden nap 03:30-kor (systemd-időzítő)
+#   baninapro-jelentes kezi             az asztali ikonról – ugyanez, a képernyőn is
+#   baninapro-jelentes proba            próba-jelentés (a telepítő küldi, amikor az e-mailt beállítja)
+#   baninapro-jelentes riasztas SZÖVEG  az őrszem értesítése (nem tudta helyreállítani / helyreállt)
+# A levelet a curl beépített SMTP-küldése viszi a Gmailen keresztül – külön program nem kell hozzá.
+# A jelentés e-mail nélkül is elkészül: /var/log/baninapro-jelentes/ (60 napig marad meg).
+set -u
+export LC_ALL=C.UTF-8
+mod="${1:-napi}" uzenet="${2:-}"
+MAPPA=/var/log/baninapro-jelentes
+EMAIL_FAJL="$TITOK_MAPPA/email"
+NETRC="$TITOK_MAPPA/smtp.netrc"
+mkdir -p "$MAPPA"
+find "$MAPPA" -name '*.txt' -mtime +60 -delete 2>/dev/null
+if [[ $mod == kezi ]]; then printf '\nBaninaPRO szerver – ellenőrzés folyamatban…\n\n'; fi
+
+problemak=() allapotok=() kont=()
+pr() { problemak+=("$*"); }
+lan="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+web() { if [[ $1 == 80 ]]; then echo "http://${lan:-$(hostname)}"; else echo "http://${lan:-$(hostname)}:$1"; fi; }
+
+# --- a szolgáltatás ---
+kod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://127.0.0.1:$APP_PORT/" || true)"
+[[ $kod == 200 ]] || pr "A BaninaPRO oldal nem válaszol (HTTP ${kod:-–})"
+api="$(curl -s --max-time 15 -H 'Content-Type: application/json' -d '{"action":"ping"}' "http://127.0.0.1:$APP_PORT/api.php" || true)"
+if [[ $api == '{"ok":true'* ]]; then api="rendben"; else api="HIBÁS"; pr "Az API (api.php) nem válaszol rendesen"; fi
+felh="$(timeout 30 docker exec "$APP_KONTENER" php -r 'require "/var/www/html/includes/db.php"; echo (int)db_val("SELECT COUNT(*) FROM felhasznalok");' 2>/dev/null || true)"
+if ! [[ $felh =~ ^[0-9]+$ ]] || (( felh == 0 )); then pr "Az alkalmazás nem éri el az adatbázist"; felh="?"; fi
+tablak="$(timeout 30 docker exec "$DB_KONTENER" sh -c 'mysql -N -B -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()"' 2>/dev/null | tr -dc '0-9' || true)"
+pkod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://127.0.0.1:$PMA_PORT/" || true)"
+[[ $pkod == 200 ]] || pr "A phpMyAdmin nem válaszol (HTTP ${pkod:-–})"
+
+# --- a 03:00-s mentés ---
+lista="$(timeout 120 docker exec "$APP_KONTENER" php -q cron_mentes.php lista 2>/dev/null || true)"
+mai="$(grep -E "$(date +%Y%m%d)_0[0-9]{3}" <<<"$lista" | tail -n 1 || true)"
+db_mentes="$(grep -c '\.sql' <<<"$lista" || true)"
+if [[ -n $mai ]]; then
+    mentes="ELKÉSZÜLT – $(awk '{ print $NF " (" $3 " " $4 ")" }' <<<"$mai")"
+elif [[ $mod == proba ]]; then
+    mentes="ma még nem készült (a próba-jelentésnél ez nem hiba – a mentés minden nap 03:00-kor fut)"
+else
+    mentes="NEM KÉSZÜLT"
+    pr "Ma éjjel nem készült adatbázis-mentés (03:00)"
+fi
+mentes_naplo="$(tail -n 1 /var/log/baninapro-mentes.log 2>/dev/null || true)"
+
+# --- a gép ---
+szabad_gb="$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
+(( szabad_gb >= 5 )) || pr "Kevés a szabad hely a lemezen: $szabad_gb GB"
+read -r fut _ < /proc/uptime
+fut=${fut%.*}
+for sz in docker containerd cron baninapro-orszem.timer anydesk; do
+    if systemctl is-active --quiet "$sz"; then allapotok+=("$sz: fut"); else allapotok+=("$sz: NEM FUT"); pr "Nem fut: $sz"; fi
+done
+for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
+    a="$(docker inspect -f '{{.State.Status}} – indult: {{.State.StartedAt}}, újraindítva: {{.RestartCount}}×' "$k" 2>/dev/null \
+        | sed -E 's/T([0-9:]+)\.[0-9]+Z/ \1 UTC/')"
+    [[ -n $a ]] || a="hiányzik"
+    [[ $a == running* ]] || pr "A(z) $k konténer: $a"
+    kont+=("$k: $a")
+done
+orszem="$(awk -v t="$(date -d '24 hours ago' '+%Y-%m-%d %H:%M:%S')" '($1 " " $2) >= t' /var/log/baninapro-orszem.log 2>/dev/null | tail -n 15 || true)"
+anydesk_id="$(timeout 15 anydesk --get-id 2>/dev/null | tr -dc '0-9' || true)"
+
+if (( ${#problemak[@]} )); then allapot="FIGYELEM – ${#problemak[@]} probléma"; else allapot="MINDEN RENDBEN"; fi
+fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod").txt"
+{
+    echo "BaninaPRO szerver – állapotjelentés – $(date '+%Y-%m-%d %H:%M')"
+    echo "ÁLLAPOT: $allapot"
+    if [[ -n $uzenet ]]; then echo; echo "$uzenet"; fi
+    if (( ${#problemak[@]} )); then echo; echo "Problémák:"; printf '  - %s\n' "${problemak[@]}"; fi
+    echo
+    echo "Szolgáltatás (a belső hálózatról)"
+    echo "  BaninaPRO:      $(web "$APP_PORT")  – HTTP ${kod:-–}, API: $api"
+    echo "  phpMyAdmin:     $(web "$PMA_PORT")  – HTTP ${pkod:-–}"
+    echo "  Adatbázis:      ${tablak:-?} tábla, $felh felhasználó"
+    echo
+    echo "Adatbázis-mentés (minden nap 03:00)"
+    echo "  Ma éjjel:       $mentes"
+    echo "  Mentések:       ${db_mentes:-0} db"
+    if [[ -n $mentes_naplo ]]; then echo "  Mentési napló:  $mentes_naplo"; fi
+    echo
+    echo "Gép"
+    echo "  Név / IP:       $(hostname) / ${lan:-ismeretlen}"
+    echo "  Rendszer:       $(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r)"
+    echo "  Utolsó indítás: $(uptime -s)  (azóta: $(( fut / 86400 )) nap $(( fut % 86400 / 3600 )) óra $(( fut % 3600 / 60 )) perc)"
+    echo "  Tárhely (/):    $(df -hP / | awk 'NR == 2 { print $4 " szabad / " $2 " (" $5 " foglalt)" }')"
+    echo "  Memória:        $(free -h | awk '/^Mem:/ { print $3 " használt / " $2 }')"
+    echo "  Terhelés:       $(cut -d' ' -f1-3 /proc/loadavg)"
+    echo "  Újraindítás kell (frissítés miatt): $([[ -f /var/run/reboot-required ]] && echo igen || echo nem)"
+    echo
+    echo "Szolgáltatások"
+    printf '  %s\n' "${allapotok[@]}"
+    echo "  AnyDesk ID:     ${anydesk_id:-–}"
+    echo
+    echo "Konténerek"
+    printf '  %s\n' "${kont[@]}"
+    echo
+    echo "Őrszem – az elmúlt 24 óra"
+    if [[ -n $orszem ]]; then sed 's/^/  /' <<<"$orszem"; else echo "  Nem kellett beavatkoznia."; fi
+} > "$fajl"
+chmod 640 "$fajl"
+
+# a levél: a curl beépített SMTP-küldése (STARTTLS), a hitelesítés a netrc-fájlból (a jelszó nem látszik a folyamatlistában)
+kuld() {   # $1 = tárgy, $2 = a jelentés fájlja; 2 = nincs e-mail beállítva
+    local cim level rc
+    cim="$(sed -n 's/^EMAIL_CIM=//p' "$EMAIL_FAJL" 2>/dev/null)"
+    [[ -n $cim && -s $NETRC ]] || return 2
+    level="$(mktemp)"
+    {
+        printf 'From: BaninaPRO szerver <%s>\r\n' "$cim"
+        printf 'To: <%s>\r\n' "$cim"
+        printf 'Subject: =?UTF-8?B?%s?=\r\n' "$(printf '%s' "$1" | base64 -w0)"
+        printf 'Date: %s\r\n' "$(LC_ALL=C date -R)"
+        printf 'Message-ID: <%s.%s@%s>\r\n' "$(date +%s)" "$$" "$(hostname)"
+        printf 'MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n'
+        sed 's/$/\r/' "$2"
+    } > "$level"
+    curl -sS --max-time 60 --url "smtp://$SMTP_HOST:$SMTP_PORT" --ssl-reqd --netrc-file "$NETRC" \
+        --mail-from "$cim" --mail-rcpt "$cim" --upload-file "$level"
+    rc=$?
+    rm -f "$level"
+    return "$rc"
+}
+case $mod in
+    riasztas) targy="BaninaPRO szerver – ÉRTESÍTÉS: $uzenet" ;;
+    proba)    targy="BaninaPRO szerver – próba-jelentés – $allapot" ;;
+    *)        targy="BaninaPRO szerver – $(date +%Y-%m-%d) – $allapot" ;;
+esac
+targy="${targy:0:150}"
+if [[ $mod == kezi ]]; then cat "$fajl"; fi
+if kuld "$targy" "$fajl"; then
+    eredmeny="Az e-mail elküldve: $(sed -n 's/^EMAIL_CIM=//p' "$EMAIL_FAJL")"
+    rc=0
+elif (( $? == 2 )); then
+    eredmeny="Nincs e-mail beállítva – a jelentés itt van: $fajl"
+    rc=0
+else
+    eredmeny="Az e-mail küldése NEM sikerült (Gmail-cím, alkalmazásjelszó, internet?) – a jelentés itt van: $fajl"
+    rc=1
+fi
+echo "$(date '+%Y-%m-%d %H:%M:%S')  $mod: $allapot – $eredmeny" >> "$MAPPA/kuldesek.log"
+if [[ $mod == kezi ]]; then
+    printf '\n%s\n' "$eredmeny"
+    if [[ -t 0 ]]; then read -r -p $'\nNyomj Entert az ablak bezárásához… ' _ || true; fi
+fi
+exit "$rc"
+EOF
+    } > "$JELENTO.uj"
+    chmod 750 "$JELENTO.uj"
+    mv -f "$JELENTO.uj" "$JELENTO"
+}
+
 # háttérben fut: a főoldal és az adatbázis állapota fájlokba (közben pöröghet a folyamatjelző)
 ellenorzo_lekeres() {
     curl -s -o "$TMPD/oldal.html" -w '%{http_code}' --max-time 10 http://127.0.0.1/ > "$TMPD/kod" 2>/dev/null || true
@@ -1319,7 +1939,7 @@ ellenorzo_lekeres() {
 }
 
 lepes_ellenorzes() {
-    local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot
+    local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot lan
     AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul"
     for i in $(seq 1 60); do
         fut ellenorzo_lekeres || true
@@ -1367,9 +1987,24 @@ lepes_ellenorzes() {
     if [[ $kod == 200 ]]; then ok "Statikus fájlok (assets/app.js) rendben"
     else hiba "Az assets/app.js nem tölthető be (HTTP $kod)."; fi
 
-    kod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8081/ || true)"
-    if [[ $kod == 200 ]]; then ok "phpMyAdmin: http://localhost:8081"
-    else figy "A phpMyAdmin nem válaszol (HTTP $kod)."; fi
+    kod="$(curl -s -o "$TMPD/pma.html" -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PMA_PORT/" || true)"
+    if [[ $kod != 200 ]]; then
+        figy "A phpMyAdmin nem válaszol (HTTP $kod)."
+    elif grep -q 'pma_username' "$TMPD/pma.html"; then
+        ok "phpMyAdmin: jelszót kér (nincs automatikus belépés)"
+    else
+        figy "A phpMyAdmin jelszó nélkül beenged – ellenőrizd a docker-compose.override.yml-t!"
+    fi
+
+    # a belső hálózatról is: a gép hálózati címén (a portok minden hálózati csatolón figyelnek)
+    lan="$(lan_ip)"
+    if [[ -n $lan ]]; then
+        kod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://$lan:$APP_PORT/" || true)"
+        if [[ $kod == 200 ]]; then ok "A belső hálózatról is elérhető: http://$lan"
+        else figy "A gép hálózati címén (http://$lan) a BaninaPRO nem válaszol (HTTP $kod)."; fi
+    else
+        figy "A gépnek nincs hálózati IP-címe – a belső hálózatról most nem érhető el."
+    fi
 
     for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
         allapot="$(docker inspect -f '{{.State.Status}}/{{.HostConfig.RestartPolicy.Name}}' "$k" 2>/dev/null || echo hiányzik)"
@@ -1379,48 +2014,147 @@ lepes_ellenorzes() {
             figy "$k állapota: $allapot"
         fi
     done
-    for s in docker containerd anydesk lightdm; do
+    for s in docker containerd anydesk lightdm baninapro-orszem.timer baninapro-jelentes.timer; do
         if systemctl is-enabled --quiet "$s" 2>/dev/null; then ok "$s: a géppel együtt indul"
         else figy "$s: nem indul automatikusan"; fi
     done
+
+    # az e-mail most lett beállítva: próba-jelentés – ha nem megy el, a beállítást törli, és a következő futás újra kérdez
+    if (( EMAIL_UJ )); then
+        AKT_MUVELET="próba-jelentés küldése e-mailben"
+        if fut "$JELENTO" proba; then
+            ok "Próba-jelentés elküldve: $JELENTES_CIM – nézd meg a postafiókodat"
+        else
+            rm -f "$TITOK_MAPPA/email" "$TITOK_MAPPA/smtp.netrc"
+            JELENTES_CIM=""
+            figy "A próba-e-mail nem ment el (hibás Gmail-cím vagy alkalmazásjelszó?) – a beállítást töröltem, a script következő futása újra megkérdezi."
+        fi
+        AKT_MUVELET=""
+    fi
 }
 
 # =============================================================================
-#  Összegzés
+#  Összegzés – a végén, és akkor is, ha a script egy lépésnél hibával megállt
 # =============================================================================
-osszegzes() {
-    AKT_LEPES="összegzés" AKT_ROVID="összegzés"
-    local id="" i v="" f
-    if command -v anydesk >/dev/null; then
-        AKT_MUVELET="AnyDesk azonosító lekérése"
-        for i in 1 2 3; do
-            fut sh -c 'timeout 15 anydesk --get-id > "$1" 2>/dev/null' _ "$TMPD/anydesk_id" || true
-            id="$(tr -dc '0-9' < "$TMPD/anydesk_id" 2>/dev/null || true)"
-            if [[ -n $id && $id != 0 ]]; then break; fi
-            varj 5
-        done
-        AKT_MUVELET=""
-    fi
-    kesz_sav
+# összegzés-sor: a képernyőre ($1 = szín, lehet üres), a naplóba és az összegzés-fájlba
+osz() {
+    local szin=$1
+    shift
+    torol
+    printf '%s%s%s\n' "$szin" "$*" "${szin:+$C_N}" >&3
+    printf '%s\n' "$*"
+    OSSZ_SOROK+=("$*")
+}
 
-    cim "KÉSZ – a BaninaPRO szerver működik"
-    ki "  BaninaPRO:    http://localhost  (a szerveren, böngészőben)"
-    if (( ELSO_INDITAS )); then
-        ki "  Első belépés: $ADMIN_KEZDO  → belépés után azonnal változtasd meg!"
+# egy konténerport címe a gépen a Docker szerint (pl. 127.0.0.1:8081); ha több is van, a $3 porton lévőt adja
+port_cim() {
+    local cimek
+    cimek="$(docker port "$1" "$2/tcp" 2>/dev/null | grep -v '^\[' || true)"
+    if [[ -n ${3:-} ]] && grep -q ":$3\$" <<<"$cimek"; then cimek="$(grep ":$3\$" <<<"$cimek")"; fi
+    head -n 1 <<<"$cimek"
+}
+# a gép IP-címe a helyi hálózaton (amelyiken a kifelé menő forgalom megy)
+lan_ip() {
+    ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true
+}
+# böngészőcím a Docker szerinti kötésből ($1, pl. 0.0.0.0:8081); a gép címe ($2) kerül a 0.0.0.0 / 127.0.0.1 helyére
+web_cim() {
+    local hoszt=${1%:*} port=${1##*:}
+    if [[ $hoszt == 0.0.0.0 || $hoszt == 127.0.0.1 ]]; then hoszt=$2; fi
+    if [[ $port == 80 ]]; then echo "http://$hoszt"; else echo "http://$hoszt:$port"; fi
+}
+
+osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód (a script hibával állt le)
+    local rc=${1:-0} i e fv suly nev jel szin megj id="" v="" f app pma mysql lan mdns
+    OSSZEGZES_KESZ=1
+    AKT_LEPES="összegzés" AKT_ROVID="összegzés"
+    if (( rc == 0 )); then
+        if command -v anydesk >/dev/null; then
+            AKT_MUVELET="AnyDesk azonosító lekérése"
+            for i in 1 2 3; do
+                fut sh -c 'timeout 15 anydesk --get-id > "$1" 2>/dev/null' _ "$TMPD/anydesk_id" || true
+                id="$(tr -dc '0-9' < "$TMPD/anydesk_id" 2>/dev/null || true)"
+                if [[ -n $id && $id != 0 ]]; then break; fi
+                varj 5
+            done
+            AKT_MUVELET=""
+        fi
+        kesz_sav
     fi
-    ki "  phpMyAdmin:   http://localhost:8081"
-    ki "  AnyDesk ID:   ${id:-(újraindítás után: sudo anydesk --get-id)}"
-    ki "  SSH:          ssh $CEL_FELH@$GEPNEV"
-    ki "  Frissítés:    cd \"$SCRIPT_DIR\" && sudo bash $(basename "$SCRIPT")"
-    ki "  Napló:        $NAPLO"
+
+    cim "ÖSSZEGZÉS"
+    i=0
+    for e in "${LEPESEK[@]}"; do
+        i=$(( i + 1 ))
+        IFS='|' read -r fv suly nev <<<"$e"
+        case ${LEPES_ALLAPOT[i]:-} in
+            ok)     jel=$S_OK   szin=$C_ZOLD  megj="" ;;
+            figy:*) jel=$S_FIGY szin=$C_SARGA megj=" – ${LEPES_ALLAPOT[i]#figy:} figyelmeztetés" ;;
+            *)  if (( i == AKT_I )); then jel=$S_HIBA szin=$C_PIROS megj=" – HIBA"
+                else jel=$S_PONT szin=$C_HALV megj=" – nem futott le"; fi ;;
+        esac
+        osz "$szin" "$(printf '  %s %2d. %s%s' "$jel" "$i" "$nev" "$megj")"
+    done
+    osz "" ""
+    if (( rc )); then
+        osz "$C_PIROS" "  EREDMÉNY: $S_HIBA NEM SIKERÜLT – ${HIBA_UZENET:-hiba történt}"
+        osz "" "  A hiba javítása után a script nyugodtan újrafuttatható – ami már kész, azt csak ellenőrzi."
+    elif (( ${#FIGYELMEZTETESEK[@]} )); then
+        osz "$C_ZOLD" "  EREDMÉNY: $S_OK SIKERES – a BaninaPRO szerver működik (${#FIGYELMEZTETESEK[@]} figyelmeztetéssel, lásd lent)"
+    else
+        osz "$C_ZOLD" "  EREDMÉNY: $S_OK MINDEN SIKERES – a BaninaPRO szerver működik"
+    fi
+
+    # a címek a Docker szerint – így mindig azt mutatja, ahol a konténerek valóban elérhetők
+    app="$(port_cim "$APP_KONTENER" 80 "$APP_PORT")"
+    pma="$(port_cim baninapro-phpmyadmin 80 "$PMA_PORT")"
+    mysql="$(port_cim "$DB_KONTENER" 3306)"
+    lan="$(lan_ip)"
+    mdns=""
+    if systemctl is-active --quiet avahi-daemon 2>/dev/null; then mdns="$GEPNEV.local"; fi
+    osz "" ""
+    if [[ -z $app ]]; then
+        osz "" "  Elérés: a BaninaPRO még nem fut."
+    elif [[ $app == 127.0.0.1:* ]]; then
+        osz "" "  Elérés (csak magáról a szerverről):  BaninaPRO: $(web_cim "$app" localhost)${pma:+   phpMyAdmin: $(web_cim "$pma" localhost)}"
+    else
+        osz "" "  Elérés a belső hálózat bármely gépéről (böngészőben):"
+        osz "" "    BaninaPRO (az oldal):  $(web_cim "$app" "${lan:-<a szerver IP-címe>}")${mdns:+   vagy  $(web_cim "$app" "$mdns")}"
+        if [[ -n $pma ]]; then
+            osz "" "    phpMyAdmin:            $(web_cim "$pma" "${lan:-<a szerver IP-címe>}")${mdns:+   vagy  $(web_cim "$pma" "$mdns")}"
+            osz "" "                           belépés: root / ${DB_ROOT_JELSZO:-(sudo cat $TITOK_MAPPA/titkok)}"
+        fi
+        osz "" "  Magán a szerveren:       http://localhost   és   http://localhost:$PMA_PORT"
+    fi
+    osz "" "  MySQL (csak a szerveren, programokból): ${mysql:-még nem fut} – adatbázis: baninapr_DATA"
+    if (( ELSO_INDITAS )); then
+        osz "" "  Első belépés a BaninaPRO-ba: $ADMIN_KEZDO  → belépés után azonnal változtasd meg!"
+    fi
+    osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
+    osz "" "  (Tipp: a routerben foglald le ezt az IP-címet a szervernek – DHCP-foglalás –, hogy ne változzon.)"
+    osz "" "  Napi jelentés: ${JELENTES_CIM:+minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIM}${JELENTES_CIM:-nincs e-mail beállítva (a jelentések: /var/log/baninapro-jelentes/)}"
+    osz "" "  Kézi ellenőrzés: az asztalon a „BaninaPRO ellenőrzés” ikon (vagy: sudo $JELENTO kezi)"
+    osz "" "  Őrszem:        2 percenként ellenőriz, és ha kell, helyreállít (napló: /var/log/baninapro-orszem.log)"
+    osz "" "  AnyDesk ID:    ${id:-(újraindítás után: sudo anydesk --get-id)}"
+    osz "" "  Frissítés:     cd \"$SCRIPT_DIR\" && sudo bash $(basename "$SCRIPT")"
+    osz "" "  Napló:         $NAPLO"
 
     if (( ${#FIGYELMEZTETESEK[@]} )); then
-        ki ""
-        torol
-        printf '  %sFigyelmeztetések (%d):%s\n' "$C_SARGA" "${#FIGYELMEZTETESEK[@]}" "$C_N" >&3
-        printf '  Figyelmeztetések (%d):\n' "${#FIGYELMEZTETESEK[@]}"
-        for f in "${FIGYELMEZTETESEK[@]}"; do ki "   - $f"; done
+        osz "" ""
+        osz "$C_SARGA" "  Figyelmeztetések (${#FIGYELMEZTETESEK[@]}):"
+        for f in "${FIGYELMEZTETESEK[@]}"; do osz "" "   - $f"; done
     fi
+
+    # az összegzés fájlba is: a felhasználó mappájában, sudo nélkül is olvasható
+    if [[ -n $CEL_HOME && -d $CEL_HOME ]]; then
+        # (a phpMyAdmin jelszava is benne van, ezért csak a felhasználó olvashatja)
+        { printf 'BaninaPRO szerver – összegzés (%s)\n\n' "$(date '+%Y-%m-%d %H:%M')"; printf '%s\n' "${OSSZ_SOROK[@]}"; } \
+            > "$CEL_HOME/BaninaPRO-osszegzes.txt" 2>/dev/null \
+            && chown "$CEL_FELH:" "$CEL_HOME/BaninaPRO-osszegzes.txt" 2>/dev/null \
+            && chmod 600 "$CEL_HOME/BaninaPRO-osszegzes.txt" \
+            && ki "" && ki "  Az összegzés elmentve: $CEL_HOME/BaninaPRO-osszegzes.txt"
+    fi
+    if (( rc )); then return 0; fi
 
     if [[ -f /var/run/reboot-required ]] || ! systemctl is-active --quiet lightdm; then UJRAINDITAS=1; fi
     if (( UJRAINDITAS )); then
@@ -1441,6 +2175,16 @@ osszegzes() {
     fi
 }
 
+# kilépéskor: ha a script egy lépés közben hibával állt le, akkor is legyen összegzés
+kilepeskor() {
+    local rc=$?
+    set +eu
+    trap - ERR
+    torol
+    if (( rc != 0 && ! OSSZEGZES_KESZ && AKT_I > 0 )); then osszegzes "$rc"; fi
+    rm -rf "$TMPD"
+}
+
 main() {
     if [[ $EUID -ne 0 ]]; then
         echo "Rendszergazdaként kell futtatni:  sudo bash $(basename "$SCRIPT")"
@@ -1450,7 +2194,10 @@ main() {
     kepernyo_beallitas
     TMPD="$(mktemp -d)"
     APT_ALLAPOT="$TMPD/apt_allapot"
-    trap 'torol; rm -rf "$TMPD"' EXIT
+    trap kilepeskor EXIT
+    # amíg a telepítő dolgozik, az őrszem ne avatkozzon be (ugyanezt a zárat fogja; ha épp helyreállít, megvárja)
+    exec 8>/run/baninapro-orszem.lock
+    flock -w 900 8 || true
     LEPES_KEZDET=$SECONDS
     printf '\n\n######## %s – futás indul ########\n' "$(date '+%Y-%m-%d %H:%M:%S')"
     printf '\n%sBaninaPRO szerver – telepítés és frissítés%s  (%s)\n' "$C_F" "$C_N" "$(date '+%Y-%m-%d %H:%M')" >&3
@@ -1460,7 +2207,7 @@ main() {
     kerdesek
     lepesek_listaja
     futtat_lepesek
-    osszegzes
+    osszegzes 0
 }
 
 # a teljes script beolvasása után indul – így a futás közbeni git pull sem zavarja meg

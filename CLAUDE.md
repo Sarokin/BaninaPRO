@@ -133,3 +133,56 @@ Fix bugs in these components in place; do not swap in libraries.
 - Every response sends `noindex` headers (search engines and AI crawlers are deliberately blocked).
 - The main root `.htaccess` described in `TELEPITES.md` is **not present in this working copy**. Do not assume it is deployed from here.
 - `LOG/` and `DBBCKP/` hold real production logs and DB dumps containing business data. Don't publish or paste their contents anywhere.
+
+## Internal server installer (`SERVER SETUP AND UPDATE/szerver_beallitas.sh`)
+
+One bash script turns a fresh Ubuntu Server (24.04 / 26.04) into the company's internal BaninaPRO server, and every later run updates it: DB backup → `git pull` → system upgrade → container rebuild. Run it as `sudo bash szerver_beallitas.sh` from the repo. If it is run as a lone file, it clones the repo into `~/BaninaPRO` and re-executes from there.
+
+Goals the user set. Keep them when changing anything here:
+- **Self-healing, no human intervention.** The service must stay reachable on the LAN whatever happens.
+- **License-clean.** No paid or proprietary dependencies, no extra modules where a built-in tool works. For example, e-mail goes through `curl`'s SMTP support, not msmtp.
+
+Install and repair behavior:
+- **apt self-repair.** `apt_` reads the failure from the log, repairs and retries; `apt_nyers` is a single raw call.
+  - `csomagkezelo_rendbe` finishes half-configured packages. It removes a broken package only when that package is optional (`NEM_KOTELEZO_CSOMAGOK`).
+  - Known trap: AnyDesk's postinst exits 1 when `xdg-utils` is missing. That leaves dpkg half-configured and breaks every later apt call (this is what once stopped the Docker step). So `xdg-utils` is installed first.
+- **Failure severity.** Non-essential steps warn with `figy` and continue; essential ones stop with `hiba`.
+- **Summary.** It is printed at the end, and also after a failure (`kilepeskor`). It is saved to `~/BaninaPRO-osszegzes.txt`, mode 600.
+
+Network and secrets:
+- **The repo is public.** The server pulls `https://github.com/Sarokin/BaninaPRO.git` over HTTPS without keys, and `repo_cim_beallit` switches an old SSH remote to it.
+- **Ports.** The installer writes `docker-compose.override.yml` on every run; it stays out of git via `.git/info/exclude`:
+  - app on `0.0.0.0:80`;
+  - phpMyAdmin on `0.0.0.0:8081`, with a login form and no auto-login;
+  - MySQL only on `127.0.0.1:3307`.
+  - The file uses Compose `!override`, which needs Compose 2.24.4 or newer (`compose_eleg_uj`).
+- **Server secrets live in `/etc/baninapro`, never in git:**
+  - `titkok`: random DB root and app passwords;
+  - `config.php`: `docker/config.php` with the server's `DB_PASS` and `APP_DEBUG=false`, mounted over `includes/config.php`;
+  - `email` and `smtp.netrc`: Gmail address and app password.
+  - On an old volume, `db_root_atallitas` replaces the public default root password.
+- **Schema repair.** `adatbazis_rendbe` re-applies `sql/schema.sql` when tables or the initial admin are missing. That is why the schema must stay idempotent (see Database and migrations).
+
+Runtime pieces, all regenerated on every run. Never edit them on the server:
+- **Watchdog** `/usr/local/sbin/baninapro-orszem` (systemd timer, every 2 min). When the app or DB check fails, it escalates:
+  1. `compose up -d`
+  2. `compose restart`
+  3. Docker restart, at most every 30 min
+  4. e-mail alert
+  5. machine reboot after 1 h of failure, at most every 6 h
+
+  It shares `/run/baninapro-orszem.lock` with the installer, which holds the lock while it runs.
+- **Daily report** `/usr/local/sbin/baninapro-jelentes` (systemd timer 03:30, the DB backup cron runs at 03:00).
+  - Modes: `napi`, `kezi` (desktop icon, terminal window, sudoers rule for exactly this command), `proba`, `riasztas`.
+  - Reports are kept in `/var/log/baninapro-jelentes/`.
+- **Power settings.**
+  - Sleep targets are masked, plus `sleep.conf.d` and `logind.conf.d`.
+  - No screensaver or DPMS: Xorg `ServerFlags`, LightDM `-s 0 -dpms`, session `xset`, LXQt power management.
+  - AnyDesk runs with `Restart=always`.
+  - Power-on after AC loss is set through `/sys/class/firmware-attributes` where the firmware allows it; otherwise the installer prints BIOS instructions.
+
+Testing: reproduce the server in a privileged systemd Ubuntu container:
+- `--privileged --cgroupns=private --tmpfs /run`;
+- anonymous volumes for `/var/lib/docker` and `/var/lib/containerd`;
+- unmount the bind-mounted `/etc/hosts` and `/etc/hostname`;
+- run the script as a sudo user, without a TTY.
