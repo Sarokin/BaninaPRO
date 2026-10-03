@@ -24,6 +24,9 @@ LOG/*
 # Rendszerfájlok
 .DS_Store
 
+# Helyi referenciapéldány (éles adatokkal, nem a repó része)
+BaninaPRO_WEB/
+
 # Frontend tesztek (Playwright) – csak helyben, nem kerülnek a repóba
 tests/
 docker-compose.teszt.yml

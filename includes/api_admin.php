@@ -102,7 +102,7 @@ function act_admin_beallitasok(array $be): array
     foreach ($sorok as $s) {
         $ki[$s['kulcs']] = ['ertek' => $s['ertek'], 'modositva' => $s['modositva']];
     }
-    return ['beallitasok' => $ki, 'arfolyam' => arfolyam_eur_huf()];
+    return ['beallitasok' => $ki, 'arfolyam' => arfolyam_eur_huf(), 'qr_belepes' => qr_belepes_aktiv(), 'jelszo_nelkul' => jelszo_nelkuli_felhasznalok()];
 }
 
 /** Beállítás mentése (csak admin) – jelenleg: eur_huf_kezi */
@@ -110,10 +110,19 @@ function act_admin_beallitas_ment(array $be): array
 {
     csak_admin();
     $kulcs = be_szoveg($be, 'kulcs', 64);
-    if (!in_array($kulcs, ['eur_huf_kezi', 'import_mentes', 'reszt_bejovo'], true)) {
+    if (!in_array($kulcs, ['eur_huf_kezi', 'import_mentes', 'reszt_bejovo', 'qr_belepes'], true)) {
         hiba('Ismeretlen beállítás.');
     }
     $ertek = $be['ertek'] ?? null;
+    if ($kulcs === 'qr_belepes') {
+        // 1.15: QR-kódos belépés be/ki – kikapcsolva mindenki jelszóval lép be, a regisztrált eszközök megmaradnak
+        $ertek = be_bool($be, 'ertek') ? '1' : '0';
+        db_exec('INSERT INTO beallitasok (kulcs, ertek) VALUES (?, ?) ON DUPLICATE KEY UPDATE ertek = VALUES(ertek)', [$kulcs, $ertek]);
+        $nelkul = jelszo_nelkuli_felhasznalok();
+        naplo('ADMIN_BEALLITAS', 'QR-kódos belépés: ' . ($ertek === '1' ? 'BEKAPCSOLVA' : 'KIKAPCSOLVA – mindenki jelszóval lép be')
+            . ($ertek === '0' && $nelkul ? ' – jelszó nélküli felhasználók: ' . implode(', ', $nelkul) : ''));
+        return ['mentve' => true, 'qr_belepes' => $ertek === '1', 'jelszo_nelkul' => $nelkul];
+    }
     if ($kulcs === 'import_mentes' || $kulcs === 'reszt_bejovo') {
         $ertek = be_bool($be, 'ertek') ? '1' : '0';
         db_exec('INSERT INTO beallitasok (kulcs, ertek) VALUES (?, ?) ON DUPLICATE KEY UPDATE ertek = VALUES(ertek)', [$kulcs, $ertek]);

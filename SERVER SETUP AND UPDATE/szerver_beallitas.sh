@@ -6,7 +6,7 @@
 #  magyar nyelv és billentyűzet, LXQt asztal automatikus belépéssel, AnyDesk, Docker Engine, SSH,
 #  és a BaninaPRO kész adatbázissal, a belső hálózat bármely gépéről elérhetően:
 #    BaninaPRO:   http://<a szerver IP-címe>        vagy  http://baninapro.local
-#    phpMyAdmin:  http://<a szerver IP-címe>:8081   (root + a szerver saját jelszava – az összegzés kiírja)
+#    phpMyAdmin:  http://<a szerver IP-címe>:8081   (BaninaPRO / BaninaPRO1234 – kezdőjelszó, változtasd meg)
 #  Szerverként üzemel: soha nem alszik el, nincs képernyővédő, áramszünet után magától bekapcsol (ahol a
 #  BIOS engedi), az AnyDesk mindig fut, és egy őrszem 2 percenként ellenőrzi a BaninaPRO-t: ha nem érhető el,
 #  emberi beavatkozás nélkül helyreállítja (konténerek indítása, újraindítása, a Docker újraindítása,
@@ -46,12 +46,16 @@ PMA_PORT="8081"                       # phpMyAdmin: http://<a szerver IP-címe>:
 TITOK_MAPPA="/etc/baninapro"          # a szerver saját adatbázis-jelszavai és beállítófájlja – nincsenek a gitben
 ORSZEM="/usr/local/sbin/baninapro-orszem"   # az őrszem: 2 percenként ellenőriz, és ha kell, helyreállít
 ALAP_DB_ROOT="baninapro_root"         # a docker-compose.yml nyilvános root-jelszava – csak a lecseréléséhez kell
-# napi állapotjelentés e-mailben (a mentés 03:00-kor fut, utána); a címet és a Gmail-alkalmazásjelszót a script
-# az elején egyszer megkérdezi, és a szerveren tárolja (/etc/msmtprc, /etc/baninapro – a nyilvános repóba nem kerül)
+# a phpMyAdmin belépése: külön adatbázis-felhasználó, teljes joggal a BaninaPRO-adatbázishoz (a root jelszava véletlen
+# és titkos marad). Csak akkor jön létre ezzel a kezdőjelszóval, ha még nincs – ha megváltoztatod, a script nem írja vissza.
+PMA_FELH="BaninaPRO"
+PMA_KEZDO_JELSZO="BaninaPRO1234"
+# Napi állapotjelentés és riasztások e-mailben (a mentés 03:00-kor fut, utána). A címzett mindig ez – ehhez a fiókhoz
+# nem kell hozzáférés. A küldéshez egy feladó-postafiók kell (pl. a céges tárhely egy postafiókja, vagy egy külön
+# Gmail-fiók): a script az elején egyszer megkérdezi, és a szerveren tárolja (/etc/baninapro – a repóba nem kerül).
+JELENTES_CIMZETT="sarokintamas@gmail.com"
 JELENTES_IDO="03:30"
 JELENTO="/usr/local/sbin/baninapro-jelentes"
-SMTP_HOST="smtp.gmail.com"
-SMTP_PORT="587"
 MENTES_CRON="0 3 * * *"              # éjszakai adatbázis-mentés, mint az éles cron
 # a nyilvános GitHub-repó: innen jön a kód és minden frissítés (https – kulcs és jelszó nélkül)
 REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
@@ -87,7 +91,7 @@ FIGYELMEZTETESEK=()
 LEPESEK=()
 # az összegzéshez: az épp futó lépés sorszáma, a lépések eredménye (ok / figy:N), az esetleges hibaüzenet
 AKT_I=0 OSSZEGZES_KESZ=0 HIBA_UZENET=""
-DB_ROOT_JELSZO="" DB_APP_JELSZO="" EMAIL_CIM="" EMAIL_JELSZO="" JELENTES_CIM="" EMAIL_UJ=0
+DB_ROOT_JELSZO="" DB_APP_JELSZO="" EMAIL_FELADO="" EMAIL_JELSZO="" EMAIL_SMTP_HOST="" EMAIL_SMTP_PORT="" JELENTES_FELADO="" EMAIL_UJ=0
 LEPES_ALLAPOT=()
 OSSZ_SOROK=()
 AKT_LEPES="előkészítés" AKT_ROVID="előkészítés" AKT_MUVELET=""
@@ -705,25 +709,45 @@ kerdesek() {
         fi
     fi
     if (( kell_email )); then
-        torol
-        printf '  Napi állapotjelentés e-mailben (%s-kor) – a Gmail-címed (Enter = kihagyás): ' "$JELENTES_IDO" >&3
-        read -r EMAIL_CIM || true
-        EMAIL_CIM="${EMAIL_CIM// /}"
-        if [[ -n $EMAIL_CIM && $EMAIL_CIM != *@*.* ]]; then
-            figy "Ez nem e-mail-cím ($EMAIL_CIM) – az e-mail-jelentést most nem állítom be."
-            EMAIL_CIM=""
-        fi
-        if [[ -n $EMAIL_CIM ]]; then
-            printf '  A Gmail-fiók alkalmazásjelszava (Google-fiók → Biztonság → Kétlépcsős azonosítás →\n' >&3
-            printf '  Alkalmazásjelszavak; 16 betű, a szóközök nem számítanak): ' >&3
-            read -r -s EMAIL_JELSZO || true
-            printf '\n' >&3
-            EMAIL_JELSZO="${EMAIL_JELSZO// /}"
-            if [[ -z $EMAIL_JELSZO ]]; then
-                figy "Alkalmazásjelszó nélkül az e-mail-jelentést most nem állítom be."
-                EMAIL_CIM=""
-            fi
-        fi
+        email_kerdesek
+    fi
+}
+
+# a feladó-postafiók a napi jelentéshez (a címzett mindig a JELENTES_CIMZETT – ahhoz nem kell hozzáférés)
+email_kerdesek() {
+    local domain alap
+    torol
+    printf '  A napi jelentés és a riasztások címzettje: %s (ehhez a fiókhoz nem kell hozzáférés).\n' "$JELENTES_CIMZETT" >&3
+    printf '  A küldéshez egy feladó-postafiók kell: pl. a céges tárhely (cPanel) egy postafiókja, vagy egy erre a\n' >&3
+    printf '  célra létrehozott Gmail-fiók. Feladó e-mail-címe (Enter = most kihagyom): ' >&3
+    read -r EMAIL_FELADO || true
+    EMAIL_FELADO="${EMAIL_FELADO// /}"
+    if [[ -n $EMAIL_FELADO && $EMAIL_FELADO != *@*.* ]]; then
+        figy "Ez nem e-mail-cím ($EMAIL_FELADO) – az e-mail-küldést most nem állítom be."
+        EMAIL_FELADO=""
+    fi
+    [[ -n $EMAIL_FELADO ]] || return 0
+    domain="${EMAIL_FELADO##*@}"
+    if [[ ${domain,,} == gmail.com || ${domain,,} == googlemail.com ]]; then alap="smtp.gmail.com"; else alap="mail.$domain"; fi
+    printf '  SMTP-szerver [%s]: ' "$alap" >&3
+    read -r EMAIL_SMTP_HOST || true
+    EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST// /}"
+    EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST:-$alap}"
+    printf '  Port [587]: ' >&3
+    read -r EMAIL_SMTP_PORT || true
+    [[ $EMAIL_SMTP_PORT =~ ^[0-9]+$ ]] || EMAIL_SMTP_PORT=587
+    if [[ $alap == smtp.gmail.com ]]; then
+        printf '  A Gmail-fiók alkalmazásjelszava (Google-fiók → Biztonság → Kétlépcsős azonosítás → Alkalmazásjelszavak): ' >&3
+    else
+        printf '  A postafiók jelszava: ' >&3
+    fi
+    read -r -s EMAIL_JELSZO || true
+    printf '\n' >&3
+    # a Google az alkalmazásjelszót szóközökkel tagolva mutatja – azok nem részei a jelszónak
+    if [[ $alap == smtp.gmail.com ]]; then EMAIL_JELSZO="${EMAIL_JELSZO// /}"; fi
+    if [[ -z $EMAIL_JELSZO ]]; then
+        figy "Jelszó nélkül az e-mail-küldést most nem állítom be."
+        EMAIL_FELADO=""
     fi
 }
 
@@ -1477,6 +1501,10 @@ db_kesz() {
     docker exec "$DB_KONTENER" sh -c 'mysqladmin ping -h 127.0.0.1 --protocol=TCP -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1
 }
 db_szam() { db_sql -e "$1" 2>/dev/null | tr -dc '0-9' || true; }
+# a phpMyAdmin-felhasználó még a kezdőjelszóval lép-e be (ha igen, az összegzés figyelmeztet, hogy változtasd meg)
+pma_kezdojelszo_el() {
+    docker exec "$DB_KONTENER" mysql -N -B -h 127.0.0.1 -u"$PMA_FELH" -p"$PMA_KEZDO_JELSZO" -e 'SELECT 1' >/dev/null 2>&1
+}
 # Régebbi, a nyilvános alapjelszóval (docker-compose.yml) létrehozott adatbázis: a root-jelszó átállítása a szerver
 # saját jelszavára (a konténer a MYSQL_ROOT_PASSWORD-ben már ezt kapja, de az csak üres adatbázisnál érvényesül)
 db_root_atallitas() {
@@ -1532,6 +1560,9 @@ adatbazis_rendbe() {
         printf "CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s';\nALTER USER '%s'@'%%' IDENTIFIED BY '%s';\nGRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'%%';\n" \
             "$u" "$p" "$u" "$p" "$d" "$u" | db_sql || true
     fi
+    # a phpMyAdmin-felhasználó (teljes jog a BaninaPRO-adatbázishoz): csak ha még nincs – a jelszavát később nem írja felül
+    printf "CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s';\nGRANT ALL PRIVILEGES ON \`%s\`.* TO '%s'@'%%';\n" \
+        "$PMA_FELH" "$PMA_KEZDO_JELSZO" "${d:-baninapr_DATA}" "$PMA_FELH" | db_sql || true
     AKT_MUVELET=""
     ok "Adatbázis rendben: ${tablak:-0} tábla, ${felhasznalok:-0} felhasználó"
 }
@@ -1686,15 +1717,7 @@ EOF
 lepes_jelentes() {
     local asztal
     install -d -m 700 "$TITOK_MAPPA"
-    if [[ -n $EMAIL_CIM && -n $EMAIL_JELSZO ]]; then
-        (
-            umask 077
-            printf 'EMAIL_CIM=%s\n' "$EMAIL_CIM" > "$TITOK_MAPPA/email"
-            printf 'machine %s login %s password %s\n' "$SMTP_HOST" "$EMAIL_CIM" "$EMAIL_JELSZO" > "$TITOK_MAPPA/smtp.netrc"
-        )
-        EMAIL_JELSZO=""
-        EMAIL_UJ=1
-    fi
+    if [[ -n $EMAIL_FELADO && -n $EMAIL_JELSZO ]]; then email_mentes; fi
     jelento_iras
 
     cat > /etc/systemd/system/baninapro-jelentes.service <<EOF
@@ -1735,12 +1758,28 @@ EOF
     ikon_iras "$CEL_HOME/.local/share/applications/baninapro-ellenorzes.desktop"
     ok "Asztali ikon: „BaninaPRO ellenőrzés” ($asztal) – kézzel is lefuttatja az ellenőrzést, és elküldi a jelentést"
 
-    JELENTES_CIM="$(sed -n 's/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null || true)"
-    if [[ -n $JELENTES_CIM ]]; then
-        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIM"
+    JELENTES_FELADO="$(sed -n 's/^EMAIL_FELADO=//p; s/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null | head -n 1 || true)"
+    if [[ -n $JELENTES_FELADO ]]; then
+        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
     else
-        figy "A napi állapotjelentés e-mail nélkül készül (/var/log/baninapro-jelentes/) – az e-mailhez futtasd újra a scriptet, és add meg a Gmail-címed és az alkalmazásjelszót."
+        figy "A napi állapotjelentés most csak helyben készül (/var/log/baninapro-jelentes/) – az e-mailhez ($JELENTES_CIMZETT) egy feladó-postafiók kell (pl. a céges tárhely egy postafiókja): futtasd újra a scriptet, és add meg."
     fi
+}
+
+# A most megadott feladó-postafiók mentése: a cím és a szerver az email fájlba, a belépési adat a curl beállítófájljába
+# (idézőjelben, így bármilyen jelszó jó, és nem látszik a folyamatlistában) – csak a root olvashatja
+email_mentes() {
+    local j="${EMAIL_JELSZO//\\/\\\\}"
+    j="${j//\"/\\\"}"
+    (
+        umask 077
+        printf 'EMAIL_FELADO=%s\nSMTP_HOST=%s\nSMTP_PORT=%s\n' "$EMAIL_FELADO" "$EMAIL_SMTP_HOST" "$EMAIL_SMTP_PORT" > "$TITOK_MAPPA/email"
+        printf '# a feladó-postafiók belépési adatai (a szerver_beallitas.sh írta)\nuser = "%s:%s"\n' "$EMAIL_FELADO" "$j" \
+            > "$TITOK_MAPPA/smtp.curl"
+    )
+    rm -f "$TITOK_MAPPA/smtp.netrc"
+    EMAIL_JELSZO=""
+    EMAIL_UJ=1
 }
 
 # a felhasználó asztal-mappája (magyarul általában ~/Asztal) az xdg-user-dirs szerint – ha kell, létrehozza
@@ -1773,22 +1812,22 @@ EOF
 jelento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO állapotjelentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nSMTP_HOST=%q\nSMTP_PORT=%q\n' \
-            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$SMTP_HOST" "$SMTP_PORT"
+        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\n' \
+            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT"
         cat <<'EOF'
 # Ellenőrzi a szervert, és az eredményt e-mailben elküldi:
 #   baninapro-jelentes napi             minden nap 03:30-kor (systemd-időzítő)
 #   baninapro-jelentes kezi             az asztali ikonról – ugyanez, a képernyőn is
 #   baninapro-jelentes proba            próba-jelentés (a telepítő küldi, amikor az e-mailt beállítja)
 #   baninapro-jelentes riasztas SZÖVEG  az őrszem értesítése (nem tudta helyreállítani / helyreállt)
-# A levelet a curl beépített SMTP-küldése viszi a Gmailen keresztül – külön program nem kell hozzá.
+# A levél mindig a CIMZETT-hez megy; a curl beépített SMTP-küldése viszi a beállított feladó-postafiókon keresztül
+# (pl. a céges tárhely egy postafiókja) – külön program nem kell hozzá.
 # A jelentés e-mail nélkül is elkészül: /var/log/baninapro-jelentes/ (60 napig marad meg).
 set -u
 export LC_ALL=C.UTF-8
 mod="${1:-napi}" uzenet="${2:-}"
 MAPPA=/var/log/baninapro-jelentes
 EMAIL_FAJL="$TITOK_MAPPA/email"
-NETRC="$TITOK_MAPPA/smtp.netrc"
 mkdir -p "$MAPPA"
 find "$MAPPA" -name '*.txt' -mtime +60 -delete 2>/dev/null
 if [[ $mod == kezi ]]; then printf '\nBaninaPRO szerver – ellenőrzés folyamatban…\n\n'; fi
@@ -1880,23 +1919,31 @@ fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod"
 } > "$fajl"
 chmod 640 "$fajl"
 
-# a levél: a curl beépített SMTP-küldése (STARTTLS), a hitelesítés a netrc-fájlból (a jelszó nem látszik a folyamatlistában)
-kuld() {   # $1 = tárgy, $2 = a jelentés fájlja; 2 = nincs e-mail beállítva
-    local cim level rc
-    cim="$(sed -n 's/^EMAIL_CIM=//p' "$EMAIL_FAJL" 2>/dev/null)"
-    [[ -n $cim && -s $NETRC ]] || return 2
+# a levél: a curl beépített SMTP-küldése (587: STARTTLS, 465: SSL), a belépési adat a curl beállítófájljából
+# (a jelszó nem látszik a folyamatlistában)
+kuld() {   # $1 = tárgy, $2 = a jelentés fájlja; 2 = nincs feladó-postafiók beállítva
+    local felado host port url level rc hiteles=()
+    felado="$(sed -n 's/^EMAIL_FELADO=//p; s/^EMAIL_CIM=//p' "$EMAIL_FAJL" 2>/dev/null | head -n 1)"
+    host="$(sed -n 's/^SMTP_HOST=//p' "$EMAIL_FAJL" 2>/dev/null)"
+    port="$(sed -n 's/^SMTP_PORT=//p' "$EMAIL_FAJL" 2>/dev/null)"
+    host="${host:-smtp.gmail.com}" port="${port:-587}"
+    if [[ -s $TITOK_MAPPA/smtp.curl ]]; then hiteles=(-K "$TITOK_MAPPA/smtp.curl")
+    elif [[ -s $TITOK_MAPPA/smtp.netrc ]]; then hiteles=(--netrc-file "$TITOK_MAPPA/smtp.netrc")   # régebbi beállítás
+    fi
+    [[ -n $felado && ${#hiteles[@]} -gt 0 ]] || return 2
+    if [[ $port == 465 ]]; then url="smtps://$host:$port"; else url="smtp://$host:$port"; fi
     level="$(mktemp)"
     {
-        printf 'From: BaninaPRO szerver <%s>\r\n' "$cim"
-        printf 'To: <%s>\r\n' "$cim"
+        printf 'From: BaninaPRO szerver <%s>\r\n' "$felado"
+        printf 'To: <%s>\r\n' "$CIMZETT"
         printf 'Subject: =?UTF-8?B?%s?=\r\n' "$(printf '%s' "$1" | base64 -w0)"
         printf 'Date: %s\r\n' "$(LC_ALL=C date -R)"
         printf 'Message-ID: <%s.%s@%s>\r\n' "$(date +%s)" "$$" "$(hostname)"
         printf 'MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n'
         sed 's/$/\r/' "$2"
     } > "$level"
-    curl -sS --max-time 60 --url "smtp://$SMTP_HOST:$SMTP_PORT" --ssl-reqd --netrc-file "$NETRC" \
-        --mail-from "$cim" --mail-rcpt "$cim" --upload-file "$level"
+    curl -sS --max-time 60 --url "$url" --ssl-reqd "${hiteles[@]}" \
+        --mail-from "$felado" --mail-rcpt "$CIMZETT" --upload-file "$level"
     rc=$?
     rm -f "$level"
     return "$rc"
@@ -1909,13 +1956,13 @@ esac
 targy="${targy:0:150}"
 if [[ $mod == kezi ]]; then cat "$fajl"; fi
 if kuld "$targy" "$fajl"; then
-    eredmeny="Az e-mail elküldve: $(sed -n 's/^EMAIL_CIM=//p' "$EMAIL_FAJL")"
+    eredmeny="Az e-mail elküldve: $CIMZETT"
     rc=0
 elif (( $? == 2 )); then
-    eredmeny="Nincs e-mail beállítva – a jelentés itt van: $fajl"
+    eredmeny="Nincs feladó-postafiók beállítva, e-mail nem ment – a jelentés itt van: $fajl"
     rc=0
 else
-    eredmeny="Az e-mail küldése NEM sikerült (Gmail-cím, alkalmazásjelszó, internet?) – a jelentés itt van: $fajl"
+    eredmeny="Az e-mail küldése NEM sikerült (a feladó-postafiók címe, jelszava, SMTP-szervere? internet?) – a jelentés itt van: $fajl"
     rc=1
 fi
 echo "$(date '+%Y-%m-%d %H:%M:%S')  $mod: $allapot – $eredmeny" >> "$MAPPA/kuldesek.log"
@@ -1939,7 +1986,7 @@ ellenorzo_lekeres() {
 }
 
 lepes_ellenorzes() {
-    local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot lan
+    local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot lan pma_db
     AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul"
     for i in $(seq 1 60); do
         fut ellenorzo_lekeres || true
@@ -1995,6 +2042,14 @@ lepes_ellenorzes() {
     else
         figy "A phpMyAdmin jelszó nélkül beenged – ellenőrizd a docker-compose.override.yml-t!"
     fi
+    pma_db="$(db_szam "SELECT COUNT(*) FROM mysql.user WHERE user = '$PMA_FELH'")"
+    if pma_kezdojelszo_el; then
+        ok "phpMyAdmin-belépés: $PMA_FELH / $PMA_KEZDO_JELSZO (kezdőjelszó – változtasd meg!)"
+    elif (( ${pma_db:-0} > 0 )); then
+        ok "phpMyAdmin-belépés: $PMA_FELH (a saját, már megváltoztatott jelszavaddal)"
+    else
+        figy "A phpMyAdmin-felhasználó ($PMA_FELH) nem jött létre."
+    fi
 
     # a belső hálózatról is: a gép hálózati címén (a portok minden hálózati csatolón figyelnek)
     lan="$(lan_ip)"
@@ -2023,11 +2078,11 @@ lepes_ellenorzes() {
     if (( EMAIL_UJ )); then
         AKT_MUVELET="próba-jelentés küldése e-mailben"
         if fut "$JELENTO" proba; then
-            ok "Próba-jelentés elküldve: $JELENTES_CIM – nézd meg a postafiókodat"
+            ok "Próba-jelentés elküldve: $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
         else
-            rm -f "$TITOK_MAPPA/email" "$TITOK_MAPPA/smtp.netrc"
-            JELENTES_CIM=""
-            figy "A próba-e-mail nem ment el (hibás Gmail-cím vagy alkalmazásjelszó?) – a beállítást töröltem, a script következő futása újra megkérdezi."
+            rm -f "$TITOK_MAPPA/email" "$TITOK_MAPPA/smtp.curl" "$TITOK_MAPPA/smtp.netrc"
+            JELENTES_FELADO=""
+            figy "A próba-e-mail nem ment el (a feladó-postafiók címe, jelszava vagy SMTP-szervere hibás?) – a beállítást töröltem, a script következő futása újra megkérdezi."
         fi
         AKT_MUVELET=""
     fi
@@ -2122,7 +2177,11 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
         osz "" "    BaninaPRO (az oldal):  $(web_cim "$app" "${lan:-<a szerver IP-címe>}")${mdns:+   vagy  $(web_cim "$app" "$mdns")}"
         if [[ -n $pma ]]; then
             osz "" "    phpMyAdmin:            $(web_cim "$pma" "${lan:-<a szerver IP-címe>}")${mdns:+   vagy  $(web_cim "$pma" "$mdns")}"
-            osz "" "                           belépés: root / ${DB_ROOT_JELSZO:-(sudo cat $TITOK_MAPPA/titkok)}"
+            if pma_kezdojelszo_el; then
+                osz "" "                           belépés: $PMA_FELH / $PMA_KEZDO_JELSZO  → változtasd meg (phpMyAdmin: Jelszó módosítása)!"
+            else
+                osz "" "                           belépés: $PMA_FELH / a saját jelszavad"
+            fi
         fi
         osz "" "  Magán a szerveren:       http://localhost   és   http://localhost:$PMA_PORT"
     fi
@@ -2132,7 +2191,12 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     fi
     osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
     osz "" "  (Tipp: a routerben foglald le ezt az IP-címet a szervernek – DHCP-foglalás –, hogy ne változzon.)"
-    osz "" "  Napi jelentés: ${JELENTES_CIM:+minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIM}${JELENTES_CIM:-nincs e-mail beállítva (a jelentések: /var/log/baninapro-jelentes/)}"
+    if [[ -n $JELENTES_FELADO ]]; then
+        osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
+    else
+        osz "" "  Napi jelentés: helyben készül (/var/log/baninapro-jelentes/) – az e-mailhez ($JELENTES_CIMZETT) feladó-postafiók kell"
+    fi
+    osz "" "  Az adatbázis root-jelszava (ha valaha kellene): sudo cat $TITOK_MAPPA/titkok"
     osz "" "  Kézi ellenőrzés: az asztalon a „BaninaPRO ellenőrzés” ikon (vagy: sudo $JELENTO kezi)"
     osz "" "  Őrszem:        2 percenként ellenőriz, és ha kell, helyreállít (napló: /var/log/baninapro-orszem.log)"
     osz "" "  AnyDesk ID:    ${id:-(újraindítás után: sudo anydesk --get-id)}"

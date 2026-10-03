@@ -26,12 +26,14 @@ $csrf = '';
 $dbHiba = null;
 $beallitasok = null;
 $lejart = null;
+$qrBelepes = true;
 try {
     session_inditas();
     $lejart = munkamenet_lejarat_info();
     $felhasznalo = felhasznalo_publikus(aktualis_felhasznalo());
     $csrf = csrf_token();
     $beallitasok = $felhasznalo ? beallitasok_publikus() : null;
+    $qrBelepes = qr_belepes_aktiv();   // 1.15: kikapcsolva a belépő képernyő rögtön a jelszavas űrlapot mutatja
 } catch (Throwable $e) {
     $dbHiba = 'Az adatbázis nem elérhető. Ellenőrizd az includes/config.php beállításait és hogy lefuttattad-e az sql/schema.sql fájlt.' . (APP_DEBUG ? ' [' . $e->getMessage() . ']' : '');
 }
@@ -49,6 +51,7 @@ $init = [
     'ma'          => date('Y-m-d'),
     'hiba'        => $dbHiba,
     'lejart'      => $lejart,
+    'qr_belepes'  => $qrBelepes,
     'webauthn'    => ['rp_id' => wa_rp_id(), 'origin' => wa_origin(), 'app_url' => wa_app_url(), 'biztonsagos' => wa_https() || in_array(wa_rp_id(), ['localhost', '127.0.0.1'], true), 'qr_lejarat_mp' => QR_LEJARAT_MP],
 ];
 ?>

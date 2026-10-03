@@ -12,6 +12,7 @@
     beallitasok: INIT.beallitasok || { reszt_bejovo: false },
     csrf: INIT.csrf || '',
     lejart: INIT.lejart || null,      // 1.14: az előző munkamenet lejáratának oka (a belépő képernyő mutatja)
+    qrBelepes: INIT.qr_belepes !== false,   // 1.15: QR-kódos belépés (admin kapcsoló); kikapcsolva mindenki jelszóval lép be
     ma: INIT.ma || new Date().toISOString().slice(0, 10),
     cegek: null,
     hataridoSzuro: { ceg: null, cegNev: '', penznem: null, irany: 'MIND', utalasAlatt: false },
@@ -63,7 +64,7 @@
   function belepve(adat) {
     App.user = adat.felhasznalo;
     App.lejart = null;
-    if (adat.beallitasok) App.beallitasok = adat.beallitasok;
+    if (adat.beallitasok) { App.beallitasok = adat.beallitasok; App.qrBelepes = adat.beallitasok.qr_belepes !== false; }
     else api('en').then((d) => { if (d.beallitasok) App.beallitasok = d.beallitasok; Jelenlet.indit(); }).catch(() => {});
     Jelenlet.utolsoAkt = Date.now();
     Jelenlet.indit();
@@ -901,7 +902,9 @@
     doboz.querySelector('[data-belepes-belso]').innerHTML = '<div class="toltes"></div>';
     let r;
     try { r = await api('qr_kerelem', { felhasznalonev: nev }); }
-    catch (e) { doboz.querySelector('[data-belepes-belso]').innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div><button class="btn btn-outline btn-blokk" type="button" data-act="belepes-vissza">Vissza</button>`; return; }
+    catch (e) {
+      if (e.kod === 'QR_KIKAPCSOLVA') { App.qrBelepes = false; viewLogin('jelszo', nev); toast(esc(e.message), '', 6000); return; }
+      doboz.querySelector('[data-belepes-belso]').innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div><button class="btn btn-outline btn-blokk" type="button" data-act="belepes-vissza">Vissza</button>`; return; }
     const platform = await waPlatformVan();
     let hatra = r.lejarat_mp;
     doboz.querySelector('[data-belepes-belso]').innerHTML = `
@@ -942,14 +945,16 @@
     // 1.14: ha a szerver léptetett ki (bezárt böngésző, csend, tétlenség), megmondjuk, miért – a név előtöltve
     const lejart = App.lejart && App.lejart.oka ? `<div class="info-doboz lejart-doboz">${I.lock}<span>${esc(App.lejart.oka)} <b>Lépj be újra.</b></span></div>` : '';
     nev = nev || (App.lejart && App.lejart.nev && App.lejart.nev !== '-' ? App.lejart.nev : '');
+    if (!App.qrBelepes) mod = 'jelszo';   // 1.15: az admin kikapcsolta a QR-kódos belépést
     if (mod === 'jelszo') {
-      loginKeret(`<div data-belepes-belso><p>Belépés jelszóval <span class="kicsi">(csak amíg nincs regisztrált eszköz)</span></p>${lejart}
+      loginKeret(`<div data-belepes-belso><p>${App.qrBelepes ? 'Belépés jelszóval <span class="kicsi">(csak amíg nincs regisztrált eszköz)</span>' : 'Számla-nyilvántartás · belépés jelszóval'}</p>${lejart}
+        ${!App.qrBelepes && INIT.hiba ? `<div class="hiba-doboz">${esc(INIT.hiba)}</div>` : ''}
         <form data-form="belepes" autocomplete="off">
-          <div class="mezo"><label>Felhasználónév</label><input type="text" name="felhasznalonev" value="${esc(nev || '')}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required></div>
-          <div class="mezo"><label>Jelszó</label>${jelszoMezo('jelszo', { autofocus: true })}</div>
+          <div class="mezo"><label>Felhasználónév</label><input type="text" name="felhasznalonev" value="${esc(nev || '')}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required ${nev ? '' : 'autofocus'}></div>
+          <div class="mezo"><label>Jelszó</label>${jelszoMezo('jelszo', { autofocus: !!nev })}</div>
           <div class="hiba-doboz rejtett" data-hiba></div>
           <button class="btn btn-blokk" type="submit">Belépés</button>
-          <div class="qr-lablec"><a href="#" data-act="belepes-vissza">Vissza a QR-kódos belépéshez</a></div>
+          ${App.qrBelepes ? '<div class="qr-lablec"><a href="#" data-act="belepes-vissza">Vissza a QR-kódos belépéshez</a></div>' : ''}
         </form></div>`);
       return;
     }
@@ -2049,6 +2054,17 @@
   }
 
   // ------------------------------------------------------------------- ADMIN
+  /** Admin → Felhasználók alatti tájékoztató a belépés módjáról (1.15: QR-kapcsoló szerint) */
+  function felhBelepesSzoveg(qr) {
+    return qr
+      ? 'Új felhasználónak adj <b>eszköz-regisztrációs kódot</b> („Kód” gomb): a telefonján beolvassa, Face ID-val / ujjlenyomattal regisztrál, és attól kezdve jelszó nélkül, QR-kóddal lép be. Jelszóval csak az léphet be, akinek még nincs regisztrált eszköze.'
+      : 'A QR-kódos belépés ki van kapcsolva: <b>mindenki felhasználónévvel és jelszóval lép be</b>. Az új felhasználónak itt adj jelszót; eszközt regisztrálni ettől még lehet, a QR-kódos belépés visszakapcsolása után használható.';
+  }
+  /** Admin → Belépés kártya: QR-kódos belépés kapcsoló (1.15) */
+  function qrKartyaBelso(qr, jelszoNelkul) {
+    return `<label class="jelolo kapcsolo"><input type="checkbox" data-act="qr-belepes-kapcsolo" ${qr ? 'checked' : ''}> <span><b>QR-kódos belépés</b> (telefon + Face ID / ujjlenyomat) – bekapcsolva a belépés QR-kóddal és telefonos jóváhagyással történik, jelszóval csak az léphet be, akinek még nincs regisztrált eszköze.<br><small class="szurke">Kikapcsolva <b>mindenki felhasználónévvel és jelszóval</b> lép be, a QR-kódos belépés szünetel. A regisztrált telefonok megmaradnak: visszakapcsolás után ugyanúgy működnek, újra regisztrálni nem kell. A már belépett felhasználókat a váltás nem lépteti ki.</small></span></label>
+      ${!qr && jelszoNelkul.length ? `<div class="hiba-doboz" style="margin-top:10px">Ezeknek a felhasználóknak nincs jelszava, ezért most nem tudnak belépni: <b>${jelszoNelkul.map(esc).join(', ')}</b>. Adj nekik jelszót a fenti listában (ceruza → Új jelszó).</div>` : ''}`;
+  }
   async function viewAdmin() {
     const main = shell({ alcim: 'Admin', vissza: '#/' });
     if (!App.user.admin) { main.innerHTML = '<div class="hiba-doboz">Ehhez ADMIN jogosultság kell.</div>'; return; }
@@ -2060,9 +2076,11 @@
         <div class="kartya"><table class="tabla"><thead><tr><th>Név</th><th>Szerep</th><th>Utolsó belépés</th><th></th></tr></thead><tbody>
           ${f.felhasznalok.map((u) => `<tr><td><b>${esc(u.felhasznalonev)}</b><br><span class="kicsi szurke">${esc(u.nev)}</span><br><span class="kicsi ${u.passkey_db ? 'szurke' : 'negativ'}">${I.key} ${u.passkey_db || 0} eszköz</span></td><td><span class="badge szerep-${esc(u.szerep)}">${esc(u.szerep_nev || SZEREP_NEV[u.szerep] || u.szerep)}</span>${u.aktiv ? '' : ' <span class="badge lejart">letiltva</span>'}</td><td class="kicsi">${fmtIdo(u.utolso_belepes) || '–'}</td><td class="jobbra"><div class="gomb-sor jobbra"><button class="btn btn-outline zold btn-sm" type="button" data-act="admin-regkod" data-id="${u.id}" data-felh="${esc(u.felhasznalonev)}" title="Eszköz-regisztrációs kód">${I.key} Kód</button>${u.passkey_db ? `<button class="btn btn-outline piros btn-sm btn-ikon" type="button" data-act="admin-passkey-torol" data-id="${u.id}" data-felh="${esc(u.felhasznalonev)}" title="Összes eszköz törlése">${I.trash}</button>` : ''}<button class="btn btn-outline btn-sm btn-ikon" type="button" data-act="admin-felh-szerk" data-id="${u.id}" data-nev="${esc(u.nev)}" data-felh="${esc(u.felhasznalonev)}" data-szerep="${u.szerep}" data-aktiv="${u.aktiv ? 1 : 0}">${I.edit}</button></div></td></tr>`).join('')}
         </tbody></table>
-        <p class="kicsi szurke" style="margin:10px 0 0">Új felhasználónak adj <b>eszköz-regisztrációs kódot</b> („Kód” gomb): a telefonján beolvassa, Face ID-val / ujjlenyomattal regisztrál, és attól kezdve jelszó nélkül, QR-kóddal lép be. Jelszóval csak az léphet be, akinek még nincs regisztrált eszköze.</p>
+        <p class="kicsi szurke" style="margin:10px 0 0" data-felh-belepes>${felhBelepesSzoveg(b.qr_belepes)}</p>
         <div class="szerep-leiras">${Object.keys(SZEREP_NEV).map((k) => `<div><span class="badge szerep-${k}">${SZEREP_NEV[k]}</span><span>${esc(SZEREP_LEIRAS[k])}</span></div>`).join('')}</div>
         <div class="muveletek"><span class="tolt"></span><button class="btn btn-sm" type="button" data-act="admin-felh-uj">${I.plus} Új felhasználó</button></div></div>
+        <h2>Belépés</h2>
+        <div class="kartya" data-qr-kartya>${qrKartyaBelso(b.qr_belepes, b.jelszo_nelkul || [])}</div>
         <h2>Árfolyam</h2>
         <div class="kartya">
           <div class="alsor" style="margin-bottom:8px">Jelenlegi: ${b.arfolyam ? `<b>1 EUR = ${fmtOsszeg(b.arfolyam.eur_huf)} HUF</b> (${esc(b.arfolyam.forras)}, ${fmtDatum(b.arfolyam.datum || '')}, lekérve ${fmtIdo(b.arfolyam.lekerve)})` : '<b>nem elérhető</b>'}</div>
@@ -2908,6 +2926,14 @@
       importCsoportNev(el);
     } else if (el.matches('[data-act=reszt-bejovo-kapcsolo]')) {
       api('admin_beallitas_ment', { kulcs: 'reszt_bejovo', ertek: el.checked }).then((r) => { if (r.beallitasok) App.beallitasok = r.beallitasok; toast(el.checked ? 'Részteljesítés a bejövő számláknál: bekapcsolva' : 'Részteljesítés a bejövő számláknál: kikapcsolva (csak kimenő oldalon)', 'siker', 4000); }).catch((e) => { hibaToast(e); el.checked = !el.checked; });
+    } else if (el.matches('[data-act=qr-belepes-kapcsolo]')) {
+      api('admin_beallitas_ment', { kulcs: 'qr_belepes', ertek: el.checked }).then((r) => {
+        App.qrBelepes = r.qr_belepes;
+        if (App.beallitasok) App.beallitasok.qr_belepes = r.qr_belepes;
+        const k = $('[data-qr-kartya]'); if (k) k.innerHTML = qrKartyaBelso(r.qr_belepes, r.jelszo_nelkul || []);
+        const sz = $('[data-felh-belepes]'); if (sz) sz.innerHTML = felhBelepesSzoveg(r.qr_belepes);
+        toast(r.qr_belepes ? 'QR-kódos belépés: bekapcsolva' : 'QR-kódos belépés: kikapcsolva – mindenki jelszóval lép be', 'siker', 4500);
+      }).catch((e) => { hibaToast(e); el.checked = !el.checked; });
     } else if (el.matches('[data-act=import-mentes-kapcsolo]')) {
       api('admin_beallitas_ment', { kulcs: 'import_mentes', ertek: el.checked }).then(() => toast(el.checked ? 'Import előtti DB-mentés: bekapcsolva' : 'Import előtti DB-mentés: kikapcsolva – az importok mentés nélkül futnak!', el.checked ? 'siker' : 'hiba', 4000)).catch((e) => { hibaToast(e); el.checked = !el.checked; });
     }

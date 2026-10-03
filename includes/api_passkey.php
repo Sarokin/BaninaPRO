@@ -211,6 +211,7 @@ function passkey_ellenoriz_belepes(array $u, array $asr, string $challenge): arr
 /** Belépési kérelem létrehozása (felhasználónév megadása után) → QR-kód tartalma */
 function act_qr_kerelem(array $be): array
 {
+    qr_belepes_kell();                      // 1.15: az admin kikapcsolhatja a QR-kódos belépést
     kerelmek_takarit();
     ip_limit('QR_KERELEM', QR_KERELEM_LIMIT);
     $nev = mb_strtolower(trim((string)($be['felhasznalonev'] ?? '')));
@@ -246,6 +247,7 @@ function act_qr_allapot(array $be): array
         hiba('Ez a kérelem nem ehhez a böngészőhöz tartozik.', 'TOKEN', [], 403);
     }
     if ($k['statusz'] === 'APPROVED') {
+        qr_belepes_kell();                  // a kikapcsolás előtt jóváhagyott kérés sem léptet be utána
         db_exec('UPDATE belepesi_kerelmek SET statusz = "USED" WHERE id = ?', [(int)$k['id']]);
         $pk = $k['jovahagyo_passkey_id'] ? db_row('SELECT eszkoz_nev FROM passkeyek WHERE id = ?', [(int)$k['jovahagyo_passkey_id']]) : null;
         $u = munkamenet_beleptet((int)$k['felhasznalo_id'], 'QR + biometrikus jóváhagyás' . ($pk ? ", eszköz: „{$pk['eszkoz_nev']}”" : ''));
@@ -287,6 +289,7 @@ function act_qr_info(array $be): array
 /** Jóváhagyás a telefonon (biometrikus assertion) */
 function act_qr_jovahagy(array $be): array
 {
+    qr_belepes_kell();                      // 1.15: az admin kikapcsolhatja a QR-kódos belépést
     $token = (string)($be['token'] ?? '');
     $asr = $be['assertion'] ?? null;
     if (!is_array($asr)) {
@@ -328,6 +331,7 @@ function act_qr_elutasit(array $be): array
 // ---------------------------------------------------------------------------
 function act_passkey_belepes_opciok(array $be): array
 {
+    qr_belepes_kell();                      // 1.15: az admin kikapcsolhatja a QR-kódos belépést
     kerelmek_takarit();
     ip_limit('PASSKEY_BELEPES', QR_KERELEM_LIMIT);
     $nev = mb_strtolower(trim((string)($be['felhasznalonev'] ?? '')));
@@ -352,6 +356,7 @@ function act_passkey_belepes_opciok(array $be): array
 
 function act_passkey_belepes(array $be): array
 {
+    qr_belepes_kell();                      // 1.15: az admin kikapcsolhatja a QR-kódos belépést
     $token = (string)($be['token'] ?? '');
     $asr = $be['assertion'] ?? null;
     if (!is_array($asr)) {

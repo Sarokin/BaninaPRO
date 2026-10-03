@@ -14,7 +14,7 @@ define('DB_PASS', '');               // az éles jelszó csak a szerveren lévő
 
 // ---- Alkalmazás ----------------------------------------------------------
 define('APP_NAME', 'BaninaPRO');
-define('APP_VERSION', '1.14.0');
+define('APP_VERSION', '1.15.0');
 define('APP_TIMEZONE', 'Europe/Budapest');
 
 // Naplófájlok mappája (naponta új fájl, éjjel 3-kor váltva: ÉÉÉÉHHNN.txt)

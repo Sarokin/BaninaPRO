@@ -130,6 +130,9 @@ Fix bugs in these components in place; do not swap in libraries.
 
 ### Security and privacy conventions
 - `includes/`, `sql/`, `LOG/` and `DBBCKP/` each have a deny-all `.htaccess` plus an `index.php` returning 403. Keep both when adding directories.
+- Login mode (1.15) is the `beallitasok.qr_belepes` setting, toggled in Admin → Belépés; `qr_belepes_aktiv()` is in `jogok.php`.
+  - **On** (the default; a missing row counts as on): login is QR/passkey, and a password works only for users with no registered device.
+  - **Off**: everyone logs in with a password. `qr_belepes_kell()` blocks the QR/passkey login actions with `QR_KIKAPCSOLVA`. Passkeys are kept.
 - Every response sends `noindex` headers (search engines and AI crawlers are deliberately blocked).
 - The main root `.htaccess` described in `TELEPITES.md` is **not present in this working copy**. Do not assume it is deployed from here.
 - `LOG/` and `DBBCKP/` hold real production logs and DB dumps containing business data. Don't publish or paste their contents anywhere.
@@ -155,13 +158,14 @@ Network and secrets:
 - **The repo is public.** The server pulls `https://github.com/Sarokin/BaninaPRO.git` over HTTPS without keys, and `repo_cim_beallit` switches an old SSH remote to it.
 - **Ports.** The installer writes `docker-compose.override.yml` on every run; it stays out of git via `.git/info/exclude`:
   - app on `0.0.0.0:80`;
-  - phpMyAdmin on `0.0.0.0:8081`, with a login form and no auto-login;
+  - phpMyAdmin on `0.0.0.0:8081`, with a login form and no auto-login. The login user is `PMA_FELH` (`BaninaPRO`), with all privileges on the app database. The user asked for the weak initial password `BaninaPRO1234` and will change it. The account is created only when missing and its password is never reset, so a changed password survives updates. root keeps a random password.
   - MySQL only on `127.0.0.1:3307`.
   - The file uses Compose `!override`, which needs Compose 2.24.4 or newer (`compose_eleg_uj`).
 - **Server secrets live in `/etc/baninapro`, never in git:**
   - `titkok`: random DB root and app passwords;
   - `config.php`: `docker/config.php` with the server's `DB_PASS` and `APP_DEBUG=false`, mounted over `includes/config.php`;
-  - `email` and `smtp.netrc`: Gmail address and app password.
+  - `email` (sender address, SMTP host and port) and `smtp.curl` (sender credentials as a quoted curl config, read with `curl -K`).
+- **E-mail.** Reports and alerts always go to the fixed `JELENTES_CIMZETT`. The user cannot give access to that mailbox, so sending goes through a separate sender mailbox, such as a company cPanel mailbox or a dedicated Gmail account with an app password. The installer asks for it once. Gmail rejects or spams unauthenticated direct delivery, so there is no keyless fallback.
   - On an old volume, `db_root_atallitas` replaces the public default root password.
 - **Schema repair.** `adatbazis_rendbe` re-applies `sql/schema.sql` when tables or the initial admin are missing. That is why the schema must stay idempotent (see Database and migrations).
 

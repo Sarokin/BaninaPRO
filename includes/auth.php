@@ -243,8 +243,9 @@ function bejelentkezes(string $felhasznalonev, string $jelszo): array
         naplo('BELEPES', "felhasználó=$felhasznalonev – hibás felhasználónév/jelszó", 'HIBA', $felhasznalonev);
         hiba('Hibás felhasználónév vagy jelszó.', 'HIBAS_BELEPES', [], 401);
     }
-    // Jelszavas belépés CSAK tartalék: amint a fiókhoz passkey (telefonos biometria) van regisztrálva, tiltott.
-    if ((int)db_val('SELECT COUNT(*) FROM passkeyek WHERE felhasznalo_id = ? AND aktiv = 1', [(int)$u['id']]) > 0) {
+    // Jelszavas belépés CSAK tartalék: amint a fiókhoz passkey (telefonos biometria) van regisztrálva, tiltott –
+    // kivéve, ha az admin kikapcsolta a QR-kódos belépést (1.15): akkor mindenki jelszóval lép be.
+    if (qr_belepes_aktiv() && (int)db_val('SELECT COUNT(*) FROM passkeyek WHERE felhasznalo_id = ? AND aktiv = 1', [(int)$u['id']]) > 0) {
         naplo('BELEPES', "felhasználó=$felhasznalonev – jelszavas belépés tiltva (van regisztrált eszköz)", 'TILTVA', $felhasznalonev);
         hiba('Ehhez a fiókhoz már van regisztrált telefon/eszköz, ezért a jelszavas belépés le van tiltva. Használd a QR-kódos, biometrikus belépést.', 'JELSZO_TILTVA', [], 403);
     }

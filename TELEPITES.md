@@ -51,6 +51,7 @@ baninapro/
 ├── sql/frissites_1.9.sql  – frissítés 1.8-ról 1.9-re (számlaszám kötésenként egyedi, változásnapló tábla, kötés módosítás ideje)
 ├── sql/frissites_1.10.sql – frissítés 1.9-ről 1.10-re (szerepkörök, megjegyzés szerzője, bejövő részteljesítés kapcsoló)
 ├── sql/frissites_1.13.sql – frissítés 1.12-ről 1.13-ra (utalás lakat oszlopai)
+├── sql/frissites_1.15.sql – frissítés 1.14-ről 1.15-re (QR-kódos belépés kapcsolója)
 ├── LOG/                   – tevékenységnapló: naponta új fájl ÉÉÉÉHHNN.txt (03:00-kor vált)
 ├── DBBCKP/                – ADATBÁZIS-MENTÉSEK: ÉÉÉÉHHNN_ÓÓPP.sql (webről nem elérhető; magától létrejön)
 └── TELEPITES.md           – ez a leírás
@@ -399,6 +400,30 @@ minden művelet előtt (`includes/jogok.php`), a felület csak azt mutatja, amit
 
 ## 6. Jelszó nélküli belépés – QR-kód + telefonos biometria (passkey)
 
+### QR-kódos belépés be/ki – egyetlen kapcsoló (1.15)
+Ha a QR-kódos belépés valakinek nehézséget okoz, az admin **egy kapcsolóval mindenkit visszaállíthat a jelszavas
+belépésre**, és később ugyanígy vissza is kapcsolhatja: **Admin → Belépés → „QR-kódos belépés”**.
+
+| | QR-kódos belépés **BE** (alapállapot) | QR-kódos belépés **KI** |
+|---|---|---|
+| Belépő képernyő | felhasználónév → QR-kód, telefonos jóváhagyás | rögtön **felhasználónév + jelszó** |
+| Jelszavas belépés | csak akinek még nincs regisztrált eszköze | **mindenkinek** (regisztrált telefonnal is) |
+| QR-kód / „Belépés ezen az eszközön” | működik | szünetel (a szerver is elutasítja) |
+| Regisztrált telefonok | használatban | **megmaradnak** – visszakapcsolás után újra regisztrálni nem kell |
+
+* **Mielőtt kikapcsolod:** mindenkinek legyen jelszava, amit ismer. Az admin az *Admin → Felhasználók → ceruza →
+  Új jelszó* mezőben állíthat be új jelszót. Ha valakinek nincs jelszava, a Belépés kártya kikapcsolt állapotban
+  piros figyelmeztetésben felsorolja (ők addig nem tudnak belépni).
+* A váltás a már belépett felhasználókat nem lépteti ki; a következő belépésnél érvényes.
+* Kikapcsolt állapotban is lehet eszközt regisztrálni (Profil / regisztrációs kód) – a QR-kódos belépés
+  visszakapcsolása után használható.
+* A jelszavakhoz nem kell külön tábla: a `felhasznalok.jelszo_hash` oszlopban vannak (bcrypt).
+* Frissítéskor futtasd le phpMyAdmin-ban a `sql/frissites_1.15.sql` fájlt (létrehozza a beállítást, alapból BE;
+  többször is futtatható). Nélküle is működik – a hiányzó beállítás BE-nek számít –, de a kapcsoló első
+  átállításáig nem látszik a táblában. A fájl végén vészhelyzeti `UPDATE` sorok is vannak (ha az admin oldal
+  nem érhető el).
+* Napló: `ADMIN_BEALLITAS` („QR-kódos belépés: BEKAPCSOLVA / KIKAPCSOLVA”).
+
 **Hogyan működik (a felhasználó szemével):**
 1. A gépen beírja a felhasználónevét, *Belépés* → a képernyőn egy **QR-kód** és egy **egyeztető szám** jelenik meg
    (a kód egyszer használható, 2 percig érvényes, csak abból a böngészőből váltható be, amelyik kérte).
@@ -736,6 +761,9 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | A böngésző újraindítás után is belépve marad | a böngésző „folytatás ott, ahol abbahagytam” beállítása visszaállítja a munkamenet-sütit – kapcsold ki (5. fejezet); a szerver ilyenkor is legfeljebb 3 percig engedi vissza |
 | Régi, elmentett jelszót ajánl a böngésző | 1.14-től a jelszómező nem menthető; a korábban elmentett jelszót a böngésző jelszókezelőjéből töröld (5. fejezet) |
 | „Unknown column 'lezarva'” | a frissites_1.13.sql nem futott le – futtasd le phpMyAdmin-ban |
+| „A QR-kódos belépést az admin kikapcsolta” | szándékos (1.15): Admin → Belépés kapcsoló KI – lépj be felhasználónévvel és jelszóval |
+| A belépő képernyő nem kér QR-kódot, csak jelszót | a QR-kódos belépés ki van kapcsolva (Admin → Belépés); visszakapcsolás után újra QR-kód |
+| Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.14.0 (2026-09-30)
+Verzió: 1.15.0 (2026-10-02)

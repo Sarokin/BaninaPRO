@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS `felhasznalok` (
   `id`              INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `felhasznalonev`  VARCHAR(64)  NOT NULL,
   `nev`             VARCHAR(128) NOT NULL DEFAULT '',
-  `jelszo_hash`     VARCHAR(255) NULL COMMENT 'csak tartalék; ha van passkey, a jelszavas belépés tiltott',
+  `jelszo_hash`     VARCHAR(255) NULL COMMENT 'bcrypt; ha van passkey, a jelszavas belépés tiltott – kivéve, ha a QR-belépés ki van kapcsolva (beallitasok.qr_belepes = 0)',
   `szerep`          ENUM('admin','irodavezeto','rogzito','uzletkoto') NOT NULL DEFAULT 'rogzito' COMMENT 'admin: minden; irodavezeto: minden adat, admin nélkül; rogzito: felvitel + szerkesztés, törlés nélkül; uzletkoto: csak olvasás + BESZÁM + megjegyzés hozzáfűzés',
   `aktiv`           TINYINT(1)   NOT NULL DEFAULT 1,
   `letrehozva`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -378,4 +378,8 @@ INSERT INTO `beallitasok` (`kulcs`, `ertek`) VALUES ('eur_huf_kezi', NULL)
 ON DUPLICATE KEY UPDATE `kulcs` = `kulcs`;
 
 INSERT INTO `beallitasok` (`kulcs`, `ertek`) VALUES ('reszt_bejovo', '0')
+ON DUPLICATE KEY UPDATE `kulcs` = `kulcs`;
+
+-- 1.15: QR-kódos belépés (1 = be, 0 = ki: mindenki jelszóval lép be) – Admin → Belépés
+INSERT INTO `beallitasok` (`kulcs`, `ertek`) VALUES ('qr_belepes', '1')
 ON DUPLICATE KEY UPDATE `kulcs` = `kulcs`;

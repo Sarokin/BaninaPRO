@@ -139,7 +139,36 @@ function beszam_szabaly(?string $regi, ?string $uj, ?array $u = null): void
 function beallitasok_publikus(): array
 {
     $v = db_val('SELECT ertek FROM beallitasok WHERE kulcs = ?', ['reszt_bejovo']);
-    return ['reszt_bejovo' => $v === '1', 'jelenlet_mp' => ules_korlat('jelenlet')];
+    return ['reszt_bejovo' => $v === '1', 'jelenlet_mp' => ules_korlat('jelenlet'), 'qr_belepes' => qr_belepes_aktiv()];
+}
+
+/**
+ * QR-kódos (passkey) belépés be van-e kapcsolva (1.15, admin kapcsoló). Alapból IGEN – ha a beállítás sora
+ * hiányzik (a frissites_1.15.sql még nem futott le), minden a korábbiak szerint működik.
+ * Kikapcsolva: mindenki jelszóval lép be (a regisztrált eszközzel rendelkezők is), a QR / passkey belépés tiltott.
+ * A regisztrált eszközök megmaradnak, visszakapcsoláskor újra használhatók.
+ */
+function qr_belepes_aktiv(): bool
+{
+    static $aktiv = null;
+    if ($aktiv === null) {
+        $aktiv = db_val('SELECT ertek FROM beallitasok WHERE kulcs = ?', ['qr_belepes']) !== '0';
+    }
+    return $aktiv;
+}
+
+/** QR / passkey belépési műveletek elején: kikapcsolt QR-belépésnél 403 QR_KIKAPCSOLVA */
+function qr_belepes_kell(): void
+{
+    if (!qr_belepes_aktiv()) {
+        hiba('A QR-kódos belépést az admin kikapcsolta – lépj be a felhasználóneveddel és a jelszavaddal.', 'QR_KIKAPCSOLVA', [], 403);
+    }
+}
+
+/** Aktív felhasználók, akiknek nincs jelszavuk (kikapcsolt QR-belépésnél nem tudnának belépni) */
+function jelszo_nelkuli_felhasznalok(): array
+{
+    return array_column(db_all("SELECT felhasznalonev FROM felhasznalok WHERE aktiv = 1 AND (jelszo_hash IS NULL OR jelszo_hash = '') ORDER BY felhasznalonev"), 'felhasznalonev');
 }
 
 /** Bejövő részteljesítés engedélyezett-e (admin kapcsoló, alapból nem) */
