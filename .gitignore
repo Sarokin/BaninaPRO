@@ -1,6 +1,12 @@
-# Telepítő és adatbázis-séma – nem kerül a repóba
+# Telepítő – nem kerül a repóba
 setup.php
-sql/
+
+# Adatbázis: csak a séma kerül a repóba (a szerver telepítője ebből hozza létre és pótolja a táblákat),
+# a frissítő SQL-ek nem – a mappa védőfájljai maradnak
+sql/*
+!sql/schema.sql
+!sql/.htaccess
+!sql/index.php
 
 # Éles konfiguráció (adatbázis-jelszó) – minta: includes/config.example.php
 includes/config.php
