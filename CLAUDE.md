@@ -141,6 +141,8 @@ One bash script turns a fresh Ubuntu Server (24.04 / 26.04) into the company's i
 Goals the user set. Keep them when changing anything here:
 - **Self-healing, no human intervention.** The service must stay reachable on the LAN whatever happens.
 - **License-clean.** No paid or proprietary dependencies, no extra modules where a built-in tool works. For example, e-mail goes through `curl`'s SMTP support, not msmtp.
+  - The one exception is AnyDesk, kept by the user's decision. Its free edition is for private use only, so the business license is the user's responsibility. Don't replace it without asking.
+  - Everything else installed is open source and free for business use: Ubuntu, Docker Engine, MySQL Community, phpMyAdmin, PHP, Apache, Firefox, LXQt, curl, avahi.
 
 Install and repair behavior:
 - **apt self-repair.** `apt_` reads the failure from the log, repairs and retries; `apt_nyers` is a single raw call.
