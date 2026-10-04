@@ -11,6 +11,10 @@
 #  BIOS engedi), az AnyDesk mindig fut, és egy őrszem 2 percenként ellenőrzi a BaninaPRO-t: ha nem érhető el,
 #  emberi beavatkozás nélkül helyreállítja (konténerek indítása, újraindítása, a Docker újraindítása,
 #  végső esetben – ritkán – a gép újraindítása). Napló: /var/log/baninapro-orszem.log
+#  Push-értesítések a telefonra (ntfy, ingyenes, fiók nélkül): áramszünet / újraindulás / leállás, hibák és
+#  helyreállás (BaninaPRO, Docker, AnyDesk, konténerek, tárhely), az éjszakai mentés, a napi jelentés (03:30),
+#  a be- és kilépések. A feliratkozás leírása az összegzésben és az asztalon (BaninaPRO-ertesitesek.txt).
+#  A napi jelentés e-mailben is mehet, ha megadsz egy feladó-postafiókot:  sudo bash szerver_beallitas.sh --email
 #
 #  ELŐKÉSZÜLET (egyszer, kézzel) – a repó nyilvános, a letöltéshez nem kell GitHub-fiók vagy -kulcs:
 #    1. Ubuntu Server telepítése – felhasználó: baninapro, gépnév: baninapro
@@ -23,7 +27,9 @@
 #    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
 #    sudo bash szerver_beallitas.sh
 #
-#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés → konténerek újraépítése.
+#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés → konténerek újraépítése → takarítás.
+#  Automatikus rendszerfrissítés NINCS (kevés a tárhely): a gép magától nem keres, nem tölt le és nem telepít
+#  frissítést – csak ennek a scriptnek a kézi futtatásakor frissül, utána törli a régi kerneleket és a letöltött csomagokat.
 #  Bármikor nyugodtan újrafuttatható: ami már kész, azt csak ellenőrzi.
 #  Önjavító: ha valami elakad – félbemaradt csomagtelepítés, hiányzó csomag vagy bővítmény,
 #  hálózati hiba, rossz rendszeridő, hibás külső csomagtároló, foglalt 80-as port, hiányzó
@@ -50,12 +56,20 @@ ALAP_DB_ROOT="baninapro_root"         # a docker-compose.yml nyilvános root-jel
 # és titkos marad). Csak akkor jön létre ezzel a kezdőjelszóval, ha még nincs – ha megváltoztatod, a script nem írja vissza.
 PMA_FELH="BaninaPRO"
 PMA_KEZDO_JELSZO="BaninaPRO1234"
-# Napi állapotjelentés és riasztások e-mailben (a mentés 03:00-kor fut, utána). A címzett mindig ez – ehhez a fiókhoz
-# nem kell hozzáférés. A küldéshez egy feladó-postafiók kell (pl. a céges tárhely egy postafiókja, vagy egy külön
-# Gmail-fiók): a script az elején egyszer megkérdezi, és a szerveren tárolja (/etc/baninapro – a repóba nem kerül).
+# Napi állapotjelentés (a mentés 03:00-kor fut, utána): push-értesítésként mindig, e-mailben akkor, ha van feladó-
+# postafiók. A címzett mindig ez – ehhez a fiókhoz nem kell hozzáférés. A feladó-postafiókot (pl. a céges tárhely egy
+# postafiókja, vagy egy külön Gmail-fiók) csak a --email kapcsolóval kérdezi meg, és a szerveren tárolja
+# (/etc/baninapro – a repóba nem kerül).
 JELENTES_CIMZETT="sarokintamas@gmail.com"
 JELENTES_IDO="03:30"
 JELENTO="/usr/local/sbin/baninapro-jelentes"
+# Push-értesítések a telefonra (ntfy – nyílt forrású, ingyenes, fiók nélkül): a script egy titkos csatornát generál,
+# a telefonon az ntfy alkalmazással kell rá feliratkozni (az összegzés és az asztali jegyzet kiírja). Ha épp nincs
+# internet, az értesítés sorba áll, és az őrszem később elküldi. (Az ntfy.sh e-mail-továbbítása fiókot kérne – nincs.)
+NTFY_SZERVER="https://ntfy.sh"
+ERTESITO="/usr/local/sbin/baninapro-ertesites"
+BELEPESFIGYELO="/usr/local/sbin/baninapro-belepesfigyelo"
+MENTO="/usr/local/sbin/baninapro-mentes"
 MENTES_CRON="0 3 * * *"              # éjszakai adatbázis-mentés, mint az éles cron
 # a nyilvános GitHub-repó: innen jön a kód és minden frissítés (https – kulcs és jelszó nélkül)
 REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
@@ -68,6 +82,7 @@ PROJEKT="baninapro"
 APP_KONTENER="baninapro-app"
 DB_KONTENER="baninapro-db"
 DB_KOTET="${PROJEKT}_db-adatok"
+ADATOK_KOTET="${PROJEKT}_adatok"         # az alkalmazás naplója és mentései (LOG, DBBCKP)
 ADMIN_KEZDO="admin / BaninaPRO-2026!"   # az sql/schema.sql kezdő adminja
 
 # Nem kötelező csomagok: ha a telepítésük félbemarad és nem javítható, a script eltávolítja őket, hogy ne
@@ -92,6 +107,7 @@ LEPESEK=()
 # az összegzéshez: az épp futó lépés sorszáma, a lépések eredménye (ok / figy:N), az esetleges hibaüzenet
 AKT_I=0 OSSZEGZES_KESZ=0 HIBA_UZENET=""
 DB_ROOT_JELSZO="" DB_APP_JELSZO="" EMAIL_FELADO="" EMAIL_JELSZO="" EMAIL_SMTP_HOST="" EMAIL_SMTP_PORT="" JELENTES_FELADO="" EMAIL_UJ=0
+EMAIL_KERDES=0 NTFY_CSATORNA=""   # --email: a feladó-postafiók megkérdezése (alapból nem kérdez)
 LEPES_ALLAPOT=()
 OSSZ_SOROK=()
 AKT_LEPES="előkészítés" AKT_ROVID="előkészítés" AKT_MUVELET=""
@@ -300,6 +316,7 @@ apt_() {
         *" full-upgrade "*) m="rendszerfrissítés" ;;
         *" install "*)      m="csomagok telepítése" ;;
         *" remove "*)       m="csomagok eltávolítása" ;;
+        *" autoremove "*)   m="felesleges csomagok törlése" ;;
     esac
     for proba in 1 2 3; do
         AKT_MUVELET="$m"
@@ -690,7 +707,8 @@ kerdesek() {
     local masodszor="" kell_anydesk=0 kell_email=0
     [[ -t 0 ]] || return 0
     van_csomag anydesk || kell_anydesk=1
-    [[ -s $TITOK_MAPPA/email ]] || kell_email=1
+    # az e-mailről csak kérésre kérdez (sudo bash szerver_beallitas.sh --email) – az értesítések push-ként mennek
+    kell_email=$EMAIL_KERDES
     (( kell_anydesk || kell_email )) || return 0
     cim "Kérdések az elején (utána már nem kell a géphez nyúlni)"
     if (( kell_anydesk )); then
@@ -757,6 +775,7 @@ email_kerdesek() {
 # =============================================================================
 lepesek_listaja() {
     LEPESEK=(
+        "lepes_auto_frissites_ki|5|Automatikus rendszerfrissítés kikapcsolva: nem keres, nem tölt le (kevés a tárhely)"
         "lepes_rendszer|300|Rendszerfrissítés és alapcsomagok"
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
         "lepes_nyelv|45|Magyar nyelv és magyar billentyűzet"
@@ -769,8 +788,9 @@ lepesek_listaja() {
         "lepes_energia|5|Energia: soha nem alszik el, nincs képernyővédő, áramszünet után bekapcsol"
         "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis – a belső hálózatról is elérhető"
         "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00)"
-        "lepes_orszem|5|Őrszem: ha a BaninaPRO nem érhető el, magától helyreállítja"
-        "lepes_jelentes|20|Napi állapotjelentés e-mailben ($JELENTES_IDO)"
+        "lepes_ertesitesek|10|Push-értesítések a telefonra (ntfy): leállás, indulás, hibák, mentés, belépések"
+        "lepes_orszem|5|Őrszem: ha valami leáll, magától helyreállítja, és értesít"
+        "lepes_jelentes|20|Napi állapotjelentés ($JELENTES_IDO) és asztali ikon"
         "lepes_ellenorzes|45|Végső ellenőrzés: oldal, API, adatbázis, hálózat"
     )
 }
@@ -806,6 +826,47 @@ futtat_lepesek() {
 # =============================================================================
 #  A lépések
 # =============================================================================
+# Az automatikus rendszerfrissítés teljesen ki (a felhasználó kérése: kevés a tárhely, és ne fogyassza a gépet):
+# nem keres (apt update), nem tölt le és nem telepít – sem az apt / unattended-upgrades, sem a snap, sem a
+# firmware-frissítő, sem a hír- és kiadásfigyelő. A rendszer csak ennek a scriptnek a kézi futtatásakor frissül.
+# Az őrszem 2 percenként ellenőrzi, hogy így maradjon.
+AUTO_FRISSITO_IDOZITOK=(apt-daily.timer apt-daily-upgrade.timer fwupd-refresh.timer update-notifier-download.timer
+    update-notifier-motd.timer motd-news.timer ua-timer.timer)
+lepes_auto_frissites_ki() {
+    local e
+    # az apt saját beállítása: a periodikus munkák (lista-frissítés, letöltés, telepítés, takarítás) ki
+    cat > /etc/apt/apt.conf.d/99baninapro-nincs-automatikus-frissites <<'EOF'
+// BaninaPRO szerver: nincs automatikus frissítés – nem keres, nem tölt le, nem telepít (a szerver_beallitas.sh írta).
+// A rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül.
+APT::Periodic::Enable "0";
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::AutocleanInterval "0";
+Unattended-Upgrade::InstallOnShutdown "false";
+EOF
+    # az időzítők leállítva és letiltva (mask: semmi nem indíthatja el őket, egy csomagfrissítés sem kapcsolja vissza)
+    for e in "${AUTO_FRISSITO_IDOZITOK[@]}" unattended-upgrades.service; do
+        systemctl disable --now "$e" >/dev/null 2>&1 || true
+        systemctl mask "$e" >/dev/null 2>&1 || true
+    done
+    # a szolgáltatásokat csak letiltja: ha egy épp fut, végigér (a megszakított csomagtelepítés többet ártana)
+    for e in apt-daily.service apt-daily-upgrade.service fwupd-refresh.service; do
+        systemctl mask "$e" >/dev/null 2>&1 || true
+    done
+    # új Ubuntu-kiadás figyelése ki
+    if [[ -f /etc/update-manager/release-upgrades ]]; then
+        sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades || true
+    fi
+    ok "Az apt nem keres, nem tölt le és nem telepít magától (unattended-upgrades, firmware-, hír- és kiadásfigyelő is ki)"
+    # snap: ha van, az automatikus frissítése is ki (a snapok így sosem töltenek le maguktól)
+    if command -v snap >/dev/null && systemctl is-active --quiet snapd 2>/dev/null; then
+        if fut timeout 120 snap refresh --hold; then ok "Snap: az automatikus frissítés ki"
+        else figy "A snap automatikus frissítését nem sikerült kikapcsolni."; fi
+    fi
+    ok "A rendszer csak akkor frissül, amikor ezt a scriptet kézzel futtatod (utána takarít: régi kernelek, letöltött csomagok)"
+}
+
 lepes_rendszer() {
     # egy korábbi, félbeszakadt futás vagy félbemaradt csomagtelepítés után a csomagkezelő rendbetétele
     csomagkezelo_rendbe || true
@@ -816,6 +877,9 @@ lepes_rendszer() {
     else
         figy "A rendszerfrissítés nem sikerült teljesen: $(apt_hibak) – folytatom, a következő futás újra megpróbálja."
     fi
+    # kevés a tárhely: a már nem kellő csomagok (pl. a régi kernelek) törlése – az automatikus frissítés ezt nem végzi
+    if apt_ autoremove --purge; then ok "Felesleges csomagok (pl. régi kernelek) törölve"
+    else figy "A felesleges csomagok törlése nem sikerült: $(apt_hibak)"; fi
     telepit ca-certificates curl wget gnupg git openssh-server cron psmisc locales \
         || hiba "Az alapcsomagok nem telepíthetők: $(apt_hibak)"
     telepit_opcionalis keyboard-configuration console-setup software-properties-common
@@ -1021,7 +1085,8 @@ lepes_bongeszo() {
     "RequestedLocales": ["hu"],
     "OverrideFirstRunPage": "",
     "OverridePostUpdatePage": "",
-    "DontCheckDefaultBrowser": true
+    "DontCheckDefaultBrowser": true,
+    "DisableAppUpdate": true
   }
 }
 EOF
@@ -1438,6 +1503,7 @@ EOF
     AKT_MUVELET=""
     dc ps || true
     ok "Konténerek elindítva"
+    fut docker image prune -f || true   # a felülírt régi képek (a használtakhoz és az adatokhoz nem nyúl)
 
     # 6) adatbázis: a szerver jelszavai, a táblák és a kezdő admin – ami hiányzik, azt pótolja
     if ! adatbazis_rendbe; then
@@ -1569,15 +1635,321 @@ adatbazis_rendbe() {
 
 lepes_mentes_cron() {
     systemctl enable --now cron || true
+    # a mentést egy kis burkoló futtatja: naplóz, és az eredményről push-értesítést küld
+    {
+        printf '#!/bin/bash\n# BaninaPRO éjszakai adatbázis-mentés – a szerver_beallitas.sh írta, kézzel ne módosítsd.\n'
+        printf 'APP_KONTENER=%q\nERTESITO=%q\n' "$APP_KONTENER" "$ERTESITO"
+        cat <<'EOF'
+NAPLO=/var/log/baninapro-mentes.log
+kimenet="$(timeout 1800 docker exec "$APP_KONTENER" php -q cron_mentes.php 2>&1)"
+rc=$?
+printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${kimenet//$'\n'/ | }" >> "$NAPLO"
+if (( rc == 0 )) && [[ $kimenet == OK* ]]; then
+    "$ERTESITO" -p 2 -t floppy_disk "Éjszakai mentés kész" "$(tail -n 1 <<<"$kimenet")" >/dev/null 2>&1 || true
+else
+    "$ERTESITO" -p 4 -t x,floppy_disk "Az éjszakai mentés NEM sikerült" "Kilépési kód: $rc – $(tail -n 3 <<<"$kimenet")" >/dev/null 2>&1 || true
+fi
+exit "$rc"
+EOF
+    } > "$MENTO.uj"
+    chmod 755 "$MENTO.uj"
+    mv -f "$MENTO.uj" "$MENTO"
     cat > /etc/cron.d/baninapro <<EOF
 # BaninaPRO – napi teljes adatbázis-mentés, mint az éles cron (a szerver_beallitas.sh írta).
 # A mentések a Docker-kötetben vannak; lista: docker exec $APP_KONTENER php -q cron_mentes.php lista
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-$MENTES_CRON root docker exec $APP_KONTENER php -q cron_mentes.php >> /var/log/baninapro-mentes.log 2>&1
+$MENTES_CRON root $MENTO
 EOF
     chmod 644 /etc/cron.d/baninapro
-    ok "Éjszakai adatbázis-mentés: minden nap 03:00 (napló: /var/log/baninapro-mentes.log)"
+    ok "Éjszakai adatbázis-mentés: minden nap 03:00, az eredményről push-értesítés (napló: /var/log/baninapro-mentes.log)"
+}
+
+# ---- Push-értesítések (ntfy) ----------------------------------------------------
+lepes_ertesitesek() {
+    local f="$TITOK_MAPPA/ntfy" asztal
+    install -d -m 700 "$TITOK_MAPPA"
+    # a titkos csatorna: egyszer készül, utána mindig ugyanaz (aki ismeri, olvashatja az értesítéseket)
+    if ! grep -qE '^NTFY_CSATORNA=baninapro-[a-z0-9]{16,}$' "$f" 2>/dev/null; then
+        printf '# BaninaPRO szerver – push-értesítések (ntfy); a csatorna neve titkos, mint egy jelszó\nNTFY_SZERVER=%s\nNTFY_CSATORNA=baninapro-%s\n' \
+            "$NTFY_SZERVER" "$(veletlen_kod 24)" > "$f"
+    fi
+    chmod 600 "$f"
+    NTFY_CSATORNA="$(sed -n 's/^NTFY_CSATORNA=//p' "$f")"
+    ertesito_iras
+    belepesfigyelo_iras
+
+    # indulás (áramszünet / újraindulás felismerése) és szabályos leállás – a gép életciklusa
+    cat > /etc/systemd/system/baninapro-indulas.service <<EOF
+[Unit]
+Description=BaninaPRO értesítés: a szerver elindult (szabályos újraindulás vagy áramszünet után)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+# simple: a háttérben próbálkozik (internet nélkül akár 5 percig) – a rendszer indulását nem tartja fel
+Type=simple
+ExecStart=$ERTESITO --indulas
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /etc/systemd/system/baninapro-leallas.service <<EOF
+[Unit]
+Description=BaninaPRO értesítés: a szerver szabályosan leáll vagy újraindul
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=$ERTESITO --leallas
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /etc/systemd/system/baninapro-belepesfigyelo.service <<EOF
+[Unit]
+Description=BaninaPRO értesítés: be- és kilépések (az alkalmazás naplójából)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$BELEPESFIGYELO
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable baninapro-indulas.service
+    systemctl enable --now baninapro-leallas.service
+    systemctl enable baninapro-belepesfigyelo.service
+    systemctl restart baninapro-belepesfigyelo.service || true
+    ok "Értesít: indulás (áramszünet után is), leállás, belépés / kilépés"
+
+    # első alkalommal próba-értesítés (a feliratkozás után ez már látszik a telefonon)
+    if ! grep -q '^NTFY_PROBA_KESZ=1' "$f"; then
+        if "$ERTESITO" -p 3 -t bell "Értesítések bekapcsolva" \
+            "Ez a próba-értesítés: a BaninaPRO szerver ($GEPNEV) mostantól ide jelez – leállás, újraindulás, áramszünet, hibák és helyreállás, AnyDesk / Docker, éjszakai mentés, napi jelentés ($JELENTES_IDO), belépések."; then
+            echo 'NTFY_PROBA_KESZ=1' >> "$f"
+            ok "Próba-értesítés elküldve"
+        else
+            figy "A próba-értesítés most nem ment el (nincs internet?) – sorba állt, az őrszem később elküldi."
+        fi
+    fi
+
+    # a feliratkozás leírása az asztalon is (nem kötelező: ha nem sikerül, csak figyelmeztet)
+    asztal="$(asztal_mappa)"
+    if cat > "$asztal/BaninaPRO-ertesitesek.txt" <<EOF
+BaninaPRO szerver – értesítések a telefonra (ntfy)
+
+1. Telepítsd az ingyenes „ntfy” alkalmazást (iPhone: App Store, Android: Google Play).
+2. Az alkalmazásban:  +  (Subscribe to topic)  →  Topic:  $NTFY_CSATORNA  →  Subscribe
+   (a szerver az alapértelmezett ntfy.sh – nem kell átírni; az értesítéseket engedélyezd)
+3. Kész: ide érkezik minden értesítés – áramszünet / újraindulás / leállás, hibák és helyreállás (BaninaPRO,
+   AnyDesk, Docker, cron, konténerek, tárhely), az éjszakai mentés eredménye, a napi jelentés ($JELENTES_IDO),
+   a telepítő (frissítés) eredménye, belépések és kilépések.
+
+Böngészőben is olvasható: $NTFY_SZERVER/$NTFY_CSATORNA
+A csatorna neve olyan, mint egy jelszó: aki ismeri, olvashatja az értesítéseket – ne add ki.
+EOF
+    then
+        chown "$CEL_FELH:" "$asztal/BaninaPRO-ertesitesek.txt" || true
+        chmod 600 "$asztal/BaninaPRO-ertesitesek.txt" || true
+        ok "Push-értesítések: ntfy alkalmazás → + → $NTFY_CSATORNA (a leírás az asztalon: BaninaPRO-ertesitesek.txt)"
+    else
+        figy "A feliratkozás leírása nem került az asztalra ($asztal) – a csatorna: $NTFY_CSATORNA (az összegzésben is benne van)."
+    fi
+}
+veletlen_kod() { tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c "$1" || true; }
+
+# Az értesítő: push-értesítés az ntfy-csatornára (JSON, így az ékezet is jó); ha nincs internet, sorba áll
+ertesito_iras() {
+    {
+        printf '#!/bin/bash\n# BaninaPRO push-értesítés (ntfy) – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
+        printf 'BEALLITAS=%q\n' "$TITOK_MAPPA/ntfy"
+        cat <<'EOF'
+#   baninapro-ertesites [-p 1-5] [-t címke,címke] "Cím" "Üzenet"   értesítés (ha nincs internet: sorba áll)
+#   baninapro-ertesites --sorbol      a sorban álló értesítések elküldése (az őrszem hívja 2 percenként)
+#   baninapro-ertesites --eletjel     „még élek” időbélyeg (az őrszem írja – ebből becsülhető egy áramszünet hossza)
+#   baninapro-ertesites --indulas     a gép elindult: szabályos újraindulás vagy áramszünet / váratlan leállás után
+#   baninapro-ertesites --leallas     a gép szabályosan leáll / újraindul (a systemd hívja leálláskor)
+set -u
+export LC_ALL=C.UTF-8
+SOR=/var/spool/baninapro-ertesites
+ALLAPOT=/var/lib/baninapro-ertesites
+mkdir -p "$SOR" "$ALLAPOT"
+SZERVER="$(sed -n 's/^NTFY_SZERVER=//p' "$BEALLITAS" 2>/dev/null)"
+SZERVER="${SZERVER:-https://ntfy.sh}"
+CSATORNA="$(sed -n 's/^NTFY_CSATORNA=//p' "$BEALLITAS" 2>/dev/null)"
+
+json() {   # JSON-karakterlánc idézőjelekkel (\ " újsor tab, a többi vezérlőkarakter kimarad)
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\t'/\\t}
+    s=${s//$'\r'/}
+    printf '"%s"' "$(printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037')"
+}
+kuld_fajl() {   # 0 = elküldve, 1 = most nem megy (újra kell próbálni), 2 = a szerver elutasította (eldobható)
+    local kod
+    kod="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 8 -m 20 -H 'Content-Type: application/json' \
+        --data-binary @"$1" "$SZERVER/" 2>/dev/null || true)"
+    if [[ $kod == 2* ]]; then return 0; fi
+    if [[ $kod == 4* && $kod != 429 ]]; then return 2; fi
+    return 1
+}
+sorbol() {   # a sorban állók a beérkezés sorrendjében; az első sikertelennél abbahagyja
+    local f r zar
+    # egyszerre csak egy folyamat küldjön (különben ugyanaz az értesítés kétszer is elmehetne)
+    exec {zar}>"$ALLAPOT/sorbol.lock"
+    flock -w 25 "$zar" || { exec {zar}>&-; return 1; }
+    for f in "$SOR"/*.json; do
+        [[ -f $f ]] || continue
+        kuld_fajl "$f"
+        r=$?
+        if (( r == 1 )); then exec {zar}>&-; return 1; fi
+        rm -f "$f"
+    done
+    exec {zar}>&-
+    return 0
+}
+ertesit() {   # $1 prioritás (1–5), $2 címkék (vesszővel), $3 cím, $4 üzenet
+    local f tags="" t tl=()
+    [[ -n $CSATORNA ]] || return 1
+    IFS=',' read -r -a tl <<<"$2"
+    for t in "${tl[@]}"; do
+        if [[ -n $t ]]; then tags+="${tags:+,}$(json "$t")"; fi
+    done
+    f="$SOR/$(date +%s%N)-$$.json"
+    printf '{"topic":%s,"title":%s,"message":%s,"priority":%d,"tags":[%s]}\n' \
+        "$(json "$CSATORNA")" "$(json "BaninaPRO · $3")" "$(json "${4:0:1800}")" "$1" "$tags" > "$f"
+    if sorbol; then return 0; fi
+    # nincs internet: sorban marad (legfeljebb 300 értesítés – a legrégebbiek törlődnek)
+    ls -1t "$SOR"/*.json 2>/dev/null | tail -n +301 | xargs -r rm -f
+    return 1
+}
+indulas() {
+    local boot most eletjel kieses="" perc i
+    boot="$(uptime -s)"
+    if [[ -f $ALLAPOT/tiszta-leallas ]]; then
+        ertesit 3 arrows_counterclockwise "Újraindult a szerver" \
+            "Szabályos leállás: $(cat "$ALLAPOT/tiszta-leallas") → elindult: $boot. A BaninaPRO-t az őrszem 3 percen belül ellenőrzi."
+        rm -f "$ALLAPOT/tiszta-leallas"
+    else
+        read -r eletjel most < "$ALLAPOT/eletjel" 2>/dev/null || true
+        if [[ ${eletjel:-} =~ ^[0-9]+$ ]]; then
+            perc=$(( ($(date -d "$boot" +%s) - eletjel) / 60 ))
+            if (( perc >= 60 )); then kieses=" Utolsó életjel: ${most:-?} – a kiesés kb. $(( perc / 60 )) óra $(( perc % 60 )) perc."
+            elif (( perc >= 0 )); then kieses=" Utolsó életjel: ${most:-?} – a kiesés kb. $perc perc."
+            fi   # negatív: az óra indulás után még nem állt be – ilyenkor nem becsül
+        fi
+        ertesit 4 zap,warning "ÁRAMSZÜNET vagy váratlan leállás után újraindult" \
+            "A gép nem szabályosan állt le (áramszünet, lefagyás vagy kihúzott kábel), most elindult: $boot.$kieses A BaninaPRO-t az őrszem 3 percen belül ellenőrzi, és ha kell, helyreállítja."
+    fi
+    # a hálózat indulás után lassan éledhet: legfeljebb 5 percig próbálkozik, utána a sorban marad (az őrszem elküldi)
+    for (( i = 0; i < 30; i++ )); do
+        sorbol && return 0
+        sleep 10
+    done
+    return 0
+}
+leallas() {
+    local mod="leáll"
+    if systemctl list-jobs 2>/dev/null | grep -q 'reboot.target'; then mod="újraindul"; fi
+    date '+%Y-%m-%d %H:%M:%S' > "$ALLAPOT/tiszta-leallas"
+    ertesit 3 stop_sign "A szerver $mod" "Szabályos leállás: $(date '+%Y-%m-%d %H:%M') – a szerver most $mod." || true
+}
+
+case "${1:-}" in
+    --sorbol)  sorbol ;;
+    --eletjel) printf '%s %s\n' "$(date +%s)" "$(date '+%Y-%m-%d %H:%M')" > "$ALLAPOT/eletjel" ;;
+    --indulas) indulas ;;
+    --leallas) leallas ;;
+    *)
+        p=3 t=""
+        while getopts 'p:t:' o; do
+            case $o in p) p=$OPTARG ;; t) t=$OPTARG ;; *) ;; esac
+        done
+        shift $(( OPTIND - 1 ))
+        [[ $p =~ ^[1-5]$ ]] || p=3
+        ertesit "$p" "$t" "${1:-Értesítés}" "${2:-}"
+        ;;
+esac
+EOF
+    } > "$ERTESITO.uj"
+    chmod 755 "$ERTESITO.uj"
+    mv -f "$ERTESITO.uj" "$ERTESITO"
+}
+
+# A belépésfigyelő: az alkalmazás napi naplójából (a Docker-kötetben) a be- és kilépések (a lejárt munkamenet miatti
+# kiléptetés is), a sikertelen és a blokkolt belépések push-értesítésként – a felhasználók egyéb tevékenysége nem
+belepesfigyelo_iras() {
+    {
+        printf '#!/bin/bash\n# BaninaPRO belépésfigyelő – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
+        printf 'KOTET=%q\nERTESITO=%q\n' "$ADATOK_KOTET" "$ERTESITO"
+        cat <<'EOF'
+set -u
+export LC_ALL=C   # bájtpontos olvasás (a napló UTF-8 – a szöveg változatlanul megy tovább)
+ALLAPOT=/var/lib/baninapro-ertesites/belepesfigyelo
+mkdir -p "$(dirname "$ALLAPOT")"
+naplo_mappa() { local m; m="$(docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)"; [[ -n $m ]] && printf '%s/LOG' "$m"; }
+mai_fajl() { printf '%s/%s.txt' "$1" "$(date -d '-3 hours' +%Y%m%d)"; }   # a napló napja 03:00-kor vált
+feldolgoz() {   # [ÉÉÉÉ-HH-NN óó:pp:mm] felhasználó | IP | KÓD | EREDMÉNY | részletek
+    local re='^\[([^]]+)\] ([^|]*) \| ([^|]*) \| (BELEPES|KILEPES|KILEPTETES) \| ([^|]*) \| (.*)$' ido felh ip kod er r
+    [[ $1 =~ $re ]] || return 0
+    ido=${BASH_REMATCH[1]} felh=${BASH_REMATCH[2]% } ip=${BASH_REMATCH[3]% } kod=${BASH_REMATCH[4]} er=${BASH_REMATCH[5]% } r=${BASH_REMATCH[6]}
+    case "$kod:$er" in
+        BELEPES:OK)        "$ERTESITO" -p 2 -t bust_in_silhouette "Belépett: $felh" "$ido · $r · IP: $ip" ;;
+        KILEPES:OK)        "$ERTESITO" -p 2 -t wave "Kilépett: $felh" "$ido · IP: $ip" ;;
+        KILEPTETES:*)      "$ERTESITO" -p 2 -t hourglass "Kiléptetve: $felh" "$ido · $r · IP: $ip" ;;   # lejárt munkamenet
+        BELEPES:BLOKKOLVA) "$ERTESITO" -p 4 -t no_entry "Belépés blokkolva: $felh" "$ido · $r · IP: $ip" ;;
+        BELEPES:*)         "$ERTESITO" -p 3 -t warning "Sikertelen belépés: $felh" "$ido · $r · IP: $ip" ;;
+    esac
+}
+olvas() {   # a $1 fájl új, teljes sorai a $poz bájttól
+    local meret darab teljes sor
+    meret=$(stat -c %s "$1" 2>/dev/null || echo 0)
+    if (( meret < poz )); then poz=0; fi   # a fájl rövidebb lett (pl. visszaállítás után) – elölről
+    (( meret > poz )) || return 0
+    darab="$(tail -c +$(( poz + 1 )) "$1" | head -c $(( meret - poz )); printf x)"
+    darab="${darab%x}"
+    [[ $darab == *$'\n'* ]] || return 0   # még nincs teljes sor
+    teljes="${darab%$'\n'*}"
+    poz=$(( poz + ${#teljes} + 1 ))
+    while IFS= read -r sor; do feldolgoz "$sor"; done <<<"$teljes"
+}
+fajl="" poz=0 mappa=""
+if [[ -f $ALLAPOT ]]; then read -r fajl poz < "$ALLAPOT" || true; fi
+[[ $poz =~ ^[0-9]+$ ]] || poz=0
+while true; do
+    if [[ -z $mappa || ! -d $mappa ]]; then   # a kötet helye (csak akkor kérdezi a Dockert, ha még nem tudja)
+        mappa="$(naplo_mappa)"
+        if [[ -z $mappa || ! -d $mappa ]]; then mappa=""; sleep 30; continue; fi
+    fi
+    uj="$(mai_fajl "$mappa")"
+    if [[ -z $fajl ]]; then   # első indulás: a mostani végéről (a régi sorokról nem küld értesítést)
+        fajl=$uj
+        poz=$(stat -c %s "$fajl" 2>/dev/null || echo 0)
+    fi
+    if [[ $uj != "$fajl" ]]; then   # napváltás (03:00): előbb a régi fájl maradéka, aztán az új az elejéről
+        olvas "$fajl"
+        fajl=$uj
+        poz=0
+    fi
+    olvas "$fajl"
+    printf '%s %s\n' "$fajl" "$poz" > "$ALLAPOT"
+    sleep 5
+done
+EOF
+    } > "$BELEPESFIGYELO.uj"
+    chmod 755 "$BELEPESFIGYELO.uj"
+    mv -f "$BELEPESFIGYELO.uj" "$BELEPESFIGYELO"
 }
 
 # Az őrszem: 2 percenként ellenőrzi, hogy a BaninaPRO elérhető-e (oldal + adatbázis), és ha nem, emberi beavatkozás
@@ -1585,11 +1957,16 @@ EOF
 orszem_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO őrszem – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'REPO=%q\nAPP_KONTENER=%q\nAPP_PORT=%q\nJELENTO=%q\n' "$REPO" "$APP_KONTENER" "$APP_PORT" "$JELENTO"
+        printf 'REPO=%q\nAPP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nJELENTO=%q\nERTESITO=%q\n' \
+            "$REPO" "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$JELENTO" "$ERTESITO"
+        printf 'AUTO_FRISSITO_IDOZITOK=(%s)\n' "${AUTO_FRISSITO_IDOZITOK[*]}"
         cat <<'EOF'
-# Ha a BaninaPRO nem érhető el, lépcsőzetesen helyreállítja: a hiányzó / leállt konténerek indítása → a konténerek
+# 2 percenként: életjel és a sorban álló értesítések elküldése; a részek ellenőrzése (Docker, AnyDesk, cron, hogy az
+# automatikus frissítés ki maradjon, konténerek, tárhely, frissítés utáni újraindítás) – minden változásról
+# push-értesítés –, végül a BaninaPRO elérhetősége.
+# Ha nem érhető el, lépcsőzetesen helyreállítja: a hiányzó / leállt konténerek indítása → a konténerek
 # újraindítása → a Docker újraindítása (legfeljebb félóránként) → ha 1 órán át sem sikerül, a gép újraindítása
-# (legfeljebb 6 óránként). Ha nem sikerül, e-mailben riaszt (ha a napi jelentés be van állítva), és szól, ha helyreállt.
+# (legfeljebb 6 óránként). Közben értesít, és szól, ha helyreállt.
 NAPLO=/var/log/baninapro-orszem.log
 ALLAPOT=/var/lib/baninapro-orszem
 mkdir -p "$ALLAPOT"
@@ -1598,7 +1975,15 @@ exec 9>/run/baninapro-orszem.lock
 flock -n 9 || exit 0
 
 naplo() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$NAPLO"; }
+ert() { "$ERTESITO" "$@" >> "$NAPLO" 2>&1 || true; }   # push-értesítés (ha nincs internet: sorba áll)
 dc() { (cd "$REPO" && timeout 600 docker compose "$@") >> "$NAPLO" 2>&1; }
+# egy rész állapotának változása ($1 = név, $2 = ok | hiba): 0, ha változott – az első futás „ok”-nak veszi a korábbit
+valtozott() {
+    local f="$ALLAPOT/allapot-$1" regi
+    regi="$(cat "$f" 2>/dev/null || echo ok)"
+    echo "$2" > "$f"
+    [[ $regi != "$2" ]]
+}
 rendben() {
     [[ $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$APP_PORT/" || true) == 200 ]] || return 1
     timeout 30 docker exec "$APP_KONTENER" php -r 'require "/var/www/html/includes/db.php"; db_val("SELECT 1");' >/dev/null 2>&1
@@ -1611,6 +1996,7 @@ var_rendben() {   # legfeljebb $1 másodpercig vár, hogy helyreálljon
 mp_ota() { echo $(( $(date +%s) - $(cat "$1" 2>/dev/null || echo 0) )); }
 helyreallt() {
     naplo "Helyreállt: $1"
+    ert -p 3 -t white_check_mark "A BaninaPRO újra elérhető" "Helyreállt $1 (kb. $(( $(mp_ota "$ALLAPOT/hiba_ota") / 60 )) perc kiesés után)."
     if [[ -f $ALLAPOT/riasztva ]]; then
         rm -f "$ALLAPOT/riasztva"
         "$JELENTO" riasztas "A BaninaPRO újra elérhető ($1)." >> "$NAPLO" 2>&1 || true
@@ -1622,12 +2008,106 @@ helyreallt() {
 # a napló ne nőjön a végtelenségig
 if [[ -f $NAPLO ]] && (( $(stat -c %s "$NAPLO") > 5000000 )); then mv -f "$NAPLO" "$NAPLO.1"; fi
 
+# életjel (egy áramszünet hosszát ebből becsüli az induláskori értesítés) és a korábban el nem küldött értesítések
+"$ERTESITO" --eletjel >/dev/null 2>&1 || true
+"$ERTESITO" --sorbol >/dev/null 2>&1 || true
+
+# --- a részek: minden változásról értesítés ---
+# Docker
+docker_fut=1
+if timeout 30 docker info >/dev/null 2>&1; then
+    if valtozott docker ok; then ert -p 3 -t white_check_mark "A Docker újra fut" "A Docker szolgáltatás ismét működik."; fi
+else
+    naplo "A Docker nem válaszol – indítás"
+    systemctl reset-failed containerd docker >/dev/null 2>&1
+    systemctl restart containerd docker >> "$NAPLO" 2>&1
+    sleep 10
+    if timeout 30 docker info >/dev/null 2>&1; then
+        ert -p 4 -t warning "A Docker leállt" "A Docker szolgáltatás nem válaszolt – újraindítottam, most már fut."
+        echo ok > "$ALLAPOT/allapot-docker"
+    else
+        docker_fut=0
+        if valtozott docker hiba; then ert -p 5 -t rotating_light "A Docker nem fut" "A Docker szolgáltatás leállt, és újraindítás után sem indult el – a BaninaPRO nem elérhető."; fi
+    fi
+fi
+# szolgáltatások (ha telepítve vannak): mindig fussanak – ha leálltak, újraindítja
+figyel() {   # $1 = systemd-egység, $2 = megnevezés, $3 = mi nem működik nélküle
+    systemctl cat "$1" >/dev/null 2>&1 || return 0
+    if systemctl is-active --quiet "$1"; then
+        if valtozott "$1" ok; then ert -p 3 -t white_check_mark "$2 újra fut" "$2 ismét működik."; fi
+        return 0
+    fi
+    naplo "$2 nem fut – újraindítás"
+    systemctl reset-failed "$1" >/dev/null 2>&1
+    systemctl restart "$1" >> "$NAPLO" 2>&1
+    sleep 5
+    if systemctl is-active --quiet "$1"; then
+        ert -p 4 -t warning "$2 leállt" "$2 nem futott – újraindítottam, most már fut."
+        echo ok > "$ALLAPOT/allapot-$1"
+    elif valtozott "$1" hiba; then
+        ert -p 4 -t warning "$2 nem fut" "$2 leállt, és újraindítás után sem indult el – $3."
+    fi
+}
+figyel anydesk "Az AnyDesk" "a távoli elérés most nem működik"
+figyel cron "A cron (ütemező)" "az éjszakai adatbázis-mentés nem fut le"
+# az automatikus rendszerfrissítés maradjon kikapcsolva (kevés a tárhely) – ha valami visszakapcsolta, újra ki
+for e in "${AUTO_FRISSITO_IDOZITOK[@]}"; do
+    a="$(systemctl is-enabled "$e" 2>/dev/null)"
+    if [[ -n $a && $a != masked && $a != masked-runtime && $a != not-found ]]; then
+        naplo "$e: $a – az automatikus frissítés újra kikapcsolva"
+        systemctl disable --now "$e" >/dev/null 2>&1
+        systemctl mask "$e" >/dev/null 2>&1
+        ert -p 3 -t warning "Az automatikus frissítés visszakapcsolódott" "$e ($a) – újra kikapcsoltam: a szerver ne keressen és ne töltsön le frissítést magától (kevés a tárhely)."
+    fi
+done
+# konténerek: fut-e, és újraindította-e a Docker (összeomlás után)
+if (( docker_fut )); then
+    for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
+        a="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$k" 2>/dev/null || echo 'hiányzik 0')"
+        allapot="${a% *}" db="${a##* }"
+        regi_db="$(cat "$ALLAPOT/ujraindulas-$k" 2>/dev/null || echo "$db")"
+        echo "$db" > "$ALLAPOT/ujraindulas-$k"
+        if [[ $db =~ ^[0-9]+$ && $regi_db =~ ^[0-9]+$ ]] && (( db > regi_db )); then
+            ert -p 3 -t arrows_counterclockwise "A(z) $k konténer újraindult" "A Docker újraindította (összesen ${db}×) – a konténer naplója: docker logs $k"
+        fi
+        if [[ $allapot == running ]]; then
+            if valtozott "kontener-$k" ok; then ert -p 3 -t white_check_mark "A(z) $k konténer újra fut" "A konténer ismét működik."; fi
+            continue
+        fi
+        naplo "A(z) $k konténer nem fut ($allapot) – indítás"
+        dc up -d --remove-orphans
+        sleep 5
+        if [[ $(docker inspect -f '{{.State.Status}}' "$k" 2>/dev/null) == running ]]; then
+            ert -p 4 -t warning "A(z) $k konténer leállt" "Állapota „$allapot” volt – elindítottam, most már fut."
+            echo ok > "$ALLAPOT/allapot-kontener-$k"
+        elif valtozott "kontener-$k" hiba; then
+            ert -p 4 -t warning "A(z) $k konténer nem fut" "Állapota: $allapot – elindítás után sem fut."
+        fi
+    done
+fi
+# tárhely
+szabad=$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')
+if (( szabad < 5 )); then
+    if valtozott tarhely hiba; then ert -p 4 -t warning "Kevés a szabad hely" "Már csak $szabad GB szabad a lemezen."; fi
+elif valtozott tarhely ok; then
+    ert -p 3 -t white_check_mark "Van elég szabad hely" "Szabad hely a lemezen: $szabad GB."
+fi
+# rendszerfrissítés után újraindítás kellene (a gép magától nem indul újra)
+if [[ -f /var/run/reboot-required ]]; then
+    if valtozott ujrainditas_kell hiba; then ert -p 2 -t information_source "Újraindítás ajánlott" "Rendszerfrissítés után a gép újraindítása szükséges – alkalmas időben: sudo reboot"; fi
+else
+    valtozott ujrainditas_kell ok || true
+fi
+
+# --- a BaninaPRO elérhetősége ---
 if rendben; then
-    rm -f "$ALLAPOT/hiba_ota"
-    if [[ -f $ALLAPOT/riasztva ]]; then helyreallt "magától"; fi
+    if [[ -f $ALLAPOT/hiba_ota ]]; then helyreallt "magától"; fi
     exit 0
 fi
-[[ -f $ALLAPOT/hiba_ota ]] || date +%s > "$ALLAPOT/hiba_ota"
+if [[ ! -f $ALLAPOT/hiba_ota ]]; then
+    date +%s > "$ALLAPOT/hiba_ota"
+    ert -p 4 -t rotating_light "A BaninaPRO nem érhető el" "Az oldal vagy az adatbázis nem válaszol – az őrszem most helyreállítja."
+fi
 naplo "A BaninaPRO nem érhető el – helyreállítás…"
 
 # kevés hely: a felesleg törlése (a konténerekhez és a kötetekhez – az adatokhoz – nem nyúl)
@@ -1664,11 +2144,14 @@ fi
 # 5) riasztás e-mailben – ha már 10 perce nem jó (legfeljebb 6 óránként)
 if (( $(mp_ota "$ALLAPOT/hiba_ota") > 600 && $(mp_ota "$ALLAPOT/riasztva") > 21600 )); then
     date +%s > "$ALLAPOT/riasztva"
+    ert -p 5 -t rotating_light "A BaninaPRO $(( $(mp_ota "$ALLAPOT/hiba_ota") / 60 )) perce NEM érhető el" \
+        "Az őrszem még nem tudta helyreállítani (konténerek, Docker újraindítva). Ha 1 órán belül sem sikerül, újraindítja a gépet."
     "$JELENTO" riasztas "A BaninaPRO $(( $(mp_ota "$ALLAPOT/hiba_ota") / 60 )) perce nem érhető el, és az őrszem még nem tudta helyreállítani. Ha 1 órán belül sem sikerül, újraindítja a gépet." >> "$NAPLO" 2>&1 || true
 fi
 # 6) végső eset: ha már 1 órája nem jó, a gép újraindítása (legfeljebb 6 óránként)
 if (( $(mp_ota "$ALLAPOT/hiba_ota") > 3600 && $(mp_ota "$ALLAPOT/gep_ujrainditas") > 21600 )); then
     naplo "1 órája nem érhető el – a gép újraindítása"
+    ert -p 5 -t rotating_light "Újraindítom a szervert" "A BaninaPRO 1 órája nem érhető el, a többi lépés nem segített – végső lépésként a gép most újraindul."
     date +%s > "$ALLAPOT/gep_ujrainditas"
     sync
     systemctl reboot
@@ -1712,8 +2195,8 @@ EOF
     ok "Őrszem: 2 percenként ellenőrzi a BaninaPRO-t, és ha nem érhető el, magától helyreállítja (napló: /var/log/baninapro-orszem.log)"
 }
 
-# Napi állapotjelentés e-mailben (és az őrszem értesítései). A levelet a curl beépített SMTP-küldése viszi a Gmailen
-# keresztül – külön program, modul vagy licenc nem kell hozzá. Asztali ikon is készül a kézi futtatáshoz.
+# Napi állapotjelentés: push-értesítés (ntfy), és ha van feladó-postafiók, e-mail is – a levelet a curl beépített
+# SMTP-küldése viszi, külön program, modul vagy licenc nem kell hozzá. Asztali ikon is készül a kézi futtatáshoz.
 lepes_jelentes() {
     local asztal
     install -d -m 700 "$TITOK_MAPPA"
@@ -1722,7 +2205,7 @@ lepes_jelentes() {
 
     cat > /etc/systemd/system/baninapro-jelentes.service <<EOF
 [Unit]
-Description=BaninaPRO napi állapotjelentés e-mailben
+Description=BaninaPRO napi állapotjelentés (push-értesítés, e-mail)
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -1760,9 +2243,9 @@ EOF
 
     JELENTES_FELADO="$(sed -n 's/^EMAIL_FELADO=//p; s/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null | head -n 1 || true)"
     if [[ -n $JELENTES_FELADO ]]; then
-        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
+        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor push-értesítésként és e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
     else
-        figy "A napi állapotjelentés most csak helyben készül (/var/log/baninapro-jelentes/) – az e-mailhez ($JELENTES_CIMZETT) egy feladó-postafiók kell (pl. a céges tárhely egy postafiókja): futtasd újra a scriptet, és add meg."
+        ok "Napi állapotjelentés: minden nap $JELENTES_IDO-kor push-értesítésként (e-mailben is, ha beállítod: sudo bash $(basename "$SCRIPT") --email)"
     fi
 }
 
@@ -1782,14 +2265,15 @@ email_mentes() {
     EMAIL_UJ=1
 }
 
-# a felhasználó asztal-mappája (magyarul általában ~/Asztal) az xdg-user-dirs szerint – ha kell, létrehozza
+# a felhasználó asztal-mappája (magyarul általában ~/Asztal) az xdg-user-dirs szerint – ha kell, létrehozza.
+# A hívó $(...)-ben olvassa: a kimenetén csak az útvonal lehet, minden más (pl. a csomagtelepítésé) a naplóba megy.
 asztal_mappa() {
     local m=""
-    command -v xdg-user-dirs-update >/dev/null || telepit_opcionalis xdg-user-dirs
+    command -v xdg-user-dirs-update >/dev/null || telepit_opcionalis xdg-user-dirs >&2
     felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dirs-update >/dev/null 2>&1 || true
     m="$(felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dir DESKTOP 2>/dev/null || true)"
-    if [[ -z $m || $m == "$CEL_HOME" || $m != "$CEL_HOME"/* ]]; then m="$CEL_HOME/Asztal"; fi
-    felh mkdir -p "$m"
+    if [[ -z $m || $m == "$CEL_HOME" || $m != "$CEL_HOME"/* || $m == *$'\n'* ]]; then m="$CEL_HOME/Asztal"; fi
+    felh mkdir -p "$m" >&2
     echo "$m"
 }
 ikon_iras() {
@@ -1798,7 +2282,7 @@ ikon_iras() {
 Type=Application
 Version=1.0
 Name=BaninaPRO ellenőrzés
-Comment=A szerver ellenőrzése, és az állapotjelentés elküldése e-mailben
+Comment=A szerver ellenőrzése, és az állapotjelentés elküldése (push-értesítés, e-mail)
 Exec=sudo $JELENTO kezi
 Icon=utilities-system-monitor
 Terminal=true
@@ -1812,13 +2296,15 @@ EOF
 jelento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO állapotjelentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\n' \
-            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT"
+        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\nERTESITO=%q\n' \
+            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT" "$ERTESITO"
+        printf 'AUTO_FRISSITO_IDOZITOK=(%s)\n' "${AUTO_FRISSITO_IDOZITOK[*]}"
         cat <<'EOF'
-# Ellenőrzi a szervert, és az eredményt e-mailben elküldi:
+# Ellenőrzi a szervert, és az eredményt elküldi push-értesítésként (rövid összefoglaló) és e-mailben (ha van feladó):
 #   baninapro-jelentes napi             minden nap 03:30-kor (systemd-időzítő)
 #   baninapro-jelentes kezi             az asztali ikonról – ugyanez, a képernyőn is
 #   baninapro-jelentes proba            próba-jelentés (a telepítő küldi, amikor az e-mailt beállítja)
+#   (a riasztásról az őrszem maga küld push-értesítést – a riasztas mód csak e-mailt küld)
 #   baninapro-jelentes riasztas SZÖVEG  az őrszem értesítése (nem tudta helyreállítani / helyreállt)
 # A levél mindig a CIMZETT-hez megy; a curl beépített SMTP-küldése viszi a beállított feladó-postafiókon keresztül
 # (pl. a céges tárhely egy postafiókja) – külön program nem kell hozzá.
@@ -1850,7 +2336,7 @@ pkod="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://127.0.0.1:$
 
 # --- a 03:00-s mentés ---
 lista="$(timeout 120 docker exec "$APP_KONTENER" php -q cron_mentes.php lista 2>/dev/null || true)"
-mai="$(grep -E "$(date +%Y%m%d)_0[0-9]{3}" <<<"$lista" | tail -n 1 || true)"
+mai="$(grep -E "$(date -d '-3 hours' +%Y%m%d)_0[0-9]{3}" <<<"$lista" | tail -n 1 || true)"   # 03:00 előtt a tegnapi
 db_mentes="$(grep -c '\.sql' <<<"$lista" || true)"
 if [[ -n $mai ]]; then
     mentes="ELKÉSZÜLT – $(awk '{ print $NF " (" $3 " " $4 ")" }' <<<"$mai")"
@@ -1867,7 +2353,7 @@ szabad_gb="$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
 (( szabad_gb >= 5 )) || pr "Kevés a szabad hely a lemezen: $szabad_gb GB"
 read -r fut _ < /proc/uptime
 fut=${fut%.*}
-for sz in docker containerd cron baninapro-orszem.timer anydesk; do
+for sz in docker containerd cron baninapro-orszem.timer baninapro-belepesfigyelo anydesk; do
     if systemctl is-active --quiet "$sz"; then allapotok+=("$sz: fut"); else allapotok+=("$sz: NEM FUT"); pr "Nem fut: $sz"; fi
 done
 for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
@@ -1878,6 +2364,17 @@ for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
     kont+=("$k: $a")
 done
 orszem="$(awk -v t="$(date -d '24 hours ago' '+%Y-%m-%d %H:%M:%S')" '($1 " " $2) >= t' /var/log/baninapro-orszem.log 2>/dev/null | tail -n 15 || true)"
+auto_be=()
+for e in "${AUTO_FRISSITO_IDOZITOK[@]}"; do
+    a="$(systemctl is-enabled "$e" 2>/dev/null)"
+    if [[ -n $a && $a != masked && $a != masked-runtime && $a != not-found ]]; then auto_be+=("$e"); fi
+done
+if (( ${#auto_be[@]} )); then
+    auto="BE: ${auto_be[*]}"
+    pr "Az automatikus frissítés be van kapcsolva (${auto_be[*]}) – az őrszem kikapcsolja"
+else
+    auto="ki – a rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül"
+fi
 anydesk_id="$(timeout 15 anydesk --get-id 2>/dev/null | tr -dc '0-9' || true)"
 
 if (( ${#problemak[@]} )); then allapot="FIGYELEM – ${#problemak[@]} probléma"; else allapot="MINDEN RENDBEN"; fi
@@ -1905,6 +2402,7 @@ fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod"
     echo "  Tárhely (/):    $(df -hP / | awk 'NR == 2 { print $4 " szabad / " $2 " (" $5 " foglalt)" }')"
     echo "  Memória:        $(free -h | awk '/^Mem:/ { print $3 " használt / " $2 }')"
     echo "  Terhelés:       $(cut -d' ' -f1-3 /proc/loadavg)"
+    echo "  Automatikus frissítés: $auto"
     echo "  Újraindítás kell (frissítés miatt): $([[ -f /var/run/reboot-required ]] && echo igen || echo nem)"
     echo
     echo "Szolgáltatások"
@@ -1965,6 +2463,28 @@ else
     eredmeny="Az e-mail küldése NEM sikerült (a feladó-postafiók címe, jelszava, SMTP-szervere? internet?) – a jelentés itt van: $fajl"
     rc=1
 fi
+# push-értesítés (ntfy): rövid összefoglaló – a teljes jelentés a fájlban (és e-mailben, ha be van állítva).
+# A riasztásokról az őrszem maga értesít, ezért annál csak e-mail megy.
+if [[ $mod != riasztas && -x $ERTESITO ]]; then
+    case $mod in
+        napi) pcim="Napi jelentés – $allapot" ;;
+        kezi) pcim="Kézi ellenőrzés – $allapot" ;;
+        *)    pcim="Próba-jelentés – $allapot" ;;
+    esac
+    if (( ${#problemak[@]} )); then pp=4 pt=warning; else pp=3 pt=clipboard; fi
+    rovid="$(
+        if (( ${#problemak[@]} )); then printf '• %s\n' "${problemak[@]}"; fi
+        printf 'BaninaPRO: HTTP %s, API %s · %s tábla, %s felhasználó\n' "${kod:-–}" "$api" "${tablak:-?}" "$felh"
+        printf 'Mentés (03:00): %s\n' "$mentes"
+        printf 'Tárhely: %s szabad · utolsó indítás: %s\n' "$(df -hP / | awk 'NR == 2 { print $4 }')" "$(uptime -s)"
+        if (( rc )); then printf 'Az e-mail küldése NEM sikerült (feladó-postafiók / internet?)\n'; fi
+    )"
+    if "$ERTESITO" -p "$pp" -t "$pt" "$pcim" "$rovid" >/dev/null 2>&1; then
+        eredmeny+=" · push-értesítés elküldve"
+    else
+        eredmeny+=" · push-értesítés sorba állt (nincs internet?)"
+    fi
+fi
 echo "$(date '+%Y-%m-%d %H:%M:%S')  $mod: $allapot – $eredmeny" >> "$MAPPA/kuldesek.log"
 if [[ $mod == kezi ]]; then
     printf '\n%s\n' "$eredmeny"
@@ -1987,6 +2507,9 @@ ellenorzo_lekeres() {
 
 lepes_ellenorzes() {
     local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot lan pma_db
+    # kevés a tárhely: a telepítéshez letöltött csomagfájlok törlése (a telepített programok maradnak)
+    apt-get clean >/dev/null 2>&1 || true
+    ok "Letöltött csomagfájlok törölve – szabad hely: $(szabad_gb) GB"
     AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul"
     for i in $(seq 1 60); do
         fut ellenorzo_lekeres || true
@@ -2069,10 +2592,18 @@ lepes_ellenorzes() {
             figy "$k állapota: $allapot"
         fi
     done
-    for s in docker containerd anydesk lightdm baninapro-orszem.timer baninapro-jelentes.timer; do
+    for s in docker containerd anydesk lightdm baninapro-orszem.timer baninapro-jelentes.timer \
+        baninapro-indulas.service baninapro-leallas.service baninapro-belepesfigyelo.service; do
         if systemctl is-enabled --quiet "$s" 2>/dev/null; then ok "$s: a géppel együtt indul"
         else figy "$s: nem indul automatikusan"; fi
     done
+    if systemctl is-active --quiet baninapro-belepesfigyelo.service; then ok "A belépésfigyelő fut (be- és kilépésekről értesít)"
+    else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
+    # a push-értesítések: a sorban álló (még el nem küldött) értesítések elküldése – ha nem megy, nincs internet
+    fut "$ERTESITO" --sorbol || true
+    s="$(find /var/spool/baninapro-ertesites -name '*.json' 2>/dev/null | wc -l)"
+    if (( s == 0 )); then ok "Push-értesítések: minden értesítés elment ($NTFY_SZERVER)"
+    else figy "$s push-értesítés még sorban áll ($NTFY_SZERVER nem érhető el?) – az őrszem 2 percenként újrapróbálja."; fi
 
     # az e-mail most lett beállítva: próba-jelentés – ha nem megy el, a beállítást törli, és a következő futás újra kérdez
     if (( EMAIL_UJ )); then
@@ -2191,10 +2722,15 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     fi
     osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
     osz "" "  (Tipp: a routerben foglald le ezt az IP-címet a szervernek – DHCP-foglalás –, hogy ne változzon.)"
+    if [[ -z $NTFY_CSATORNA ]]; then NTFY_CSATORNA="$(sed -n 's/^NTFY_CSATORNA=//p' "$TITOK_MAPPA/ntfy" 2>/dev/null || true)"; fi
+    if [[ -n $NTFY_CSATORNA ]]; then
+        osz "" "  Értesítések a telefonra: ntfy alkalmazás → + (Subscribe to topic) → Topic: $NTFY_CSATORNA"
+        osz "" "                 (böngészőben: $NTFY_SZERVER/$NTFY_CSATORNA – leírás az asztalon: BaninaPRO-ertesitesek.txt)"
+    fi
     if [[ -n $JELENTES_FELADO ]]; then
-        osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
+        osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor push-értesítésként és e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
     else
-        osz "" "  Napi jelentés: helyben készül (/var/log/baninapro-jelentes/) – az e-mailhez ($JELENTES_CIMZETT) feladó-postafiók kell"
+        osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor push-értesítésként (e-mailben is: sudo bash $(basename "$SCRIPT") --email)"
     fi
     osz "" "  Az adatbázis root-jelszava (ha valaha kellene): sudo cat $TITOK_MAPPA/titkok"
     osz "" "  Kézi ellenőrzés: az asztalon a „BaninaPRO ellenőrzés” ikon (vagy: sudo $JELENTO kezi)"
@@ -2218,6 +2754,7 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
             && chmod 600 "$CEL_HOME/BaninaPRO-osszegzes.txt" \
             && ki "" && ki "  Az összegzés elmentve: $CEL_HOME/BaninaPRO-osszegzes.txt"
     fi
+    vegeredmeny_ertesites "$rc"
     if (( rc )); then return 0; fi
 
     if [[ -f /var/run/reboot-required ]] || ! systemctl is-active --quiet lightdm; then UJRAINDITAS=1; fi
@@ -2239,6 +2776,29 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     fi
 }
 
+# a telepítés / frissítés végeredménye push-értesítésként is (ha az értesítő már be van állítva)
+vegeredmeny_ertesites() {   # $1 = 0: sikeres; különben a kilépési kód
+    local lan verzio nev="" f uzenet
+    [[ -x $ERTESITO && -s $TITOK_MAPPA/ntfy ]] || return 0
+    if (( $1 )); then
+        if (( AKT_I > 0 )); then IFS='|' read -r _ _ nev <<<"${LEPESEK[AKT_I - 1]}"; fi
+        "$ERTESITO" -p 4 -t x "Telepítés / frissítés: HIBA" \
+            "A szerver_beallitas.sh megállt${nev:+ ($AKT_I. lépés: $nev)}: ${HIBA_UZENET%%$'\n'*}. A hiba javítása után újrafuttatható. Napló: $NAPLO" \
+            >/dev/null 2>&1 || true
+        return 0
+    fi
+    lan="$(lan_ip)"
+    verzio="$(grep -o '"verzio":"[^"]*"' "$TMPD/oldal.html" 2>/dev/null | cut -d'"' -f4 || true)"
+    uzenet="BaninaPRO ${verzio:+$verzio }fut: http://${lan:-$GEPNEV.local} · phpMyAdmin: http://${lan:-$GEPNEV.local}:$PMA_PORT"
+    if (( ${#FIGYELMEZTETESEK[@]} )); then
+        uzenet+=$'\n'"Figyelmeztetések (${#FIGYELMEZTETESEK[@]}):"
+        for f in "${FIGYELMEZTETESEK[@]}"; do uzenet+=$'\n'"• $f"; done
+        "$ERTESITO" -p 3 -t warning "Telepítés / frissítés kész – ${#FIGYELMEZTETESEK[@]} figyelmeztetéssel" "$uzenet" >/dev/null 2>&1 || true
+    else
+        "$ERTESITO" -p 3 -t white_check_mark "Telepítés / frissítés kész – minden rendben" "$uzenet" >/dev/null 2>&1 || true
+    fi
+}
+
 # kilépéskor: ha a script egy lépés közben hibával állt le, akkor is legyen összegzés
 kilepeskor() {
     local rc=$?
@@ -2254,6 +2814,10 @@ main() {
         echo "Rendszergazdaként kell futtatni:  sudo bash $(basename "$SCRIPT")"
         exit 1
     fi
+    local a
+    for a in "$@"; do
+        if [[ $a == --email ]]; then EMAIL_KERDES=1; fi   # a feladó-postafiók (újra)beállítása
+    done
     naplo_inditas
     kepernyo_beallitas
     TMPD="$(mktemp -d)"

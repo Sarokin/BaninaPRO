@@ -158,6 +158,9 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   FIZETENDŐ számlákat gyűjti (fizetési határidő, majd kelte szerint), az összeg soha nem lépi túl a limitet.
   Ami nem fér bele, azt kihagyja és a következővel folytatja. Előnézet → pipák → *Utalás létrehozása*.
 * **Utalás teljesítve** (dátum + banki hivatkozás) → a számlák FIZETVE/BESZÁMÍTVA státuszba kerülnek.
+  **Az UTALVA státusz ideje (1.17):** az utalás fejlécében és a listában a megadott utalási dátum mellett az is látszik,
+  hogy **mikor** (dátum, perc) és **ki** állította az utalást UTALVA státuszba – a kettő eltérhet, pl. ha a tegnapi
+  utalást ma rögzítik.
   Irodavezető vagy admin vissza tudja nyitni. Nyitott utalás törölhető (a számlák visszakerülnek FIZETENDŐ-be) – szintén
   irodavezető / admin.
 * **Aktuális utalás – bankkártya gomb (1.10):** amint egy számlát utaláshoz adsz (UTALÁSHOZ gomb, „Számla hozzáadása”,
@@ -474,6 +477,10 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.16.0-ról 1.17.0-ra (az UTALVA státusz ideje látszik):** adatbázis-módosítás nincs (az időpontot a
+rendszer eddig is rögzítette). Töltsd fel a frissített `assets/app.js`, `includes/config.php` (csak a verziószám) és
+`TELEPITES.md` fájlokat.
+
 **Frissítés 1.15.0-ról 1.16.0-ra (teljes összevetés a kosárba + PDF):** adatbázis-módosítás nincs. Töltsd fel a
 frissített `pdf.php`, `includes/nyomtatas.php`, `includes/pdf.php`, `includes/api_riport.php`, `includes/config.php`
 (csak a verziószám), `assets/app.js` és `TELEPITES.md` fájlokat.
@@ -777,4 +784,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.16.0 (2026-10-04)
+Verzió: 1.17.0 (2026-10-04)

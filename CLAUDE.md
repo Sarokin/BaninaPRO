@@ -100,7 +100,7 @@ The server is the source of truth. The client only hides UI using `App.user` / `
   - incoming: `FIZETENDO → UTALASHOZ_ADVA → FIZETVE`, or `BESZAMITVA` for a negative amount, which is equivalent to paid;
   - kötés: `NYITOTT/FIZETETT`, derived from its invoices;
   - outgoing: `NYITOTT/FIZETVE`, paid by assigning a bank-statement ID;
-  - utalás: `NYITOTT/UTALVA`, plus a `lezarva` lock (1.13) that freezes adding and removing invoices.
+  - utalás: `NYITOTT/UTALVA`, plus a `lezarva` lock (1.13) that freezes adding and removing invoices. `utalva_datum` is the transfer date the user enters. `utalva_at` and `utalta` (the API returns `utalta_nev`) record when and by whom it became UTALVA, and since 1.17 both are shown in the header and the list.
 - **One currency per utalás** (HUF or EUR), enforced server-side.
 - Amounts are DECIMAL, handled as 2-decimal strings (`be_osszeg`, `dec_sum`) and may be negative. Partial payments (`reszteljesitesek`) reduce the outstanding balance (`hatralek`). Lists, deadlines, comparison and search all use the balance, not the original amount.
 
@@ -151,8 +151,17 @@ Install and repair behavior:
 - **apt self-repair.** `apt_` reads the failure from the log, repairs and retries; `apt_nyers` is a single raw call.
   - `csomagkezelo_rendbe` finishes half-configured packages. It removes a broken package only when that package is optional (`NEM_KOTELEZO_CSOMAGOK`).
   - Known trap: AnyDesk's postinst exits 1 when `xdg-utils` is missing. That leaves dpkg half-configured and breaks every later apt call (this is what once stopped the Docker step). So `xdg-utils` is installed first.
-- **Failure severity.** Non-essential steps warn with `figy` and continue; essential ones stop with `hiba`.
+- **Failure severity.** Non-essential steps warn with `figy` and continue; essential ones stop with `hiba`. Any other failing command stops the run through the ERR trap ("Váratlan hiba"), so wrap non-essential writes in `if …; then …; else figy …; fi`.
+- **Command substitution.** The script's stdout is the log, but inside `$(...)` it is captured. A function used as `x="$(f)"` must print only its result and send everything else, including package installs and `ok`/`info` lines, to stderr (`>&2`). `asztal_mappa` once returned apt's output as the desktop path ("File name too long") on a machine without `xdg-user-dirs`.
 - **Summary.** It is printed at the end, and also after a failure (`kilepeskor`). It is saved to `~/BaninaPRO-osszegzes.txt`, mode 600.
+- **No automatic system updates at all.** The user asked for this because storage is tight: the server must not search for, download or install updates by itself. Step 1 (`lepes_auto_frissites_ki`) does the following:
+  - writes `/etc/apt/apt.conf.d/99baninapro-nincs-automatikus-frissites` (every `APT::Periodic` setting 0);
+  - masks the timers in `AUTO_FRISSITO_IDOZITOK` (apt-daily, apt-daily-upgrade, fwupd-refresh, update-notifier, motd-news, ua-timer) and `unattended-upgrades.service`;
+  - masks the apt-daily services but doesn't stop them, so a running install can finish;
+  - sets `Prompt=never` for release upgrades and holds snaps;
+  - Firefox's policy has `DisableAppUpdate`.
+
+  The system updates only when someone runs the installer by hand: `full-upgrade`, then `autoremove --purge` (old kernels), `apt-get clean`, and `docker image prune` after the rebuild.
 
 Network and secrets:
 - **The repo is public.** The server pulls `https://github.com/Sarokin/BaninaPRO.git` over HTTPS without keys, and `repo_cim_beallit` switches an old SSH remote to it.
@@ -164,8 +173,9 @@ Network and secrets:
 - **Server secrets live in `/etc/baninapro`, never in git:**
   - `titkok`: random DB root and app passwords;
   - `config.php`: `docker/config.php` with the server's `DB_PASS` and `APP_DEBUG=false`, mounted over `includes/config.php`;
-  - `email` (sender address, SMTP host and port) and `smtp.curl` (sender credentials as a quoted curl config, read with `curl -K`).
-- **E-mail.** Reports and alerts always go to the fixed `JELENTES_CIMZETT`. The user cannot give access to that mailbox, so sending goes through a separate sender mailbox, such as a company cPanel mailbox or a dedicated Gmail account with an app password. The installer asks for it once. Gmail rejects or spams unauthenticated direct delivery, so there is no keyless fallback.
+  - `email` (sender address, SMTP host and port) and `smtp.curl` (sender credentials as a quoted curl config, read with `curl -K`);
+  - `ntfy`: the push server and the secret topic (see Push notifications below).
+- **Notifications are push first (ntfy); e-mail is optional.** The user cannot give access to the fixed recipient `JELENTES_CIMZETT`, and there is no keyless way to e-mail it: Gmail rejects or spams unauthenticated direct delivery, and ntfy.sh refuses anonymous e-mail forwarding (error 40053). So e-mail needs a separate sender mailbox, such as a company cPanel mailbox or a Gmail account with an app password. The installer asks for one only with `sudo bash szerver_beallitas.sh --email`, and the flag survives the self-update re-exec.
   - On an old volume, `db_root_atallitas` replaces the public default root password.
 - **Schema repair.** `adatbazis_rendbe` re-applies `sql/schema.sql` when tables or the initial admin are missing. That is why the schema must stay idempotent (see Database and migrations).
 
@@ -174,13 +184,21 @@ Runtime pieces, all regenerated on every run. Never edit them on the server:
   1. `compose up -d`
   2. `compose restart`
   3. Docker restart, at most every 30 min
-  4. e-mail alert
+  4. priority-5 push, plus an e-mail alert if a sender is configured
   5. machine reboot after 1 h of failure, at most every 6 h
 
-  It shares `/run/baninapro-orszem.lock` with the installer, which holds the lock while it runs.
+  It also keeps Docker, AnyDesk and cron running (`figyel`), keeps automatic updates off (re-masks the timers), restarts stopped containers, and watches free disk space and `reboot-required`. It pushes only when a component's state changes (`valtozott`, state in `/var/lib/baninapro-orszem`), never on every run. It shares `/run/baninapro-orszem.lock` with the installer, which holds the lock while it runs.
 - **Daily report** `/usr/local/sbin/baninapro-jelentes` (systemd timer 03:30, the DB backup cron runs at 03:00).
   - Modes: `napi`, `kezi` (desktop icon, terminal window, sudoers rule for exactly this command), `proba`, `riasztas`.
+  - It pushes a short summary, except in `riasztas` mode, where the watchdog has already pushed. The full report is e-mailed only if a sender is configured.
   - Reports are kept in `/var/log/baninapro-jelentes/`.
+- **Nightly backup** `/usr/local/sbin/baninapro-mentes` (`/etc/cron.d/baninapro`, 03:00) wraps `cron_mentes.php`, logs to `/var/log/baninapro-mentes.log` and pushes the result.
+- **Push notifications (ntfy).** The user subscribes to one secret topic in the ntfy phone app. The installer creates `baninapro-<24 random chars>` once in `/etc/baninapro/ntfy` and keeps it. It shows the topic in the summary and in `~/Asztal/BaninaPRO-ertesitesek.txt`, and sends one test push the first time (`NTFY_PROBA_KESZ=1`).
+  - The user wants a push for everything except user activity. Logins and logouts are the only user events reported.
+  - `/usr/local/sbin/baninapro-ertesites [-p 1-5] [-t tags] "Cím" "Üzenet"` publishes JSON to the server root. Unsent messages wait in `/var/spool/baninapro-ertesites` (at most 300), and the watchdog flushes them every 2 min. `--sorbol` is serialized with `flock`, so a message is never sent twice. 4xx responses other than 429 are dropped.
+  - Boot and shutdown: `baninapro-leallas.service` (`ExecStop`) writes the `tiszta-leallas` marker on a clean shutdown. At boot, `baninapro-indulas.service` reports a reboot, or a power cut if the marker is missing, and estimates the outage from the watchdog's `eletjel` heartbeat. It is `Type=simple` so its retry loop never delays boot.
+  - Logins: `baninapro-belepesfigyelo.service` tails the app's daily log in the `baninapro_adatok` volume. It reacts only to `BELEPES`, `KILEPES` and `KILEPTETES` lines, and only to complete lines. If `naplo()` in `includes/logger.php` changes its line format or these codes, update its regex.
+  - The installer pushes its own end result (`vegeredmeny_ertesites`), success or failure.
 - **Power settings.**
   - Sleep targets are masked, plus `sleep.conf.d` and `logind.conf.d`.
   - No screensaver or DPMS: Xorg `ServerFlags`, LightDM `-s 0 -dpms`, session `xset`, LXQt power management.
@@ -192,6 +210,8 @@ Testing: reproduce the server in a privileged systemd Ubuntu container:
 - anonymous volumes for `/var/lib/docker` and `/var/lib/containerd`;
 - unmount the bind-mounted `/etc/hosts` and `/etc/hostname`;
 - run the script as a sudo user, without a TTY.
+- Point pushes at a local ntfy server (`binwiederhier/ntfy serve`; `sed` `NTFY_SZERVER` in the test copy) and read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
+- `docker restart -t 180 <container>` simulates a clean reboot. `docker kill` followed by `docker start` simulates a power cut.
 
 ## Working notes (lessons learned)
 
@@ -209,7 +229,7 @@ Workflow:
 - **Never discard uncommitted work without a backup.** Save a patch and copies of untracked files to the scratchpad first. Once, 1.15 was discarded on request and had to be restored the next day.
 
 Verification:
-- **Frontend tests.** `tests/e2e/futtat.sh` must stay green (16 tests × 2 browser projects).
+- **Frontend tests.** `tests/e2e/futtat.sh` must stay green (17 tests × 2 browser projects).
   - The print FAB builds the PDF directly. The basket sheet opens via Menü → Nyomtatási kosár.
   - New UI features get a spec in `tests/e2e/tests/`. Tests are local only (gitignored).
 - **PDF layout.** Save a PDF to a file: either `testInfo.outputPath(...)` in a test, or `page.request.post('/pdf.php', { form: { csrf, tetelek } })`. Render it with `pdftoppm -png` (poppler-utils in an ubuntu container) and look at the image.

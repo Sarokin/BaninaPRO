@@ -1350,7 +1350,7 @@
     const gyujtheto = u.statusz === 'NYITOTT' && !u.lezarva && jog('ir');
     return `<div class="kartya kattinthato${aktualis ? ' aktualis-utalas' : ''}" data-act="nav" data-href="#/utalas/${u.id}">
       <div class="fejsor"><div style="min-width:0"><div class="cim"><span class="kod">${esc(u.uid)}</span>${lakatBadge(u)}${aktualis ? `<span class="badge aktualis" title="A bankkártyás gomb ehhez az utaláshoz gyűjt">${I.card} AKTUÁLIS GYŰJTŐ</span>` : ''}</div>
-        <div class="alsor">${badge(u.statusz)} ${badge(u.utalas_mod)} ${mutatCeg ? `<span>${esc(u.ceg_nev)}</span>` : ''}<span>${u.db} számla</span>${u.hatarertek != null ? `<span>limit: ${fmtOsszeg(u.hatarertek, u.penznem)}</span>` : ''}${u.utalva_datum ? `<span>utalva: ${fmtDatum(u.utalva_datum)}</span>` : ''}</div></div>
+        <div class="alsor">${badge(u.statusz)} ${badge(u.utalas_mod)} ${mutatCeg ? `<span>${esc(u.ceg_nev)}</span>` : ''}<span>${u.db} számla</span>${u.hatarertek != null ? `<span>limit: ${fmtOsszeg(u.hatarertek, u.penznem)}</span>` : ''}${u.utalva_datum ? `<span>utalva: ${fmtDatum(u.utalva_datum)}</span>` : ''}${u.utalva_at ? `<span title="Ekkor került UTALVA státuszba (${esc(u.utalta_nev || '?')})">UTALVA státusz: ${fmtIdo(u.utalva_at)}</span>` : ''}</div></div>
         <div class="osszeg${negOszt(u.osszeg)}">${fmtOsszeg(u.osszeg, u.penznem)}</div>${nyomtatGomb('utalas', u.id, u.uid)}<span class="nyil">${I.chev}</span></div>
       ${gyujtheto || aktualis ? `<div class="muveletek"><span class="tolt"></span>${aktualis ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalas-kosar" title="Az aktuális gyűjtő tartalma">${I.card} Gyűjtő megnyitása</button>` : `<button class="btn btn-outline narancs btn-sm" type="button" data-act="utalas-kosar-valaszt" data-utalas="${u.id}" title="A bankkártyás gomb mostantól ehhez az utaláshoz gyűjti a számlákat">${I.card} Ehhez gyűjtök</button>`}</div>` : ''}</div>`;
   }
@@ -1383,7 +1383,7 @@
           <div class="uid">${esc(u.uid)}</div>
           <div class="vegosszeg${negOszt(u.osszeg)}" data-countup="${u.osszeg}" data-penznem="${u.penznem}">${fmtOsszeg(u.osszeg, u.penznem)}</div>
           <div class="meta">${badge(u.statusz)} ${badge(u.utalas_mod)} ${lakatBadge(u)} <a href="#/bejovo/ceg/${u.ceg_id}">${esc(u.ceg_nev)}</a> · ${u.db} számla${u.hatarertek != null ? ` · limit ${fmtOsszeg(u.hatarertek, u.penznem)}` : ''}</div>
-          <div class="meta kicsi">létrehozva ${fmtIdo(u.letrehozva)} (${esc(u.letrehozta_nev || '')})${u.lezarva ? ` · lelakatolta ${esc(u.lezarta_nev || '')} ${fmtIdo(u.lezarva_at)}` : ''}${u.utalva_datum ? ` · utalva ${fmtDatum(u.utalva_datum)} (${esc(u.utalta_nev || '')})` : ''}${u.banki_hivatkozas ? ` · hiv.: ${esc(u.banki_hivatkozas)}` : ''}</div>
+          <div class="meta kicsi">létrehozva ${fmtIdo(u.letrehozva)} (${esc(u.letrehozta_nev || '')})${u.lezarva ? ` · lelakatolta ${esc(u.lezarta_nev || '')} ${fmtIdo(u.lezarva_at)}` : ''}${u.utalva_datum ? ` · utalva ${fmtDatum(u.utalva_datum)}` : ''}${u.utalva_at ? ` · <span data-utalva-at>UTALVA státusz: <b>${fmtIdo(u.utalva_at)}</b> (${esc(u.utalta_nev || '?')})</span>` : (u.utalva_datum ? ` (${esc(u.utalta_nev || '')})` : '')}${u.banki_hivatkozas ? ` · hiv.: ${esc(u.banki_hivatkozas)}` : ''}</div>
           ${u.megjegyzes ? `<div class="meta kicsi">${megjSzoveg(u.megjegyzes)}</div>` : ''}
         </div>
         <div class="gomb-sor" style="justify-content:center;margin:8px 0 6px">
