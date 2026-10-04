@@ -135,6 +135,17 @@ function act_osszevetes_reszletek(array $be): array
     if ($tol > $ig) {
         hiba('A kezdő dátum nem lehet későbbi a záró dátumnál.');
     }
+    $d = osszevetes_reszletek_adat($cegId, $penznem, $tol, $ig);
+    naplo('OSSZEVETES_RESZLETEK', "cég #{$cegId} ({$d['ceg']['nev']}), $penznem, teljesítés $tol – $ig");
+    return $d;
+}
+
+/**
+ * Az összevetés adatai (cég + pénznem + teljesítési időszak) – az oldal és a PDF (nyomtatási kosár) is ezt használja,
+ * így a kettő mindig ugyanazt mutatja. A bemenetet a hívó ellenőrzi; ha a cég nem létezik, hibát dob.
+ */
+function osszevetes_reszletek_adat(int $cegId, string $penznem, string $tol, string $ig): array
+{
     $ceg = db_row('SELECT id, nev FROM cegek WHERE id = ?', [$cegId]);
     if (!$ceg) {
         hiba('A cég nem található.');
@@ -205,7 +216,6 @@ function act_osszevetes_reszletek(array $be): array
     unset($s);
     $kim = reszt_csatol($kim, 'KIMENO');
 
-    naplo('OSSZEVETES_RESZLETEK', "cég #{$cegId} ({$ceg['nev']}), $penznem, teljesítés $tol – $ig");
     return [
         'ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']],
         'penznem' => $penznem, 'tol' => $tol, 'ig' => $ig,

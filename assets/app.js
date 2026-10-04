@@ -386,7 +386,8 @@
   // A kosár csak azt jegyzi meg, MELY sorokat kérted ({t, id, cimke}); a PDF a
   // szerveren, mindig friss adatokból készül. Felhasználónként külön kosár.
   const KOSAR_MAX = 500;
-  const KOSAR_TIPUS = { ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
+  // osszevetes: az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak a 'q' mezőben)
+  const KOSAR_TIPUS = { osszevetes: 'Összevetés', ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
   const Kosar = {
     _mem: null, _kulcs: null,
     kulcs() { return 'banina_nyomtat_' + (App.user ? App.user.felhasznalonev : 'vendeg'); },
@@ -394,7 +395,7 @@
       const k = this.kulcs();
       if (this._mem && this._kulcs === k) return this._mem;
       let l = [];
-      try { const j = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(j)) l = j.filter((t) => t && KOSAR_TIPUS[t.t] && Number(t.id) > 0).map((t) => Object.assign({ t: t.t, id: Number(t.id), cimke: String(t.cimke || '') }, typeof t.e === 'string' ? { e: t.e } : {})); } catch (e) { /* privát mód / hibás adat */ }
+      try { const j = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(j)) l = j.filter((t) => t && KOSAR_TIPUS[t.t] && Number(t.id) > 0 && (t.t !== 'osszevetes' || (t.q && typeof t.q === 'object'))).map((t) => Object.assign({ t: t.t, id: Number(t.id), cimke: String(t.cimke || '') }, typeof t.e === 'string' ? { e: t.e } : {}, t.t === 'osszevetes' ? { q: { ceg: Number(t.q.ceg), pn: String(t.q.pn), tol: String(t.q.tol), ig: String(t.q.ig) } } : {})); } catch (e) { /* privát mód / hibás adat */ }
       this._mem = l; this._kulcs = k;
       return l;
     },
@@ -416,7 +417,7 @@
         const megl = l.find((y) => y.t === x.t && y.id === Number(x.id));
         if (megl) { mar++; if (typeof x.e === 'string') megl.e = x.e; return; }   // már benne van – az egyenleg-jelölést átveszi
         if (l.length >= KOSAR_MAX) return;
-        l.push(Object.assign({ t: x.t, id: Number(x.id), cimke: String(x.cimke || '') }, typeof x.e === 'string' ? { e: x.e } : {})); uj++;
+        l.push(Object.assign({ t: x.t, id: Number(x.id), cimke: String(x.cimke || '') }, typeof x.e === 'string' ? { e: x.e } : {}, x.q ? { q: x.q } : {})); uj++;
       });
       this.ment(l);
       return { uj, mar, tul: tetelek.length - uj - mar };
@@ -449,11 +450,19 @@
     const f = document.createElement('form');
     f.method = 'post'; f.action = 'pdf.php'; f.target = '_blank'; f.style.display = 'none';
     const csrf = document.createElement('input'); csrf.type = 'hidden'; csrf.name = 'csrf'; csrf.value = App.csrf || '';
-    const t = document.createElement('input'); t.type = 'hidden'; t.name = 'tetelek'; t.value = JSON.stringify(lista.map((x) => Object.assign({ t: x.t, id: x.id }, typeof x.e === 'string' ? { e: x.e } : {})));
+    const t = document.createElement('input'); t.type = 'hidden'; t.name = 'tetelek'; t.value = JSON.stringify(lista.map((x) => Object.assign({ t: x.t, id: x.id }, typeof x.e === 'string' ? { e: x.e } : {}, x.q ? { q: x.q } : {})));
     f.appendChild(csrf); f.appendChild(t);
     document.body.appendChild(f);
     f.submit();
     setTimeout(() => { if (f.parentNode) f.parentNode.removeChild(f); }, 1500);
+  }
+  /** Az Összevetés oldal teljes lekérdezése kosár-tételként – a PDF-ben saját, formázott szakasz lesz belőle.
+   *  Az azonosító a lekérdezésből készül (FNV-1a): ugyanaz a cég + pénznem + időszak mindig ugyanaz a tétel. */
+  function osszevetesTetel(q, cegNev) {
+    const kulcs = `${q.ceg}|${q.pn}|${q.tol}|${q.ig}`;
+    let h = 2166136261;
+    for (let i = 0; i < kulcs.length; i++) { h ^= kulcs.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return { t: 'osszevetes', id: (h >>> 1) || 1, cimke: `${cegNev} · ${q.pn} · teljesítés ${fmtDatum(q.tol)} – ${fmtDatum(q.ig)}`, q };
   }
   /** Időszak-szűrő sáv (tól–ig + dátummező) – a szűrt sorok egy gombbal a nyomtatási kosárba */
   const IDOSZAK_MEZOK = { kelt: 'Kelt', teljesites: 'Teljesítés', hatarido: 'Határidő' };
@@ -1604,6 +1613,7 @@
         <div class="info-doboz" style="margin-top:14px"><b>${esc(d.ceg.nev)}</b> · ${pn} · teljesítés ${fmtDatum(d.tol)} – ${fmtDatum(d.ig)}<br>
           NYITOTT egyenleg: <b class="${negOszt(d.egyenleg_nyitott)}">${fmtOsszeg(d.egyenleg_nyitott, pn)}</b> · FIZETVE egyenleg: <b class="${negOszt(d.egyenleg_fizetve)}">${fmtOsszeg(d.egyenleg_fizetve, pn)}</b>
           <span class="kicsi szurke">(bejövő − kimenő; pozitív: én tartozom, negatív: ő tartozik)</span></div>
+        <button class="btn btn-sarga btn-blokk" type="button" style="margin-top:10px" data-act="ov-kosarba-pdf" data-ceg="${d.ceg.id}" data-ceg-nev="${esc(d.ceg.nev)}" data-pn="${esc(pn)}" data-tol="${esc(d.tol)}" data-ig="${esc(d.ig)}" title="A teljes összevetés (egyenleg, bejövő és kimenő számlák) a nyomtatási kosárba, és PDF új lapon">${I.print} Teljes összevetés a kosárba + PDF</button>
         <div class="ketoszlop">
           <div>
             <div class="oszlop-fej be"><span>Bejövő számlák egyenleg összesen</span><span class="o">${fmtOsszeg(b.osszesites.osszes, pn)}</span></div>
@@ -2784,6 +2794,14 @@
     'bejovo-ful': (el) => { App.bejovoFul = el.dataset.ful; fulCsusztat(el, render); },
     'idoszak-szures': (el) => { const sav = el.closest('.idoszak-sav'); const l = App.idoszakLista || { tipus: el.dataset.lista, szamlak: [] }; idoszakSzuresLista(sav, l.szamlak, l.tipus); },
     'idoszak-ceg': async (el) => { const sav = el.closest('.idoszak-sav'); await idoszakCegSzamlak(sav, Number(el.dataset.ceg)); },
+    'ov-kosarba-pdf': (el) => {
+      const tetel = osszevetesTetel({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig }, el.dataset.cegNev || '');
+      const r = Kosar.hozzaad([tetel]);
+      if (r.tul) return toast(`A nyomtatási kosár megtelt (legfeljebb ${KOSAR_MAX} sor) – üríts belőle, és próbáld újra.`, 'hiba');
+      pdfKuldes([tetel]);   // a PDF csak ezt az összevetést tartalmazza; a kosárban marad, más tételekkel együtt is nyomtatható
+      kosarLapFrissit();
+      toast(`${I.print} Az összevetés ${r.mar ? 'már benne volt a' : 'bekerült a'} nyomtatási kosárba – a PDF új lapon nyílik.<br><small>${esc(tetel.cimke)}</small><br><small>${Kosar.db()} sor a kosárban – a jobb alsó nyomtató gombbal más tételekkel együtt is nyomtathatod.</small>`, 'siker', 6000);
+    },
     'idoszak-kosarba': (el) => { const sav = el.closest('.idoszak-sav'); idoszakKosarba(JSON.parse(sav.dataset.talalat || '[]'), sav.dataset.cimke || ''); },
     'idoszak-torol': (el) => { const sav = el.closest('.idoszak-sav'); $$('.szamla-lista [data-szamla-id]').forEach((k) => k.classList.remove('rejtett')); $('[data-idoszak-eredmeny]', sav).innerHTML = ''; delete sav.dataset.talalat; },
     'archiv-athelyez': async () => { const r = route(); const cegId = Number(r.path[2]); const d = await api('kotes', { id: Number(r.path[4]) }); archivAthelyezForm(cegId, d.kotes.penznem, d.kotes.id); },

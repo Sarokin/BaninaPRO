@@ -264,6 +264,12 @@ kattintással odaugrik.
   („összesen ≈ … HUF ≈ … EUR”).
 * Pénznem + **kötelező** teljesítési dátum tól–ig → részletes lista két oszlopban: bejövő számlák kötésenként
   és kimenő számlák, NYITOTT és FIZETVE egyenleggel az időszakra.
+* **Teljes összevetés a kosárba + PDF (1.16):** a részletes lista felett a sárga gomb a teljes lekérdezést (cég +
+  pénznem + teljesítési időszak) egyetlen tételként a nyomtatási kosárba teszi, és azonnal PDF-et készít belőle új lapon:
+  egyenleg-összesítő (bejövő · kimenő · egyenleg, NYITOTT és FIZETVE, alatta szavakban, ki tartozik kinek), a bejövő
+  számlák kötésenként, a kimenő számlák – részteljesítés-alsorokkal és bontott összesítővel, kétnyelvűen, mint a többi
+  PDF. A tétel a kosárban marad, így később más tételekkel együtt is nyomtatható; ugyanaz az összevetés kétszer nem
+  kerül bele, más időszak külön tétel.
 * *Banki kivonatok* fül: keresés banki azonosítóra, egy kattintásra látszik, mely kimenő számlákat fedi le.
 * Árfolyam: **MNB hivatalos** (SOAP webszolgáltatás) → ha nem elérhető: ECB (frankfurter.app) → open.er-api.com →
   admin által beállított kézi árfolyam. 6 óránként frissül, az admin kézzel is frissítheti.
@@ -283,7 +289,8 @@ kattintással odaugrik.
   kerek **nyomtató gomb**. Üres kosárnál szürke (inaktív), gyűjtött sorokkal sötét, és a sarkán **piros körben fehér
   szám** mutatja, hány sor van a kosárban (mint a Facebook értesítés-jelzője).
 * A nyomtató gombra nyomva a rendszer **A4-es, helytakarékos PDF-et** készít a kosár tartalmából, típusonként csoportosítva
-  (Cégek, Kötések, Bejövő számlák, Utalások – a számláikkal, Kimenő számlák, Banki kivonatok – a fedezett számlákkal),
+  (Összevetések – a lista elején, Cégek, Kötések, Bejövő számlák, Utalások – a számláikkal, Kimenő számlák, Banki
+  kivonatok – a fedezett számlákkal),
   pénznemenkénti összesítőkkel, fejléccel (dátum, ki készítette, hány tétel) és oldalszámmal. Új lapon nyílik meg,
   onnan nyomtatható vagy menthető (iPhone-on a Megosztás gombbal).
 * A kosár a **böngészőben** marad meg (felhasználónként külön), tehát oldalváltás vagy újratöltés után is megvan;
@@ -466,6 +473,10 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.15.0-ról 1.16.0-ra (teljes összevetés a kosárba + PDF):** adatbázis-módosítás nincs. Töltsd fel a
+frissített `pdf.php`, `includes/nyomtatas.php`, `includes/pdf.php`, `includes/api_riport.php`, `includes/config.php`
+(csak a verziószám), `assets/app.js` és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.13.1-ről 1.14.0-ra (a belépés a böngésző bezárásáig él, a böngésző nem menti a jelszót):**
 adatbázis-módosítás nincs. Töltsd fel a frissített `api.php`, `index.php`, `includes/auth.php`, `includes/api_auth.php`,
@@ -766,4 +777,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.15.0 (2026-10-02)
+Verzió: 1.16.0 (2026-10-04)

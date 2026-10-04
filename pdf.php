@@ -4,6 +4,7 @@
  *
  * Hívás: POST /pdf.php  (űrlap)
  *   tetelek = JSON tömb: [{"t":"bejovo","id":12}, {"t":"kotes","id":3}, ...]
+ *             összevetés: {"t":"osszevetes","id":…,"q":{"ceg":5,"pn":"EUR","tol":"2026-01-01","ig":"2026-10-04"}}
  *   csrf    = a munkamenet CSRF-tokenje
  *
  * Csak bejelentkezett felhasználónak. A PDF mindig az adatbázis friss
@@ -80,6 +81,23 @@ try {
         $tip = (string)($t['t'] ?? '');
         $id = filter_var($t['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         if (!in_array($tip, NY_TIPUSOK, true) || $id === false) {
+            continue;
+        }
+        if ($tip === 'osszevetes') {
+            // az Összevetés oldal teljes lekérdezése: cég + pénznem + teljesítési időszak (a 'q' mezőben)
+            $q = is_array($t['q'] ?? null) ? $t['q'] : [];
+            $ceg = filter_var($q['ceg'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $pn = (string)($q['pn'] ?? '');
+            $tol = (string)($q['tol'] ?? '');
+            $ig = (string)($q['ig'] ?? '');
+            if ($ceg === false || !in_array($pn, ['HUF', 'EUR'], true) || !ny_datum_ok($tol) || !ny_datum_ok($ig) || $tol > $ig) {
+                continue;
+            }
+            $kulcs = "osszevetes:$ceg:$pn:$tol:$ig";
+            if (!isset($latott[$kulcs])) {
+                $latott[$kulcs] = true;
+                $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig]];
+            }
             continue;
         }
         $kulcs = "$tip:$id";

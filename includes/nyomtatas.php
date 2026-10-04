@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/pdf.php';
 require_once __DIR__ . '/api_reszteljesites.php';
+require_once __DIR__ . '/api_riport.php';
 
 /**
  * Nyomtatási lista PDF: a kosárba gyűjtött tételek ({t, id, e?}) FRISS adatbázis-adatokból,
@@ -11,7 +12,8 @@ require_once __DIR__ . '/api_reszteljesites.php';
  * (oszlopfejlécek, szakaszcímek, státuszok, összesítők, alsorok, egyenleg, fej- és lábléc).
  */
 
-const NY_TIPUSOK = ['ceg', 'kotes', 'bejovo', 'utalas', 'kimeno', 'kivonat'];
+// 'osszevetes': az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak – a tétel 'q' mezőjében)
+const NY_TIPUSOK = ['osszevetes', 'ceg', 'kotes', 'bejovo', 'utalas', 'kimeno', 'kivonat'];
 const NY_MAX_TETEL = 500;
 
 /** Angol megfelelők (státusz, mód) */
@@ -52,6 +54,120 @@ function ny_en(string $s): string
 function ny_in(array $ids): string
 {
     return implode(',', array_fill(0, count($ids), '?'));
+}
+
+/** Érvényes ÉÉÉÉ-HH-NN dátum-e (a kosárból érkező összevetés időszakához) */
+function ny_datum_ok(string $d): bool
+{
+    return (bool)preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $d, $m) && checkdate((int)$m[2], (int)$m[3], (int)$m[1]);
+}
+
+/** Az egyenleg jelentése szavakban, magyarul és angolul (pozitív: én tartozom a partnernek, negatív: ő tartozik nekem) */
+function ny_egyenleg_szoveg(float $v, string $pn): array
+{
+    if ($v > 0) {
+        return [ny_osszeg($v, $pn) . ' – ennyivel tartozom a partnernek', ny_osszeg($v, $pn) . ' – I owe the partner this amount'];
+    }
+    if ($v < 0) {
+        return [ny_osszeg(-$v, $pn) . ' – ennyivel tartozik nekem a partner', ny_osszeg(-$v, $pn) . ' – the partner owes me this amount'];
+    }
+    return ["0 $pn – rendezve", "0 $pn – settled"];
+}
+
+/**
+ * ÖSSZEVETÉS – ugyanaz, mint az Összevetés oldalon (cég · pénznem · teljesítési időszak): egyenleg-összesítő,
+ * a bejövő számlák kötésenként, a kimenő számlák, mindkettő részteljesítés-alsorokkal és bontott összesítővel.
+ * $d: osszevetes_reszletek_adat() eredménye.
+ */
+function ny_osszevetes(PdfIro $pdf, array $d): void
+{
+    $pn = $d['penznem'];
+    $b = $d['bejovo'];
+    $k = $d['kimeno'];
+    $zold = [1, 127, 1];
+    $narancs = [217, 108, 0];
+    $piros = [214, 69, 65];
+    $idoszak = ny_datum($d['tol']) . ' – ' . ny_datum($d['ig']);
+    $pdf->szakasz('Összevetés – ' . $d['ceg']['nev'], "$pn · teljesítés $idoszak", [254, 131, 2],
+        'Reconciliation – ' . $d['ceg']['nev'], "$pn · completion $idoszak");
+
+    // 1) egyenleg-összesítő: bejövő · kimenő · egyenleg (bejövő − kimenő)
+    $sor = fn(string $hu, string $en, array $o) => ['cellak' => [$hu, (string)$o['db'], ny_osszeg($o['osszes'], $pn), ny_osszeg($o['fizetve'], $pn), ny_osszeg($o['nyitott'], $pn)],
+                                                   'en' => [0 => $en], 'szinek' => [3 => $zold, 4 => $narancs]];
+    $pdf->tablazat([
+        ['c' => '', 'en' => '', 'w' => 52, 'a' => 'L'], ['c' => 'Számlák', 'en' => 'Invoices', 'w' => 18, 'a' => 'C'],
+        ['c' => 'Összes pénzforgalom', 'en' => 'Total turnover', 'w' => 40, 'a' => 'R'], ['c' => 'FIZETVE / beszámítva', 'en' => 'PAID / offset', 'w' => 40, 'a' => 'R'],
+        ['c' => 'NYITOTT – még fizetendő', 'en' => 'OPEN – still payable', 'w' => 40, 'a' => 'R'],
+    ], [
+        $sor('Bejövő számlák', 'Incoming invoices', $b['osszesites']),
+        $sor('Kimenő számlák', 'Outgoing invoices', $k['osszesites']),
+        ['cellak' => ['EGYENLEG (bejövő − kimenő)', '', ny_osszeg(round($b['osszesites']['osszes'] - $k['osszesites']['osszes'], 2), $pn),
+                      ny_osszeg($d['egyenleg_fizetve'], $pn), ny_osszeg($d['egyenleg_nyitott'], $pn)],
+         'en' => [0 => 'BALANCE (incoming − outgoing)'], 'stilus' => 'osszes', 'szinek' => [3 => $zold, 4 => $narancs]],
+    ], ['pt' => 8.5]);
+    [$nyHu, $nyEn] = ny_egyenleg_szoveg((float)$d['egyenleg_nyitott'], $pn);
+    $pdf->helyBiztosit(16);
+    $y = $pdf->szoveg2($pdf->margoBal, $pdf->y + 3.2, 'NYITOTT egyenleg: ' . $nyHu, 'Open balance: ' . $nyEn, 'bold', 9.5, [23, 23, 23]);
+    $y = $pdf->szoveg2($pdf->margoBal, $y + 4.6,
+        'Egyenleg = bejövő − kimenő, a teljesítés dátuma szerint · pozitív: én tartozom a partnernek, negatív: a partner tartozik nekem.',
+        'Balance = incoming − outgoing, by completion date · positive: I owe the partner, negative: the partner owes me.', 'regular', 7, [115, 115, 115]);
+    $pdf->y = $y + 3;
+
+    // 2) bejövő számlák kötésenként (a kötés sora félkövér: nyitott része és teljes összege)
+    $pdf->szakasz('Összevetés · bejövő számlák', $b['osszesites']['db'] . ' számla · ' . count($b['kotesek']) . ' kötés', $zold,
+        'Reconciliation · incoming invoices', $b['osszesites']['db'] . ' invoices · ' . count($b['kotesek']) . ' contracts');
+    $sorok = [];
+    $t = [];
+    foreach ($b['kotesek'] as $kt) {
+        $sorok[] = ['cellak' => ['Kötés ' . $kt['kotes_kod'] . ($kt['kotes_megnevezes'] ? ' · ' . $kt['kotes_megnevezes'] : ''), '', '', '', '', '', '',
+                                 'nyitott ' . ny_osszeg($kt['nyitott'], $pn), ny_osszeg($kt['osszeg'], $pn)],
+                    'en' => [0 => 'Contract ' . $kt['kotes_kod'], 7 => 'open'], 'stilus' => 'csoport', 'span' => [0 => 7],
+                    'szinek' => [7 => $narancs, 8 => (float)$kt['osszeg'] < 0 ? $piros : [23, 23, 23]]];
+        foreach ($kt['szamlak'] as $s) {
+            $s['penznem'] = $pn;
+            $lezart = in_array($s['statusz'], ['FIZETVE', 'BESZAMITVA'], true);
+            ny_gyujt($t, $s, !$lezart);
+            $extra = trim(($s['utalas_uid'] ?? '') . (!empty($s['beszam']) ? "\nBESZÁM: " . $s['beszam'] : ''));
+            $szin = ['FIZETVE' => $zold, 'BESZAMITVA' => $zold, 'UTALASHOZ_ADVA' => [109, 90, 0]][$s['statusz']] ?? $narancs;
+            $sorok[] = ['cellak' => [$s['kod'], $s['szamlaszam'], ny_datum($s['kelt']), ny_datum($s['teljesites_datum']), ny_datum($s['fizetesi_hatarido']),
+                                     $lezart ? ny_datum($s['fizetve_datum']) : '', ny_statusz($s['statusz']), $extra, ny_osszeg($s['osszeg'], $pn)],
+                        'en' => [6 => ny_en($s['statusz'])] + (!empty($s['beszam']) ? [7 => '(BESZÁM = ref. no.)'] : []),
+                        'szinek' => [6 => $szin, 8 => (float)$s['osszeg'] < 0 ? $piros : [23, 23, 23], 5 => $zold]];
+            $sorok = array_merge($sorok, ny_reszt_sorok($s, !$lezart, 9, 5, 8));
+        }
+    }
+    $sorok = $sorok ? array_merge($sorok, ny_szamla_osszesito($t, 9, 8))
+        : [['cellak' => ['Nincs bejövő számla az időszakban.'], 'en' => [0 => 'No incoming invoices in the period.'], 'span' => [0 => 9]]];
+    $pdf->tablazat([
+        ['c' => 'Számla ID', 'en' => 'Invoice ID', 'w' => 27, 'a' => 'L'], ['c' => 'Számlaszám', 'en' => 'Invoice no.', 'w' => 27, 'a' => 'L'],
+        ['c' => 'Kelt', 'en' => 'Issued', 'w' => 14, 'a' => 'C'], ['c' => 'Teljesítés', 'en' => 'Completion', 'w' => 14, 'a' => 'C'], ['c' => 'Határidő', 'en' => 'Due date', 'w' => 14, 'a' => 'C'],
+        ['c' => 'Utalva', 'en' => 'Transferred', 'w' => 14, 'a' => 'C'], ['c' => 'Státusz', 'en' => 'Status', 'w' => 16, 'a' => 'C'], ['c' => 'Utalás / BESZÁM', 'en' => 'Transfer / ref.', 'w' => 24, 'a' => 'L'],
+        ['c' => 'Összeg', 'en' => 'Amount', 'w' => 22, 'a' => 'R'],
+    ], $sorok, ['pt' => 7.0]);
+
+    // 3) kimenő számlák
+    $pdf->szakasz('Összevetés · kimenő számlák', $k['osszesites']['db'] . ' számla', $zold,
+        'Reconciliation · outgoing invoices', $k['osszesites']['db'] . ' invoices');
+    $sorok = [];
+    $t = [];
+    foreach ($k['szamlak'] as $s) {
+        $s['penznem'] = $pn;
+        $nyitott = $s['statusz'] === 'NYITOTT';
+        ny_gyujt($t, $s, $nyitott);
+        $sorok[] = ['cellak' => [$s['kod'], $s['szamlaszam'], ny_datum($s['kelt']), ny_datum($s['teljesites_datum']), ny_datum($s['fizetesi_hatarido']),
+                                 $nyitott ? '' : ny_datum($s['fizetve_datum']), ny_statusz($s['statusz']), $s['banki_azonosito'] ?? '', ny_osszeg($s['osszeg'], $pn)],
+                    'en' => [6 => ny_en($s['statusz'])],
+                    'szinek' => [6 => $nyitott ? $narancs : $zold, 8 => (float)$s['osszeg'] < 0 ? $piros : [23, 23, 23], 5 => $zold]];
+        $sorok = array_merge($sorok, ny_reszt_sorok($s, $nyitott, 9, 5, 8));
+    }
+    $sorok = $sorok ? array_merge($sorok, ny_szamla_osszesito($t, 9, 8))
+        : [['cellak' => ['Nincs kimenő számla az időszakban.'], 'en' => [0 => 'No outgoing invoices in the period.'], 'span' => [0 => 9]]];
+    $pdf->tablazat([
+        ['c' => 'Számla ID', 'en' => 'Invoice ID', 'w' => 27, 'a' => 'L'], ['c' => 'Számlaszám', 'en' => 'Invoice no.', 'w' => 27, 'a' => 'L'],
+        ['c' => 'Kelt', 'en' => 'Issued', 'w' => 14, 'a' => 'C'], ['c' => 'Teljesítés', 'en' => 'Completion', 'w' => 14, 'a' => 'C'], ['c' => 'Határidő', 'en' => 'Due date', 'w' => 14, 'a' => 'C'],
+        ['c' => 'Fizetve', 'en' => 'Paid on', 'w' => 14, 'a' => 'C'], ['c' => 'Státusz', 'en' => 'Status', 'w' => 16, 'a' => 'C'], ['c' => 'Banki azonosító', 'en' => 'Bank reference', 'w' => 24, 'a' => 'L'],
+        ['c' => 'Összeg', 'en' => 'Amount', 'w' => 22, 'a' => 'R'],
+    ], $sorok, ['pt' => 7.0]);
 }
 
 /** „Kelt 2026.01.01. – 2026.09.29.” → „Issued 2026.01.01. – 2026.09.29.” (az időszak-címke angol változata) */
@@ -183,7 +299,12 @@ function pdf_lista(array $tetelek, array $felhasznalo): string
     // tételek típusonként
     $ids = array_fill_keys(NY_TIPUSOK, []);
     $egyenlegIds = [];   // kimenő számla id => időszak-címke (a MIND fülről „egyenleg készítés”-sel a kosárba tett számlák)
+    $osszevetesek = [];  // az Összevetés oldal lekérdezései: ['ceg', 'pn', 'tol', 'ig']
     foreach ($tetelek as $t) {
+        if ($t['t'] === 'osszevetes') {
+            $osszevetesek[] = $t['q'];
+            continue;
+        }
         $ids[$t['t']][] = (int)$t['id'];
         if ($t['t'] === 'kimeno' && isset($t['e'])) {
             $egyenlegIds[(int)$t['id']] = (string)$t['e'];
@@ -193,6 +314,17 @@ function pdf_lista(array $tetelek, array $felhasznalo): string
         $ids[$k] = array_values(array_unique(array_filter($v, fn($x) => $x > 0)));
     }
     $vanValami = false;
+
+    // ------------------------------------------------------------- ÖSSZEVETÉSEK (összefoglaló – a lista elején)
+    foreach ($osszevetesek as $q) {
+        try {
+            $d = osszevetes_reszletek_adat((int)$q['ceg'], $q['pn'], $q['tol'], $q['ig']);
+        } catch (ApiError $e) {
+            continue;   // a cég azóta törlődött
+        }
+        $vanValami = true;
+        ny_osszevetes($pdf, $d);
+    }
 
     // ------------------------------------------------------------- CÉGEK
     if ($ids['ceg']) {

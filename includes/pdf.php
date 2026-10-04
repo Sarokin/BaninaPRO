@@ -365,7 +365,8 @@ final class PdfIro
 
     /**
      * $oszlopok: [['c' => 'Fejléc', 'en' => 'Header', 'w' => mm, 'a' => 'L|R|C'], ...]  – 'en': angol felirat a magyar alatt
-     * $sorok:    [ ['cellák' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|al|osszes', 'span' => [k => n], 'szinek' => [k => rgb]], ... ]
+     * $sorok:    [ ['cellák' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|al|osszes|csoport', 'span' => [k => n], 'szinek' => [k => rgb]], ... ]
+     *            ('csoport': félkövér csoportfejléc halvány háttérrel, pl. a kötés sora a számlái felett)
      * Automatikus oldaltörés, minden oldalon ismétlődő (kétnyelvű) fejléc.
      */
     public function tablazat(array $oszlopok, array $sorok, array $o = []): void
@@ -405,9 +406,10 @@ final class PdfIro
             $stilus = $sor['stilus'] ?? 'normal';
             $al = $stilus === 'al';
             $osszes = $stilus === 'osszes';
+            $csoport = $stilus === 'csoport';
             $spt = $al ? $pt - 0.8 : $pt;
             $ept = max(4.6, $spt - 0.9);   // angol sor
-            $kulcs = $osszes ? 'bold' : 'regular';
+            $kulcs = $osszes || $csoport ? 'bold' : 'regular';
             // cella-összevonás: 'span' => [oszlop => hány oszlopra terjed ki] (pl. összesítő címkéknek)
             $szel = [];
             $kihagy = [];
@@ -448,6 +450,8 @@ final class PdfIro
                 $this->vonal($x0, $this->y, $x0 + $this->szelesseg(), $this->y, [1, 127, 1], 0.4);
             } elseif ($al) {
                 $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [250, 250, 248]);
+            } elseif ($csoport) {
+                $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [238, 238, 234]);
             } elseif ($i % 2 === 1) {
                 $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [247, 247, 244]);
             }
@@ -472,7 +476,7 @@ final class PdfIro
             if (!$osszes) {
                 $this->vonal($x0, $this->y, $x0 + $this->szelesseg(), $this->y, [232, 232, 229], 0.15);
             }
-            $i++;
+            $i = $csoport ? 0 : $i + 1;   // a csoport alatti sorok csíkozása elölről indul
         }
         $this->y += 1.5;
     }

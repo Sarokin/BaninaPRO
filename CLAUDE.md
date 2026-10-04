@@ -192,3 +192,43 @@ Testing: reproduce the server in a privileged systemd Ubuntu container:
 - anonymous volumes for `/var/lib/docker` and `/var/lib/containerd`;
 - unmount the bind-mounted `/etc/hosts` and `/etc/hostname`;
 - run the script as a sudo user, without a TTY.
+
+## Working notes (lessons learned)
+
+How to work with this user and this codebase. Keep this section current.
+
+Workflow:
+- **Communication.** The user writes in Hungarian and often sends several requests in a row while work is running. Address each one.
+- **Commit and push after verification.** Push to `main` as soon as a change is verified. The internal server updates itself with `git pull` from the public repo, so a push is how a change reaches it.
+- **Bump the version for every user-visible change:**
+  - `APP_VERSION` in `includes/config.php` (local and ignored: it is the production config), `includes/config.example.php` and `docker/config.php`;
+  - in `TELEPITES.md`: a feature bullet in the matching section, a `**Frissítés X-ről Y-ra (…):**` entry listing the files to upload (newest entry first), and the closing `Verzió: X (date)` line.
+- **`BaninaPRO_WEB/` is a local reference copy of the deployed site** (gitignored). After versions once got mixed up, it held the authoritative 1.15 code.
+  - It contains production backups, logs and the production `config.php`. Never commit it, and never paste its contents.
+  - Merge from it file by file (`diff -rq BaninaPRO_WEB .`), and keep the repo's sanitized `sql/schema.sql`.
+- **Never discard uncommitted work without a backup.** Save a patch and copies of untracked files to the scratchpad first. Once, 1.15 was discarded on request and had to be restored the next day.
+
+Verification:
+- **Frontend tests.** `tests/e2e/futtat.sh` must stay green (16 tests × 2 browser projects).
+  - The print FAB builds the PDF directly. The basket sheet opens via Menü → Nyomtatási kosár.
+  - New UI features get a spec in `tests/e2e/tests/`. Tests are local only (gitignored).
+- **PDF layout.** Save a PDF to a file: either `testInfo.outputPath(...)` in a test, or `page.request.post('/pdf.php', { form: { csrf, tetelek } })`. Render it with `pdftoppm -png` (poppler-utils in an ubuntu container) and look at the image.
+- **Syntax checks.**
+  - PHP: `docker exec baninapro-app php -l <file>`.
+  - JS: `docker run --rm -v "$PWD/assets:/a:ro" node:22-alpine node --check /a/app.js`. Node is not installed on the Mac.
+  - The Mac's `/bin/bash` is 3.2, so run bash checks in an Ubuntu container.
+- **Server installer.**
+  - Run `bash -n` and `shellcheck -S warning -e SC1111` (the `koalaman/shellcheck` image) on the script and on its generated helper scripts.
+  - Then run a full end-to-end test from the server's real broken state (see the installer section).
+- **Destructive commands get blocked.** The auto-mode permission check blocks commands such as `DROP DATABASE`, even on a throwaway database. Verify non-destructively instead: diffs, or a separate throwaway container.
+
+Pattern: adding a print-basket item type (1.16 `osszevetes`):
+- **JS.** Add the type to `KOSAR_TIPUS` (its order is the basket order). Any extra fields, such as `q`, must survive `Kosar.lista()`, `Kosar.hozzaad()` and `pdfKuldes()`.
+- **PHP.** Add the type to `NY_TIPUSOK`, add validation and a dedupe key in `pdf.php`, and add a renderer in `includes/nyomtatas.php`.
+- **One data source.** Reuse the API's data function (for example `osszevetes_reszletek_adat()`) so the page and the PDF always agree.
+- **Row styles.** `PdfIro::tablazat` supports `normal`, `al` (sub-row), `osszes` (total) and `csoport` (bold group header). Text is bilingual: Hungarian, with English below.
+
+Environment quirks:
+- Ubuntu 26.04 ships uutils coreutils. `chown user:` keeps the old group there; this is cosmetic.
+- In containers, `/etc/hosts` and `/etc/hostname` are bind mounts, so `sed -i` and `hostnamectl` fail on them. The test harness unmounts them first.
+- mailpit's `--smtp-auth-file` cannot store passwords that contain `:`. That is a limit of the test tool, not of the installer.
