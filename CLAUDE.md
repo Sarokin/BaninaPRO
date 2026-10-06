@@ -234,6 +234,12 @@ Scope (the user's decision):
   - `apt-get update` runs only when something must be installed, at most once per run.
 - Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, but only downloaded package files, journals and the Docker cache.
 - No pre-run DB backup and no `git pull` or self-update (the user removed them: that step seemed to hang). Code updates are manual: `cd ~/BaninaPRO && git pull`, then rerun. The nightly backup still runs.
+- **Speed: as much in RAM as possible.** This is the user's request, and it touches only the generated override, never the app or `docker/`.
+  - All three containers get a tmpfs `/tmp`. That holds the PHP sessions (`session.save_path=/tmp`), uploads and MySQL temp files.
+  - `$TITOK_MAPPA/php-gyorsitas.ini` is mounted into `conf.d` and turns on opcache and the realpath cache. `validate_timestamps=1` and `revalidate_freq=2`, so code from a `git pull` shows within 2 s.
+  - MySQL gets `--innodb-buffer-pool-size` at a quarter of RAM (256 MB–4 GB), plus `--innodb-flush-log-at-trx-commit=2` and `--skip-log-bin`. A power cut can lose up to 1 s of commits, which the user accepted.
+  - The override's db `command` replaces the base one, so it repeats the charset options. Keep them in sync with `docker-compose.yml`.
+  - The DB data itself stays on the stick.
 - Never call the docker CLI without a timeout while the stick might be missing. `docker.socket` accepts the connection, but `docker.service` can't start (`RequiresMountsFor=`), so a plain `docker inspect` blocks forever with no spinner. Use `docker_valaszol` (checks `systemctl is-active docker.service`, then runs `docker info` under `timeout`), and wrap the other calls in `timeout`.
 
 USB stick (default `/dev/sdb`, found later by label, never by name):

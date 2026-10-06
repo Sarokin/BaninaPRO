@@ -1748,13 +1748,19 @@ lepes_baninapro() {
     szerver_config
 
     # 3) szerver-kiegészítés a docker-compose.yml mellé (a compose magától betölti): belső hálózati elérés,
-    #    jelszavas phpMyAdmin, a szerver saját jelszavai, rögzített projektnév (így a kötetek neve sem változik)
+    #    jelszavas phpMyAdmin, a szerver saját jelszavai, rögzített projektnév (így a kötetek neve sem változik),
+    #    és gyorsítás: ami csak lehet, a memóriában (lásd gyorsitas_iras)
+    gyorsitas_iras
     cat > "$REPO/docker-compose.override.yml" <<EOF
 # BaninaPRO szerver – a "SERVER SETUP AND UPDATE/$(basename "$SCRIPT")" írja minden futáskor, kézzel ne módosítsd.
 # A docker compose a docker-compose.yml mellé automatikusan betölti. A szerveren:
 #  - a BaninaPRO ($APP_PORT) és a phpMyAdmin ($PMA_PORT) a belső hálózatról is elérhető, a MySQL csak a gépen belülről;
 #  - a phpMyAdmin jelszót kér (nincs automatikus root-belépés), az adatbázis a szerver saját jelszavait használja;
-#  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva).
+#  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva);
+#  - gyorsítás – ami csak lehet, a memóriában: a munkamenetek és az ideiglenes fájlok (tmpfs), a PHP lefordított kódja
+#    (opcache, $TITOK_MAPPA/php-gyorsitas.ini), a MySQL gyorsítótára ($DB_PUFFER_MB MB – az egész adatbázis elfér
+#    benne); a MySQL a naplóját másodpercenként írja a pendrive-ra (nem minden mentésnél), a binlog ki van kapcsolva.
+#    (Hirtelen áramszünetnél az utolsó legfeljebb 1 másodperc mentései elveszhetnek – szabályos leállásnál semmi.)
 name: $PROJEKT
 services:
   app:
@@ -1762,16 +1768,35 @@ services:
       - "$APP_PORT:80"
     volumes:
       - $TITOK_MAPPA/config.php:/var/www/html/includes/config.php:ro
+      - $TITOK_MAPPA/php-gyorsitas.ini:/usr/local/etc/php/conf.d/zz-baninapro-gyorsitas.ini:ro
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 268435456
   db:
+    # (a docker-compose.yml két beállítása is kell: a command egészében felülíródik)
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci",
+              "--innodb-buffer-pool-size=${DB_PUFFER_MB}M", "--innodb-flush-log-at-trx-commit=2",
+              "--innodb-log-buffer-size=32M", "--skip-log-bin"]
     environment:
       MYSQL_ROOT_PASSWORD: "$DB_ROOT_JELSZO"
       MYSQL_PASSWORD: "$DB_APP_JELSZO"
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 536870912
   phpmyadmin:
     ports: !override
       - "$PMA_PORT:80"
     environment: !override
       PMA_HOST: db
       UPLOAD_LIMIT: 64M
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 134217728
 EOF
     chown "$CEL_FELH:" "$REPO/docker-compose.override.yml"
     chmod 600 "$REPO/docker-compose.override.yml"
@@ -1799,6 +1824,8 @@ EOF
         ujraprobal 2 dc build app || hiba "Az alkalmazás képe nem épült fel – a napló végén látszik, miért."
         ok "Az alkalmazás képe elkészült (a meglévő PHP-alapképből – annak frissítése $(hely_szoveg "$ALAPKEP_FRISSITES_MB") szabad hely fölött fut)"
     fi
+    AKT_MUVELET="a PHP-gyorsítótár beállítása"
+    opcache_betoltes
     AKT_MUVELET="konténerek indítása (első induláskor a MySQL 1-2 percig készíti az adatbázist)"
     if ! ujraprobal 2 dc up -d --remove-orphans; then
         # a félig elindult konténerek leállítása (az adatok a kötetekben megmaradnak), majd még egy próba
@@ -1809,6 +1836,11 @@ EOF
             kontener_naplok
             hiba "A konténerek nem indultak el."
         fi
+    fi
+    # a PHP a beállításait induláskor olvassa: ha a gyorsítás beállítása változott, az alkalmazás újraindul
+    if (( GYORSITAS_VALTOZOTT )); then
+        AKT_MUVELET="az alkalmazás újraindítása (új PHP-beállítás)"
+        fut docker restart "$APP_KONTENER" || true
     fi
     AKT_MUVELET=""
     dc ps || true
@@ -1851,6 +1883,59 @@ szerver_config() {
     # ha a fájl hiányzott, amikor a Docker a konténert indította, a helyén üres mappát hozott létre – az nem kell
     if [[ -d $f ]]; then rm -rf -- "$f"; fi
     mv -f "$f.uj" "$f"
+}
+
+# Gyorsítás – ami csak lehet, a memóriában. A PHP-gyorsítótár (opcache) a lefordított kódot tartja a memóriában; a
+# kódváltozást 2 mp-en belül észreveszi (git pull után sem marad régi kód). A munkamenetek a /tmp-ben vannak, ami a
+# konténerben memória (tmpfs). A MySQL gyorsítótára a gép memóriájának negyede (256 MB – 4 GB).
+DB_PUFFER_MB=256 GYORSITAS_INI="" GYORSITAS_VALTOZOTT=0
+gyorsitas_iras() {
+    local mem
+    mem=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || echo 1024)
+    DB_PUFFER_MB=$(( ${mem:-1024} / 4 ))
+    if (( DB_PUFFER_MB < 256 )); then DB_PUFFER_MB=256; fi
+    if (( DB_PUFFER_MB > 4096 )); then DB_PUFFER_MB=4096; fi
+    install -d -m 700 "$TITOK_MAPPA"
+    # (a fájlt az építés után írja ki: akkor derül ki, hogy a PHP-kép magától betölti-e az opcache-t – opcache_betoltes)
+    GYORSITAS_INI="$(cat <<'EOF'
+; BaninaPRO szerver – gyorsítás (a szerver_beallitas_light.sh írta, minden futása újraírja)
+; PHP-gyorsítótár: a lefordított kód a memóriában – a kódváltozást 2 másodpercen belül észreveszi
+opcache.enable=1
+opcache.enable_cli=0
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=10000
+opcache.validate_timestamps=1
+opcache.revalidate_freq=2
+; a munkamenetek és a feltöltések ideiglenes fájljai: a /tmp a konténerben memória (tmpfs)
+session.save_path=/tmp
+upload_tmp_dir=/tmp
+; a fájlútvonalak gyorsítótára
+realpath_cache_size=4096k
+realpath_cache_ttl=600
+EOF
+)"
+    # a konténer indulásához a fájlnak léteznie kell (az első futáskor az építés előtt még üres)
+    if [[ ! -f $TITOK_MAPPA/php-gyorsitas.ini ]]; then
+        printf '%s\n' "$GYORSITAS_INI" > "$TITOK_MAPPA/php-gyorsitas.ini"
+        chmod 644 "$TITOK_MAPPA/php-gyorsitas.ini"
+    fi
+}
+# A PHP-gyorsítótárat (opcache) a hivatalos PHP-kép újabb változatai maguktól betöltik – kétszer betöltve a PHP minden
+# indításkor figyelmeztetést írna ki (és az elrontaná a parancssori ellenőrzéseket). Ezért az elkészült képben megnézi:
+# ha a kép magától nem tölti be, a szerver beállítófájlja tölti be. Ha a fájl változott, az alkalmazás újraindul.
+opcache_betoltes() {
+    local m f="$TITOK_MAPPA/php-gyorsitas.ini" uj
+    uj="$GYORSITAS_INI"
+    m="$(timeout 120 docker run --rm --entrypoint php "$APP_KEP" -m 2>/dev/null || true)"
+    if [[ $m == *"[PHP Modules]"* && $m != *"Zend OPcache"* ]]; then
+        uj+=$'\n'"; ez a PHP-kép magától nem tölti be – a szerver tölti be"$'\n'"zend_extension=opcache"
+    fi
+    if [[ $(cat "$f" 2>/dev/null) != "$uj" ]]; then
+        printf '%s\n' "$uj" > "$f"
+        chmod 644 "$f"
+        GYORSITAS_VALTOZOTT=1
+    fi
 }
 
 # a 80-as port: ha egy másik webszerver (apache2, nginx…) foglalja, leállítja és kikapcsolja
@@ -2936,6 +3021,18 @@ lepes_ellenorzes() {
     done
     if systemctl is-active --quiet baninapro-belepesfigyelo.service; then ok "A belépésfigyelő fut (be- és kilépésekről értesít)"
     else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
+    # gyorsítás: a munkamenetek és az ideiglenes fájlok a memóriában, a PHP-gyorsítótár, a MySQL beállításai
+    if timeout 30 docker exec "$APP_KONTENER" sh -c 'grep -q " /tmp tmpfs " /proc/mounts && php -m | grep -q "Zend OPcache"' >/dev/null 2>&1; then
+        ok "Gyorsítás: a munkamenetek és az ideiglenes fájlok a memóriában, PHP-gyorsítótár (opcache) be"
+    else
+        figy "A PHP gyorsítása (memóriában lévő /tmp, opcache) nem él – docker exec $APP_KONTENER php -m"
+    fi
+    s="$(db_szam 'SELECT CONCAT(@@innodb_flush_log_at_trx_commit, @@log_bin)')"
+    if [[ $s == 20 ]]; then
+        ok "Gyorsítás: MySQL – $(db_sql -e 'SELECT ROUND(@@innodb_buffer_pool_size / 1048576)' 2>/dev/null | tr -dc '0-9' || true) MB gyorsítótár a memóriában, a napló másodpercenként íródik, binlog ki"
+    else
+        figy "A MySQL gyorsítása nem él (innodb_flush_log_at_trx_commit, log_bin: ${s:-?})"
+    fi
     # az USB-meghajtó: csatolva, rajta a Docker tárhelye; a mentések másolatai; a jelszavak az USB-n is (új szerverhez)
     if docker_usb_n_van; then ok "USB-meghajtó csatolva – rajta a Docker tárhelye és az adatbázis ($(timeout 20 docker info -f '{{.DockerRootDir}}' 2>/dev/null || true) → $USB_ADAT)"
     else figy "A Docker tárhelye nincs az USB-meghajtóról befűzve (sudo baninapro-usb ellenoriz)."; fi
@@ -3078,6 +3175,10 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
         osz "" "                 és minden mentés másolata: $USB_MENTES_CIMKE → BaninaPRO-mentesek – Windows / Mac gépen is olvasható"
         osz "" "                 (a legutóbbi mentések a gép saját lemezén is: $BELSO_MENTES)"
         osz "" "  Biztonságos eltávolítás: sudo baninapro-usb levalaszt  (visszadugva magától visszacsatolódik)"
+    fi
+    if [[ -f $TITOK_MAPPA/php-gyorsitas.ini ]] && grep -q 'innodb-flush-log-at-trx-commit=2' "$REPO/docker-compose.override.yml" 2>/dev/null; then
+        osz "" "  Gyorsítás:     a munkamenetek, az ideiglenes fájlok és a PHP lefordított kódja a memóriában; MySQL: kb. ${DB_PUFFER_MB} MB"
+        osz "" "                 gyorsítótár a memóriában, a napló másodpercenként íródik a pendrive-ra"
     fi
     osz "" "  Kézi ellenőrzés: sudo $JELENTO kezi"
     osz "" "  Őrszem:        2 percenként ellenőriz, és ha kell, helyreállít (napló: /var/log/baninapro-orszem.log)"
