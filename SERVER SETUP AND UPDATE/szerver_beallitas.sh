@@ -260,7 +260,8 @@ fut() {
     local pid rc=0
     UTOLSO_PARANCS="$*"
     szelesseg_frissit
-    "$@" &
+    # (a 8-as leírón a telepítő zárja van: a gyerekfolyamat ne kapja meg – egy megszakított futás után ne tartsa fogva)
+    "$@" 8>&- &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         rajzol

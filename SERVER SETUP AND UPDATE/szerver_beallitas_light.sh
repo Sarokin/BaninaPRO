@@ -304,7 +304,8 @@ fut() {
     local pid rc=0
     UTOLSO_PARANCS="$*"
     szelesseg_frissit
-    "$@" &
+    # (a 8-as leírón a telepítő zárja van: a gyerekfolyamat ne kapja meg – egy megszakított futás után ne tartsa fogva)
+    "$@" 8>&- &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         rajzol
@@ -1057,6 +1058,7 @@ lepes_usb() {
         "$(basename "$SCRIPT")" "$USB_ADAT_UUID" "$USB_MENTES_UUID" > "$TITOK_MAPPA/usb"
     chmod 600 "$TITOK_MAPPA/usb"
     usb_csatol
+    rm -f /run/baninapro-usb-levalasztva   # (egy korábbi „baninapro-usb levalaszt” jelzője: a meghajtó újra használatban)
     usb_titkok_vissza 0
     docker_athelyezes
     usb_seged_iras
@@ -1571,8 +1573,11 @@ allapot() {
 }
 levalaszt() {
     local m
-    exec 9>/run/baninapro-orszem.lock   # közben az őrszem ne avatkozzon be
-    flock -w 300 9 || true
+    exec 9>/run/baninapro-orszem.lock   # közben az őrszem (és a telepítő) ne avatkozzon be
+    if ! flock -n 9; then
+        echo "Várakozás, amíg az őrszem vagy a telepítő befejezi (legfeljebb 5 perc)…"
+        flock -w 300 9 || true
+    fi
     echo "Az utolsó mentések átmásolása, a BaninaPRO leállítása…"
     tukor >/dev/null 2>&1
     touch "$LEVALASZTVA"
