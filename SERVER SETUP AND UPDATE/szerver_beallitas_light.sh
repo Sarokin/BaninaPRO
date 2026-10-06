@@ -40,9 +40,12 @@
 #      adatbázishoz nem nyúl);
 #    - az őrszem és a napi jelentés 500 MB alatt jelez kevés helyet (előtte takarít).
 #
-#  CSOMAGOK – a rendszert NEM frissíti (és automatikus frissítés sincs: kikapcsolja), csomagot nem töröl, és a
-#    félbemaradt csomagtelepítést sem folytatja: ha van ilyen, az apt-hoz egyáltalán nem nyúl. Csak a hiányzó
-#    eszközöket telepíti (curl, git, cron, fdisk, dosfstools…) – ha mind megvan, az apt-ot el sem indítja.
+#  CSOMAGOK – a rendszert NEM frissíti (és automatikus frissítés sincs: kikapcsolja). A félbemaradt csomagtelepítést
+#    nem folytatja, hanem lezárja: a csomagot a telepítőjével együtt törli – a Dockert, az asztalt és a rendszer részeit
+#    nem (ezekről csak szól). Félbemaradt AnyDesk-csomagot csak akkor töröl, ha a működő AnyDesk nem abból fut (akkor
+#    az egy felesleges második példány); ha abból fut, megmondja, hogyan zárható le. Ami félbemaradt marad, amellett
+#    az apt-hoz nem nyúl. Csak a hiányzó eszközöket telepíti (curl, git, cron, fdisk, dosfstools…) – ha mind megvan,
+#    az apt-ot el sem indítja.
 #
 #  FUTTATÁS – első futtatás és később minden frissítés is ugyanez:
 #    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
@@ -373,13 +376,15 @@ apt_() {
     AKT_MUVELET=""
     return "$rc"
 }
-# A light változat a félbemaradt csomagtelepítéseket nem folytatja (a felhasználó kérése). Minden apt-futtatás
-# megpróbálná befejezni őket, ezért ha van ilyen, az apt-hoz egyáltalán nem nyúl. A csomaglistákat csak akkor
-# frissíti, ha valamit telepíteni kell (futásonként egyszer) – a rendszert nem frissíti.
+# A light változat a félbemaradt csomagtelepítéseket nem folytatja, hanem lezárja: a csomagot törli (a felhasználó
+# kérése, lásd felbemaradt_lezaras). Ami így is marad (védett, vagy nem törölhető), annál az apt-hoz egyáltalán nem
+# nyúl – minden apt-futtatás megpróbálná befejezni. A csomaglistákat csak akkor frissíti, ha valamit telepíteni kell
+# (futásonként egyszer) – a rendszert nem frissíti.
 APT_LISTA_KESZ=0
 apt_hasznalhato() {
+    felbemaradt_lezaras
     if ! dpkg_rendben; then
-        info "Félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)) – nem folytatom, ezért az apt-hoz nem nyúlok."
+        info "Félbemaradt csomagtelepítés maradt a gépen ($(hibas_csomagok | paste -sd ' ' - || true)) – nem folytatom, ezért az apt-hoz nem nyúlok."
         return 1
     fi
     if (( ! APT_LISTA_KESZ )); then
@@ -427,13 +432,106 @@ telepit_opcionalis() {
 }
 
 # ---- Önjavítás ------------------------------------------------------------------
-# a félbemaradt (nem teljesen kicsomagolt vagy beállított) csomagok neve
+# a félbemaradt (nem teljesen kicsomagolt vagy be nem állított) csomagok neve
 hibas_csomagok() {
     dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null \
-        | awk '{ s = substr($1, 2, 1); e = substr($1, 3, 1) } s ~ /[HUFWt]/ || e == "R" { print $NF }' || true
+        | awk '{ s = substr($1, 2, 1); e = substr($1, 3, 1) } s ~ /[HUF]/ || e == "R" { print $NF }' || true
 }
-# a csomagkezelő rendben van-e: nincs félbemaradt (megszakadt vagy be nem fejezett) csomagtelepítés. A light változat
-# ezeket nem folytatja és nem is törli (a felhasználó kérése) – ilyenkor az apt-ot egyáltalán nem futtatja.
+
+# Félbemaradt csomagtelepítés (a felhasználó kérése): nem folytatja, hanem lezárja – a csomagot a telepítőjével
+# (beállításfájljaival) együtt törli. dpkg-val, nem apt-tal: az apt a többi félbemaradt telepítést folytatni próbálná.
+# Amitől más csomag függ, azt a dpkg nem engedi törölni – az marad. A védett csomagokat nem törli (ha félbemaradtak,
+# csak szól): a Dockert, az asztalt és a rendszer részeit, és a futó kernel csomagjait sem.
+# Az AnyDesknél megnézi, honnan fut a működő AnyDesk:
+#  - ha éppen a félbemaradt csomagból, akkor az nem egy második példány, hanem maga a működő AnyDesk: a telepítője
+#    az xdg-utils nélkül az utolsó lépésénél (az asztali menüpontnál) hibával áll le – a program fut és be van állítva,
+#    a csomagkezelő mégis félbemaradtnak látja. Ezt nem törli, csak szól;
+#  - ha máshonnan fut, a félbemaradt csomag egy felesleges második példány: azt törli, de a saját eltávolító szkriptjei
+#    nélkül (azok a futó AnyDesk szolgáltatását is leállítanák) – a szkriptek félrekerülnek, nem törlődnek;
+#  - ha az AnyDesk most nem fut, nem dönthető el, melyik kell – nem törli.
+VEDETT_CSOMAGOK=('docker*' 'containerd*' runc 'moby-*' 'lightdm*' 'xserver-*' 'xorg*' 'x11-*' xinit
+    'linux-*' 'grub*' 'shim*' 'systemd*' udev 'libc6*' libc-bin dpkg apt 'apt-*' sudo 'openssh-*' 'netplan*'
+    'network-manager*' ifupdown e2fsprogs util-linux 'initramfs-tools*' 'ubuntu-*' cloud-init)
+FELBEMARADT_JELEZVE=" "   # a már jelzett (nem törölhető) csomagok – egy futásban egyszer szól róluk
+# a futó AnyDesk program(ok) csomagja: a csomag neve, „-” ha nem csomagból fut (pl. kicsomagolt változat); üres, ha nem fut
+anydesk_futo_csomagjai() {
+    local pid exe cs pidek=()
+    mapfile -t pidek < <(pgrep -x anydesk 2>/dev/null || true)
+    for pid in "${pidek[@]}"; do
+        exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        exe="${exe% (deleted)}"
+        [[ -n $exe ]] || continue
+        cs="$(dpkg-query -S "$exe" 2>/dev/null | awk -F': ' -v p="$exe" '$2 == p { sub(/:.*/, "", $1); print $1 }' | head -n 1 || true)"
+        echo "${cs:--} $exe"
+    done | sort -u
+}
+# a csomag törlése a saját telepítő- és eltávolító szkriptjei nélkül (azok félrekerülnek: /var/backups/baninapro-dpkg)
+csomag_torles_szkriptek_nelkul() {
+    local p=$1 hova f
+    hova="/var/backups/baninapro-dpkg/$p-$(date +%Y%m%d_%H%M%S)"
+    install -d -m 700 "$hova"
+    for f in "/var/lib/dpkg/info/$p".{preinst,postinst,prerm,postrm} "/var/lib/dpkg/info/$p":*.{preinst,postinst,prerm,postrm}; do
+        if [[ -e $f ]]; then mv -f "$f" "$hova/"; fi
+    done
+    fut dpkg --purge --force-remove-reinstreq "$p"
+}
+vedett_csomag() {
+    local m
+    if [[ $1 == *"$(uname -r)"* ]]; then return 0; fi
+    for m in "${VEDETT_CSOMAGOK[@]}"; do
+        # shellcheck disable=SC2053  # szándékos mintaillesztés (csomagnév-minták)
+        if [[ $1 == $m ]]; then return 0; fi
+    done
+    return 1
+}
+felbemaradt_lezaras() {
+    local p futok hibas=() torolt=() maradt=()
+    mapfile -t hibas < <(hibas_csomagok)
+    (( ${#hibas[@]} )) || return 0
+    apt_var
+    for p in "${hibas[@]}"; do
+        if [[ $p == anydesk || $p == anydesk-* ]]; then
+            futok="$(anydesk_futo_csomagjai)"
+            if [[ -n $futok ]] && ! grep -q "^$p " <<<"$futok"; then
+                # a működő AnyDesk máshonnan fut: a félbemaradt csomag egy felesleges második példány
+                AKT_MUVELET="a felesleges, félbemaradt $p csomag törlése"
+                if csomag_torles_szkriptek_nelkul "$p"; then
+                    ok "A félbemaradt, felesleges $p csomag törölve – a működő AnyDesk ($(awk '{ print $2 }' <<<"$futok" | paste -sd ' ' -)) érintetlen"
+                else
+                    maradt+=("$p")
+                fi
+                AKT_MUVELET=""
+                continue
+            fi
+            maradt+=("$p")
+            continue
+        fi
+        if vedett_csomag "$p"; then maradt+=("$p"); continue; fi
+        AKT_MUVELET="félbemaradt telepítés lezárása: a(z) $p törlése"
+        if fut dpkg --purge --force-remove-reinstreq "$p"; then torolt+=("$p"); else maradt+=("$p"); fi
+        UTOLSO_PARANCS=""
+    done
+    AKT_MUVELET=""
+    if (( ${#torolt[@]} )); then
+        ok "Félbemaradt telepítés lezárva – törölve, a telepítőjével együtt: ${torolt[*]}"
+    fi
+    for p in "${maradt[@]}"; do
+        [[ $FELBEMARADT_JELEZVE != *" $p "* ]] || continue
+        FELBEMARADT_JELEZVE+="$p "
+        if [[ $p == anydesk || $p == anydesk-* ]]; then
+            if [[ -z $(anydesk_futo_csomagjai) ]]; then
+                figy "A(z) $p telepítése félbemaradt, és az AnyDesk most nem fut – nem dönthető el, hogy ez a működő példány-e, ezért nem törlöm."
+            else
+                figy "A(z) $p telepítése a csomagkezelő szerint félbemaradt, de ez nem egy második példány: a működő AnyDesk éppen ebből a csomagból fut (a telepítője csak az utolsó lépésnél, az asztali menüpontnál állt le – ehhez az xdg-utils kell). Nem törlöm – kézzel lezárható: sudo apt-get install xdg-utils"
+            fi
+        elif vedett_csomag "$p"; then
+            figy "A(z) $p telepítése félbemaradt – a rendszer vagy egy futó szolgáltatás része, ezért nem törlöm (kézzel: sudo dpkg --configure -a)."
+        else
+            figy "A(z) $p telepítése félbemaradt, és nem törölhető (más csomag függ tőle, vagy a törlése hibát jelzett – a naplóban látszik, miért)."
+        fi
+    done
+}
+# a csomagkezelő rendben van-e: nincs félbemaradt (megszakadt vagy be nem fejezett) csomagtelepítés
 dpkg_rendben() {
     [[ -z $(hibas_csomagok) ]] && ! compgen -G '/var/lib/dpkg/updates/[0-9]*' >/dev/null
 }
@@ -455,7 +553,8 @@ apt_javit() {
         # hibás külső csomagtároló: kikapcsolom, hogy a többi működjön (a lépése a tartalék megoldással megy tovább)
         tarolo_kikapcsol "$szoveg"
     fi
-    # (félbemaradt telepítésnél nincs javítás: a light változat azt nem folytatja – az apt_ ilyenkor nem is próbálja újra)
+    # (félbemaradt telepítésnél nincs folytatás: az apt_ ilyenkor nem próbálja újra, a következő telepítés előtt pedig
+    #  a felbemaradt_lezaras törli a félbemaradt csomagot, ha nem védett)
     # hálózati vagy letöltési hiba: rövid szünet, a gyorsítótár ürítése, friss csomaglisták
     if grep -qE 'Failed to fetch|Temporary failure|Could not resolve|Could not connect|Connection (failed|timed out|refused|reset)|Hash Sum mismatch|unexpected size|Unable to fetch|Service Unavailable|Bad Gateway|Gateway Time' <<<"$szoveg"; then
         AKT_MUVELET="hálózati hiba – rövid várakozás, majd újra"
@@ -896,15 +995,16 @@ EOF
 # csomagtelepítést nem folytatja, és csomagot nem töröl; csak a letöltött csomagfájlokat (a telepített programok maradnak).
 lepes_rendszer() {
     local hiany=()
-    apt-get clean >/dev/null 2>&1 || true
+    apt-get clean >/dev/null 2>&1 || true   # a letöltött telepítőfájlok (a telepített programok maradnak)
+    felbemaradt_lezaras
     if ! dpkg_rendben; then
-        figy "Félbemaradt csomagtelepítés van a gépen: $(hibas_csomagok | paste -sd ' ' - || true) – nem folytatom; amíg így marad, a script csomagot nem telepít."
+        info "Amíg félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)), a script csomagot nem telepít."
     fi
     # (az USB-meghajtóhoz: fdisk – partícionálás, dosfstools – FAT32, e2fsprogs – ext4)
     mapfile -t hiany < <(hianyzo ca-certificates curl git cron psmisc fdisk dosfstools e2fsprogs)
     if (( ${#hiany[@]} )); then
         if ! dpkg_rendben; then
-            hiba "Hiányzó csomagok: ${hiany[*]} – nem telepíthetők, mert félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)), és azt a script nem folytatja. Ha kézzel rendbe teszed (pl. sudo dpkg --configure -a, vagy a félbemaradt csomag eltávolításával), futtasd újra."
+            hiba "Hiányzó csomagok: ${hiany[*]} – nem telepíthetők, mert félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)), amit a script nem törölhet (védett, vagy más csomag függ tőle). Ha kézzel rendbe teszed (lásd a figyelmeztetést), futtasd újra."
         fi
         telepit_min "${hiany[@]}" || hiba "A hiányzó csomagok nem telepíthetők (${hiany[*]}): $(apt_hibak)"
     fi

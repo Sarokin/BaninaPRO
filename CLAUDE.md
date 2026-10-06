@@ -221,8 +221,15 @@ Scope (the user's decision):
 - It does only the BaninaPRO side: containers, DB, nightly backup, watchdog, pushes, daily report, hostname/timezone, avahi, and never-sleep (including USB autosuspend off).
 - It never installs, configures or watches the desktop, LightDM, Xorg, AnyDesk, SSH or the language, and never installs Docker.
 - No system update of any kind (no `full-upgrade`, no `autoremove`), on the user's request. Automatic updates are switched off as in the full script, so the OS updates only when someone runs apt by hand.
-- It never touches half-finished installs, never removes a package, and has no repair routine.
-  - Every apt run would try to finish them, because apt runs `dpkg --configure --pending` at the end. So `dpkg_rendben` gates every install: if there are broken packages or an interrupted dpkg, apt is not run at all.
+- Half-finished installs are never continued (no `dpkg --configure -a`, no `apt-get -f install`). `felbemaradt_lezaras` closes them by purging the package with `dpkg --purge --force-remove-reinstreq`, at the start of step 2 and before every install. This is the user's decision.
+  - It purges without `--force-depends`, so dpkg refuses anything other packages depend on.
+  - It never purges `VEDETT_CSOMAGOK` (Docker/containerd, LightDM/Xorg, the kernel, grub, systemd, libc, apt/dpkg, sudo, SSH, networking, `ubuntu-*`) or anything matching the running kernel. For these it only warns, once per run.
+  - AnyDesk has its own rule (`anydesk_futo_csomagjai`): it checks which package owns `/proc/<pid>/exe` of the running `anydesk` processes.
+    - If the half-finished package is the one running, it is the working AnyDesk, not a second copy. Its postinst fails at the xdg-desktop-menu step without `xdg-utils`, so the program runs but dpkg shows it half-configured. It is kept, and the warning suggests `sudo apt-get install xdg-utils`.
+    - If the working AnyDesk runs from elsewhere, the package is a surplus duplicate. It is purged with its maintainer scripts moved aside to `/var/backups/baninapro-dpkg`, because its prerm would stop the running AnyDesk service.
+    - If AnyDesk isn't running, it is kept.
+  - Pending triggers (`W`/`t`) don't count as half-finished.
+- Every apt run would try to finish a half-finished install, because apt runs `dpkg --configure --pending` at the end. So `dpkg_rendben` gates every install: if anything half-finished remains, or dpkg was interrupted, apt is not run at all.
   - In that case a missing optional package is only a warning, and a missing required tool stops the run with a message.
   - `apt-get update` runs only when something must be installed, at most once per run.
 - Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, but only downloaded package files, journals and the Docker cache.
