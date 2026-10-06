@@ -53,7 +53,9 @@
 #  (Ha csak ezt az egy fájlt töltöd le és futtatod, a script magától letölti a repót a ~/BaninaPRO mappába,
 #  és onnan folytatja.)
 #
-#  Újrafuttatva a BaninaPRO-t frissíti: adatbázis-mentés → git pull → konténerek újraépítése → takarítás.
+#  A script magától nem tölt le újabb kódot (nincs git pull) és futás előtt nem ment – a frissítés kézzel:
+#    cd ~/BaninaPRO && git pull      majd újra:  sudo bash szerver_beallitas_light.sh
+#  (Az adatbázist minden éjjel 03:00-kor menti, az USB-re és a gép saját lemezére is.)
 #  Bármikor nyugodtan újrafuttatható: ami már kész, azt csak ellenőrzi.
 #  Önjavító: ha valami elakad – hiányzó eszköz vagy bővítmény, hálózati hiba, rossz rendszeridő, hibás külső
 #  csomagtároló, foglalt 80-as port, leállt Docker, leválott USB-meghajtó, hiányzó adatbázis-táblák –, a script
@@ -621,11 +623,17 @@ hely_szoveg() {   # a szabad hely olvashatóan: 850 MB, 1,7 GB
 }
 # helyfelszabadítás: letöltött csomagok, régi rendszernaplók, használaton kívüli Docker-képek és -gyorsítótár
 # (a konténerekhez és a kötetekhez – az adatbázishoz – nem nyúl)
+# A Docker válaszol-e – csak ha a szolgáltatása fut, és időkorláttal. Ha a pendrive nincs csatolva, a Docker nem
+# indulhat el, a docker.socket viszont fogadja a kérést: egy sima docker-parancs ilyenkor a végtelenségig várna.
+docker_valaszol() {
+    command -v docker >/dev/null && systemctl is-active --quiet docker.service 2>/dev/null \
+        && timeout "${1:-20}" docker info >/dev/null 2>&1
+}
 hely_felszabaditas() {
     AKT_MUVELET="hely felszabadítása"
     apt-get clean >/dev/null 2>&1 || true
     journalctl --vacuum-size=100M >/dev/null 2>&1 || true
-    if command -v docker >/dev/null && timeout 30 docker info >/dev/null 2>&1; then
+    if docker_valaszol; then
         fut docker image prune -f || true
         fut docker builder prune -f || true
     fi
@@ -636,7 +644,7 @@ hely_felszabaditas() {
 # Az alkalmazás képe akkor hiányzik, ha sem a kész kép, sem a PHP-alapkép nincs meg (abból pár MB-tal felépül).
 hianyzo_kepek() {
     local k
-    timeout 30 docker info >/dev/null 2>&1 || return 0
+    docker_valaszol || return 0
     for k in "$DB_KEP" "$PMA_KEP"; do
         docker image inspect "$k" >/dev/null 2>&1 || echo "$k"
     done
@@ -668,24 +676,6 @@ sema_biztosit() {
     sema_rendben
 }
 
-# A repó címe a nyilvános https-cím legyen – egy régebbi, SSH-val klónozott példánynál is –, így a frissítéshez
-# nem kell GitHub-kulcs. Más repóra mutató címhez nem nyúl.
-repo_cim_beallit() {
-    local url
-    [[ -d $REPO/.git ]] || return 0
-    url="$(felh git -C "$REPO" remote get-url origin 2>/dev/null || true)"
-    if [[ $url == "$REPO_URL" ]]; then return 0; fi
-    if [[ -z $url ]]; then
-        felh git -C "$REPO" remote add origin "$REPO_URL" || return 0
-    elif [[ ${url,,} =~ github\.com[:/]sarokin/baninapro(\.git)?/?$ ]]; then
-        felh git -C "$REPO" remote set-url origin "$REPO_URL" || return 0
-    else
-        info "A repó címe nem a nyilvános BaninaPRO-repó ($url) – nem módosítom."
-        return 0
-    fi
-    ok "A repó címe: $REPO_URL (a frissítéshez nem kell GitHub-kulcs)"
-}
-
 # A script nem a BaninaPRO repóból fut (pl. csak ezt a fájlt töltötték le): letölti a nyilvános repót a felhasználó
 # mappájába (~/BaninaPRO) – ha ott már van, frissíti –, és az ottani példánnyal folytatja.
 repo_teljes() { [[ -f $REPO/docker-compose.yml && -f $REPO/docker/Dockerfile && -f $REPO/docker/config.php ]]; }
@@ -707,33 +697,6 @@ repo_letoltes() {
     ok "BaninaPRO letöltve: $cel – onnan folytatom."
     rm -rf "$TMPD"
     exec bash "$uj" "${ARGOK[@]}"
-}
-
-# git pull; ha helyben lévő fájlok állnak az útjában, félrerakja őket (.git/baninapro-felrerakva), és újrapróbálja
-git_frissit() {
-    local kezdet szoveg fajlok=() f hova
-    repo_cim_beallit
-    kezdet="$(naplo_meret)"
-    if ujraprobal 2 felh git -C "$REPO" pull --ff-only; then return 0; fi
-    szoveg="$(naplo_resz "$kezdet")"
-    hova="$REPO/.git/baninapro-felrerakva/$(date +%Y%m%d_%H%M%S)"
-    if grep -q 'untracked working tree files would be overwritten' <<<"$szoveg"; then
-        mapfile -t fajlok < <(awk '/untracked working tree files would be overwritten/ { b = 1; next }
-                                   b && /^\t/ { sub(/^\t/, ""); print; next } { b = 0 }' <<<"$szoveg")
-        for f in "${fajlok[@]}"; do
-            if [[ -e $REPO/$f ]]; then
-                install -d -o "$CEL_FELH" -g "$(id -gn "$CEL_FELH")" "$hova/$(dirname "$f")"
-                mv -f "$REPO/$f" "$hova/$f"
-                info "Félreraktam (a git pull útjában volt): $f → .git/${hova#"$REPO/.git/"}"
-            fi
-        done
-    fi
-    if grep -qE 'local changes to the following files would be overwritten|commit your changes or stash them' <<<"$szoveg"; then
-        if fut felh git -C "$REPO" stash push -m "szerver_beallitas: automatikusan félretéve $(date '+%Y-%m-%d %H:%M')"; then
-            figy "A szerveren módosítva voltak a gitben lévő fájlok – félretettem őket (git stash list), és frissítettem."
-        fi
-    fi
-    fut felh git -C "$REPO" pull --ff-only
 }
 
 # ---- Egyéb segédek ------------------------------------------------------------
@@ -815,42 +778,6 @@ elofeltetelek() {
     fi
 }
 
-# Frissítés: mentés a mostani adatbázisról, majd a legfrissebb kód. Ha közben maga a script is
-# frissült, az új változat fut tovább (egyszer).
-frissites_elokeszites() {
-    [[ -z ${BANINA_UJRA:-} ]] || return 0
-    AKT_LEPES="frissítés előkészítése"
-    cim "Mentés és a legfrissebb kód letöltése"
-    local elotte utana
-    if command -v docker >/dev/null && [[ $(docker inspect -f '{{.State.Running}}' "$APP_KONTENER" 2>/dev/null || true) == true ]]; then
-        AKT_MUVELET="adatbázis-mentés"
-        if fut docker exec "$APP_KONTENER" php -q cron_mentes.php; then
-            ok "Adatbázis-mentés a frissítés előtt: $(tail -n 1 "$NAPLO")"
-        else
-            figy "A frissítés előtti mentés nem sikerült: $(tail -n 1 "$NAPLO")"
-        fi
-        AKT_MUVELET=""
-    else
-        info "A BaninaPRO még nem fut – nincs mit menteni."
-    fi
-
-    elotte="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
-    AKT_MUVELET="git pull"
-    if git_frissit; then
-        ok "A kód naprakész (git pull)"
-    else
-        figy "A git pull nem sikerült – a meglévő kóddal folytatom. ($(tail -n 1 "$NAPLO"))"
-    fi
-    AKT_MUVELET=""
-    utana="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
-    if [[ $elotte != "$utana" ]]; then
-        info "A telepítő script is frissült – az új változattal folytatom."
-        export BANINA_UJRA=1
-        rm -rf "$TMPD"
-        exec bash "$SCRIPT" "$@"
-    fi
-}
-
 # Minden kérdés az elején, utána már nem kell a géphez nyúlni. A light változat csak az e-mailről kérdez, és csak
 # kérésre (sudo bash szerver_beallitas_light.sh --email) – az értesítések push-ként mennek.
 kerdesek() {
@@ -909,7 +836,7 @@ lepesek_listaja() {
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
         "lepes_usb|90|USB-meghajtó: rajta a Docker és az adatbázis, és a mentések másolatai (ha üres, formázza)"
         "lepes_docker|20|Docker – a meglévő Docker ellenőrzése: mindig fut, a géppel együtt indul"
-        "lepes_halozat|10|Hálózat: gépnév ($GEPNEV.local), GitHub-elérés"
+        "lepes_halozat|5|Hálózat: a gép neve a belső hálózaton ($GEPNEV.local)"
         "lepes_energia|5|Energia: soha nem alszik el (az USB-eszközök sem), áramszünet után bekapcsol"
         "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis – a belső hálózatról is elérhető"
         "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00) – másolat az USB-re és a gép saját lemezére"
@@ -1279,7 +1206,8 @@ docker_athelyezes() {
         ok "A Docker tárhelye az USB-meghajtón van ($USB_ADAT)"
         return 0
     fi
-    gyoker="$(timeout 60 docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+    gyoker=""
+    if docker_valaszol 30; then gyoker="$(timeout 30 docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"; fi
     if [[ -n $gyoker && $gyoker != /var/lib/docker ]]; then
         hiba "A Docker egyedi helyen tárolja az adatait ($gyoker) – a light változat csak az alapértelmezett /var/lib/docker-t helyezi át az USB-re."
     fi
@@ -1300,7 +1228,7 @@ docker_athelyezes() {
         for m in "${DOCKER_MAPPAK[@]}"; do find "$USB_ADAT/$m" -mindepth 1 -delete 2>/dev/null || true; done
         info "A Docker tárhelyének áthelyezése az USB-meghajtóra (a konténerek erre az időre leállnak)…"
     fi
-    if timeout 60 docker info >/dev/null 2>&1; then elotte="$(docker_leltar)"; fi
+    if docker_valaszol 60; then elotte="$(docker_leltar)"; fi
     docker_leallitas || hiba "A Docker nem állítható le – a tárhelye most nem helyezhető át (a gép újraindítása után futtasd újra)."
     datum="$(date +%Y%m%d_%H%M%S)"
     for m in "${DOCKER_MAPPAK[@]}"; do
@@ -1372,7 +1300,7 @@ docker_usb_n_van() {   # a /var/lib/docker és a /var/lib/containerd valóban az
     done
 }
 docker_leltar() {   # a Docker képei, kötetei és konténerei – az áthelyezés előtti és utáni állapot összevetéséhez
-    { docker image ls -aq --no-trunc; docker volume ls -q; docker ps -aq --no-trunc; } 2>/dev/null | sort || true
+    { timeout 60 docker image ls -aq --no-trunc; timeout 60 docker volume ls -q; timeout 60 docker ps -aq --no-trunc; } 2>/dev/null | sort || true
 }
 # A Docker és a containerd csak az USB-meghajtóval indulhat: nélküle a gép saját, kicsi lemezére töltené le a képeket
 docker_usb_vedelem() {
@@ -1494,7 +1422,8 @@ ellenoriz() {
 }
 tukor() {   # a mentések másolatai; az utolsó kiírt sor az összefoglaló
     local d f nev cel meret regi legujabb uj=0 gond=() n
-    d="$(docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)/DBBCKP"
+    if ! systemctl is-active --quiet docker.service; then echo "Másolat: a Docker nem fut – most nem készül."; return 1; fi
+    d="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)/DBBCKP"
     if [[ ! -d $d ]] || ! compgen -G "$d/*.sql" >/dev/null; then echo "Másolat: még nincs adatbázis-mentés."; return 0; fi
     # 1) az USB FAT32 része: a legújabbaktól visszafelé mindet, ami még nincs ott. Ha betelt, a másolatok közül a
     #    legrégebbiek mennek (egy régebbi mentés kedvéért újabbat sosem töröl). A teljes sor az adat-részen is megvan.
@@ -1688,7 +1617,7 @@ docker_inditas() {
     systemctl daemon-reload || true
     systemctl enable containerd docker || true
     for i in 1 2 3 4; do
-        if docker info >/dev/null 2>&1; then AKT_MUVELET=""; return 0; fi
+        if timeout 30 docker info >/dev/null 2>&1; then AKT_MUVELET=""; return 0; fi
         if [[ -f /etc/docker/daemon.json ]] && command -v dockerd >/dev/null \
             && ! dockerd --validate --config-file=/etc/docker/daemon.json >/dev/null 2>&1; then
             mv -f /etc/docker/daemon.json "/etc/docker/daemon.json.hibas-$(date +%Y%m%d%H%M%S)"
@@ -1700,7 +1629,7 @@ docker_inditas() {
         varj $(( 3 * i ))
     done
     AKT_MUVELET=""
-    docker info >/dev/null 2>&1
+    timeout 30 docker info >/dev/null 2>&1
 }
 
 # docker compose: ha hiányzik vagy túl régi, csomagból pótolja, végső esetben a Docker GitHub-oldaláról tölti le
@@ -1730,7 +1659,7 @@ compose_biztosit() {
     ok "docker compose pótolva (a Docker GitHub-oldaláról)"
 }
 
-# Hálózat: a gép neve a belső hálózaton, és a frissítések forrása (az SSH-hoz és a távoli eléréshez nem nyúl)
+# Hálózat: a gép neve a belső hálózaton (az SSH-hoz és a távoli eléréshez nem nyúl)
 lepes_halozat() {
     # a gép neve a belső hálózaton: baninapro.local – akkor is megtalálható, ha a router más IP-címet ad neki
     telepit_opcionalis avahi-daemon
@@ -1739,16 +1668,6 @@ lepes_halozat() {
     else
         figy "A $GEPNEV.local név nem kapcsolható be (avahi-daemon) – a gép az IP-címével érhető el."
     fi
-
-    # a frissítés (git pull) a nyilvános GitHub-repóból megy, https-en – GitHub-kulcs nem kell
-    repo_cim_beallit
-    AKT_MUVELET="GitHub elérés ellenőrzése"
-    if ujraprobal 2 felh git -C "$REPO" ls-remote --exit-code origin HEAD; then
-        ok "GitHub elérés rendben – a frissítések innen jönnek: $REPO_URL"
-    else
-        figy "A GitHub-repó most nem érhető el ($REPO_URL) – a következő futás újra megpróbálja a frissítést."
-    fi
-    AKT_MUVELET=""
 }
 
 lepes_energia() {
@@ -1816,7 +1735,7 @@ aram_utan_bekapcsol() {
 lepes_baninapro() {
     # 1) adatbázis-séma (a gitben van): üres adatbázisnál a MySQL ebből hozza létre a táblákat és a kezdő admint
     sema_biztosit || hiba "Hiányzik az adatbázis-séma: $SEMA – a git pull nem hozta le (lásd a figyelmeztetéseket). Ellenőrizd a GitHub-elérést, majd futtasd újra."
-    if docker volume inspect "$DB_KOTET" >/dev/null 2>&1; then
+    if timeout 30 docker volume inspect "$DB_KOTET" >/dev/null 2>&1; then
         ELSO_INDITAS=0
         ok "Meglévő adatbázis – az adatok megmaradnak"
     else
@@ -2300,7 +2219,7 @@ set -u
 export LC_ALL=C   # bájtpontos olvasás (a napló UTF-8 – a szöveg változatlanul megy tovább)
 ALLAPOT=/var/lib/baninapro-ertesites/belepesfigyelo
 mkdir -p "$(dirname "$ALLAPOT")"
-naplo_mappa() { local m; m="$(docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)"; [[ -n $m ]] && printf '%s/LOG' "$m"; }
+naplo_mappa() { local m; m="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)"; [[ -n $m ]] && printf '%s/LOG' "$m"; }
 mai_fajl() { printf '%s/%s.txt' "$1" "$(date -d '-3 hours' +%Y%m%d)"; }   # a napló napja 03:00-kor vált
 feldolgoz() {   # [ÉÉÉÉ-HH-NN óó:pp:mm] felhasználó | IP | KÓD | EREDMÉNY | részletek
     local re='^\[([^]]+)\] ([^|]*) \| ([^|]*) \| (BELEPES|KILEPES|KILEPTETES) \| ([^|]*) \| (.*)$' ido felh ip kod er r
@@ -2492,7 +2411,7 @@ done
 # konténerek: fut-e, és újraindította-e a Docker (összeomlás után)
 if (( docker_fut )); then
     for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
-        a="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$k" 2>/dev/null || echo 'hiányzik 0')"
+        a="$(timeout 30 docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$k" 2>/dev/null || echo 'hiányzik 0')"
         allapot="${a% *}" db="${a##* }"
         regi_db="$(cat "$ALLAPOT/ujraindulas-$k" 2>/dev/null || echo "$db")"
         echo "$db" > "$ALLAPOT/ujraindulas-$k"
@@ -2506,7 +2425,7 @@ if (( docker_fut )); then
         naplo "A(z) $k konténer nem fut ($allapot) – indítás"
         dc up -d --remove-orphans
         sleep 5
-        if [[ $(docker inspect -f '{{.State.Status}}' "$k" 2>/dev/null) == running ]]; then
+        if [[ $(timeout 30 docker inspect -f '{{.State.Status}}' "$k" 2>/dev/null) == running ]]; then
             ert -p 4 -t warning "A(z) $k konténer leállt" "Állapota „$allapot” volt – elindítottam, most már fut."
             echo ok > "$ALLAPOT/allapot-kontener-$k"
         elif valtozott "kontener-$k" hiba; then
@@ -2772,7 +2691,7 @@ for sz in docker containerd cron baninapro-orszem.timer baninapro-belepesfigyelo
     if systemctl is-active --quiet "$sz"; then allapotok+=("$sz: fut"); else allapotok+=("$sz: NEM FUT"); pr "Nem fut: $sz"; fi
 done
 for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
-    a="$(docker inspect -f '{{.State.Status}} – indult: {{.State.StartedAt}}, újraindítva: {{.RestartCount}}×' "$k" 2>/dev/null \
+    a="$(timeout 30 docker inspect -f '{{.State.Status}} – indult: {{.State.StartedAt}}, újraindítva: {{.RestartCount}}×' "$k" 2>/dev/null \
         | sed -E 's/T([0-9:]+)\.[0-9]+Z/ \1 UTC/')"
     [[ -n $a ]] || a="hiányzik"
     [[ $a == running* ]] || pr "A(z) $k konténer: $a"
@@ -3003,7 +2922,7 @@ lepes_ellenorzes() {
     fi
 
     for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
-        allapot="$(docker inspect -f '{{.State.Status}}/{{.HostConfig.RestartPolicy.Name}}' "$k" 2>/dev/null || echo hiányzik)"
+        allapot="$(timeout 30 docker inspect -f '{{.State.Status}}/{{.HostConfig.RestartPolicy.Name}}' "$k" 2>/dev/null || echo hiányzik)"
         if [[ $allapot == running/unless-stopped || $allapot == running/always ]]; then
             ok "$k fut, a gép újraindítása után magától elindul"
         else
@@ -3018,7 +2937,7 @@ lepes_ellenorzes() {
     if systemctl is-active --quiet baninapro-belepesfigyelo.service; then ok "A belépésfigyelő fut (be- és kilépésekről értesít)"
     else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
     # az USB-meghajtó: csatolva, rajta a Docker tárhelye; a mentések másolatai; a jelszavak az USB-n is (új szerverhez)
-    if docker_usb_n_van; then ok "USB-meghajtó csatolva – rajta a Docker tárhelye és az adatbázis ($(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true) → $USB_ADAT)"
+    if docker_usb_n_van; then ok "USB-meghajtó csatolva – rajta a Docker tárhelye és az adatbázis ($(timeout 20 docker info -f '{{.DockerRootDir}}' 2>/dev/null || true) → $USB_ADAT)"
     else figy "A Docker tárhelye nincs az USB-meghajtóról befűzve (sudo baninapro-usb ellenoriz)."; fi
     for s in containerd docker; do
         if systemctl show -p RequiresMountsFor --value "$s.service" 2>/dev/null | grep -q /var/lib/docker; then ok "$s: csak az USB-meghajtóval indul"
@@ -3163,7 +3082,7 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     osz "" "  Kézi ellenőrzés: sudo $JELENTO kezi"
     osz "" "  Őrszem:        2 percenként ellenőriz, és ha kell, helyreállít (napló: /var/log/baninapro-orszem.log)"
     osz "" "  Szabad hely:   $(hely_szoveg) a gép saját lemezén (az őrszem $KEVES_HELY_MB MB alatt takarít és értesít)"
-    osz "" "  Frissítés:     cd \"$SCRIPT_DIR\" && sudo bash $(basename "$SCRIPT")"
+    osz "" "  Frissítés:     cd \"$REPO\" && git pull   – majd újra: cd \"$SCRIPT_DIR\" && sudo bash $(basename "$SCRIPT")"
     osz "" "  Napló:         $NAPLO"
 
     if (( ${#FIGYELMEZTETESEK[@]} )); then
@@ -3242,7 +3161,7 @@ main() {
         exit 1
     fi
     local a
-    ARGOK=("$@")   # egy újraindított (frissült vagy letöltött) példány is ugyanezekkel fut
+    ARGOK=("$@")   # egy újraindított (letöltött) példány is ugyanezekkel fut
     for a in "$@"; do
         case $a in
             --email)        EMAIL_KERDES=1 ;;          # a feladó-postafiók (újra)beállítása
@@ -3256,16 +3175,18 @@ main() {
     TMPD="$(mktemp -d)"
     APT_ALLAPOT="$TMPD/apt_allapot"
     trap kilepeskor EXIT
-    # amíg a telepítő dolgozik, az őrszem ne avatkozzon be (ugyanezt a zárat fogja; ha épp helyreállít, megvárja)
-    exec 8>/run/baninapro-orszem.lock
-    flock -w 900 8 || true
     LEPES_KEZDET=$SECONDS
     printf '\n\n######## %s – futás indul ########\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-    printf '\n%sBaninaPRO szerver – telepítés és frissítés (light: asztal és AnyDesk nélkül, kevés helyhez)%s  (%s)\n' \
+    printf '\n%sBaninaPRO szerver – telepítés (light: asztal és AnyDesk nélkül, kevés helyhez)%s  (%s)\n' \
         "$C_F" "$C_N" "$(date '+%Y-%m-%d %H:%M')" >&3
+    # amíg a telepítő dolgozik, az őrszem ne avatkozzon be (ugyanezt a zárat fogja; ha épp helyreállít, megvárja)
+    exec 8>/run/baninapro-orszem.lock
+    if ! flock -n 8; then
+        info "Várakozás, amíg az őrszem befejezi az ellenőrzést (legfeljebb 15 perc)…"
+        flock -w 900 8 || true
+    fi
 
     elofeltetelek
-    frissites_elokeszites "$@"
     kerdesek
     lepesek_listaja
     futtat_lepesek

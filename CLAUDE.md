@@ -233,6 +233,8 @@ Scope (the user's decision):
   - In that case a missing optional package is only a warning, and a missing required tool stops the run with a message.
   - `apt-get update` runs only when something must be installed, at most once per run.
 - Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, but only downloaded package files, journals and the Docker cache.
+- No pre-run DB backup and no `git pull` or self-update (the user removed them: that step seemed to hang). Code updates are manual: `cd ~/BaninaPRO && git pull`, then rerun. The nightly backup still runs.
+- Never call the docker CLI without a timeout while the stick might be missing. `docker.socket` accepts the connection, but `docker.service` can't start (`RequiresMountsFor=`), so a plain `docker inspect` blocks forever with no spinner. Use `docker_valaszol` (checks `systemctl is-active docker.service`, then runs `docker info` under `timeout`), and wrap the other calls in `timeout`.
 
 USB stick (default `/dev/sdb`, found later by label, never by name):
 - **Layout.** GPT with two partitions:
