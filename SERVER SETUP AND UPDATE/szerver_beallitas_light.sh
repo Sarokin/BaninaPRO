@@ -36,11 +36,13 @@
 #    sem tölt le semmit.
 #
 #  TÁRHELY – a gép saját lemezén 1 GB-ba belefér (300 MB-tal is elindul):
-#    - először takarít: letöltött csomagfájlok, régi kernelek, rendszernaplók, Docker-gyorsítótár
-#      (a konténerekhez és az adatbázishoz nem nyúl);
-#    - a rendszerfrissítés csak akkor fut, ha az apt előzetes becslése szerint (letöltés + telepítés + tartalék)
-#      belefér a helybe – különben kimarad, és szól;
+#    - először takarít: letöltött csomagfájlok, rendszernaplók, Docker-gyorsítótár (a konténerekhez és az
+#      adatbázishoz nem nyúl);
 #    - az őrszem és a napi jelentés 500 MB alatt jelez kevés helyet (előtte takarít).
+#
+#  CSOMAGOK – a rendszert NEM frissíti (és automatikus frissítés sincs: kikapcsolja), csomagot nem töröl, és a
+#    félbemaradt csomagtelepítést sem folytatja: ha van ilyen, az apt-hoz egyáltalán nem nyúl. Csak a hiányzó
+#    eszközöket telepíti (curl, git, cron, fdisk, dosfstools…) – ha mind megvan, az apt-ot el sem indítja.
 #
 #  FUTTATÁS – első futtatás és később minden frissítés is ugyanez:
 #    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
@@ -48,14 +50,11 @@
 #  (Ha csak ezt az egy fájlt töltöd le és futtatod, a script magától letölti a repót a ~/BaninaPRO mappába,
 #  és onnan folytatja.)
 #
-#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés (ha belefér) → konténerek újraépítése
-#  → takarítás. Automatikus rendszerfrissítés NINCS: a gép magától nem keres, nem tölt le és nem telepít
-#  frissítést – csak ennek a scriptnek a kézi futtatásakor frissül.
+#  Újrafuttatva a BaninaPRO-t frissíti: adatbázis-mentés → git pull → konténerek újraépítése → takarítás.
 #  Bármikor nyugodtan újrafuttatható: ami már kész, azt csak ellenőrzi.
-#  Önjavító: ha valami elakad – félbemaradt csomagtelepítés, hiányzó csomag vagy bővítmény, hálózati hiba,
-#  rossz rendszeridő, hibás külső csomagtároló, foglalt 80-as port, leállt Docker, leválott USB-meghajtó,
-#  hiányzó adatbázis-táblák –, a script megpróbálja magától rendbe tenni, és csak akkor áll meg, ha ez sem megy.
-#  Csomagot nem távolít el.
+#  Önjavító: ha valami elakad – hiányzó eszköz vagy bővítmény, hálózati hiba, rossz rendszeridő, hibás külső
+#  csomagtároló, foglalt 80-as port, leállt Docker, leválott USB-meghajtó, hiányzó adatbázis-táblák –, a script
+#  megpróbálja magától rendbe tenni, és csak akkor áll meg, ha ez sem megy.
 #  A képernyőn folyamatjelző mutatja, hol tart; a parancsok teljes kimenete a naplóba kerül:
 #  /var/log/baninapro-szerver.log  (hibánál a napló utolsó sorai a képernyőn is megjelennek).
 #  A végén – hiba esetén is – összegzés: minden lépés eredménye, és hogy a szerveren milyen címen érhető el
@@ -96,13 +95,11 @@ MENTES_CRON="0 3 * * *"              # éjszakai adatbázis-mentés, mint az él
 REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
 NAPLO="/var/log/baninapro-szerver.log"
 
-# Tárhely (MB): ennyi alatt a script nem indul el; ennyi alatt előbb takarít és figyelmeztet; a rendszerfrissítés
-# az apt becslésén felül ennyi tartalékot hagy; a PHP-alapképet csak ennyi szabad hely fölött frissíti (a Docker
-# tárhelyén, az USB-n); ha a Docker-képek hiányoznak, a letöltésükhöz ennyi kell; az őrszem és a napi jelentés ennyi
-# alatt jelez kevés helyet a gép saját lemezén.
+# Tárhely (MB): ennyi alatt a script nem indul el; ennyi alatt előbb takarít és figyelmeztet; a PHP-alapképet csak ennyi
+# szabad hely fölött frissíti (a Docker tárhelyén, az USB-n); ha a Docker-képek hiányoznak, a letöltésükhöz ennyi kell;
+# az őrszem és a napi jelentés ennyi alatt jelez kevés helyet a gép saját lemezén.
 HELY_MIN_MB=300
 HELY_FIGY_MB=1024
-APT_TARTALEK_MB=300
 ALAPKEP_FRISSITES_MB=1500
 KEP_LETOLTES_MB=2500
 KEVES_HELY_MB=500
@@ -369,13 +366,29 @@ apt_() {
         rc=0
         apt_nyers "$@" || rc=$?
         if (( rc == 0 || proba == 3 )); then break; fi
+        # ha a sikertelen futás után félbemaradt telepítés van, nem próbálja újra (az újabb futás folytatni próbálná)
+        if ! dpkg_rendben; then break; fi
         apt_javit "$kezdet" "$@"
     done
     AKT_MUVELET=""
     return "$rc"
 }
-telepit()     { apt_ install "$@"; }
-telepit_min() { apt_ install --no-install-recommends "$@"; }
+# A light változat a félbemaradt csomagtelepítéseket nem folytatja (a felhasználó kérése). Minden apt-futtatás
+# megpróbálná befejezni őket, ezért ha van ilyen, az apt-hoz egyáltalán nem nyúl. A csomaglistákat csak akkor
+# frissíti, ha valamit telepíteni kell (futásonként egyszer) – a rendszert nem frissíti.
+APT_LISTA_KESZ=0
+apt_hasznalhato() {
+    if ! dpkg_rendben; then
+        info "Félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)) – nem folytatom, ezért az apt-hoz nem nyúlok."
+        return 1
+    fi
+    if (( ! APT_LISTA_KESZ )); then
+        apt_ update || true
+        APT_LISTA_KESZ=1
+    fi
+}
+telepit()     { apt_hasznalhato && apt_ install "$@"; }
+telepit_min() { apt_hasznalhato && apt_ install --no-install-recommends "$@"; }
 van_csomag()  { [[ $(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null) == ii* ]]; }
 
 # a megadott nevek közül azok, amelyeknek van telepíthető változata (a csak „virtuális” nevek kimaradnak)
@@ -397,10 +410,13 @@ telepit_opcionalis() {
     local csomagok=() hibas=() p
     mapfile -t csomagok < <(hianyzo "$@")
     (( ${#csomagok[@]} )) || return 0
+    if ! apt_hasznalhato; then
+        figy "Nem települt (nem kötelező, a működést nem érinti): ${csomagok[*]} – félbemaradt csomagtelepítés van a gépen."
+        return 0
+    fi
     mapfile -t csomagok < <(elerheto "${csomagok[@]}")
     (( ${#csomagok[@]} )) || return 0
     if telepit_min "${csomagok[@]}"; then return 0; fi
-    fut dpkg --configure -a || true
     for p in "${csomagok[@]}"; do
         if ! telepit_min "$p"; then hibas+=("$p"); fi
     done
@@ -416,29 +432,10 @@ hibas_csomagok() {
     dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null \
         | awk '{ s = substr($1, 2, 1); e = substr($1, 3, 1) } s ~ /[HUFWt]/ || e == "R" { print $NF }' || true
 }
-
-# A csomagkezelő rendbetétele: a félbemaradt telepítések befejezése, a hiányzó függőségek pótlása.
-# A light változat semmit nem távolít el (az asztalhoz és az AnyDeskhez sem nyúl): ha így is maradt hiba,
-# figyelmeztet, és 1-gyel tér vissza – a többi lépés megy tovább.
-csomagkezelo_rendbe() {
-    local hibas=()
-    AKT_MUVELET="csomagkezelő ellenőrzése"
-    apt_var
-    fut dpkg --configure -a || true
-    mapfile -t hibas < <(hibas_csomagok)
-    if (( ${#hibas[@]} == 0 )); then AKT_MUVELET=""; return 0; fi
-
-    info "Félbemaradt csomagtelepítés: ${hibas[*]} – javítom…"
-    AKT_MUVELET="félbemaradt telepítések befejezése"
-    apt_nyers -f install || true
-    fut dpkg --configure -a || true
-    mapfile -t hibas < <(hibas_csomagok)
-    AKT_MUVELET=""
-    if (( ${#hibas[@]} )); then
-        figy "Félbemaradt csomagok maradtak: ${hibas[*]} – $(apt_hibak) (a light változat nem távolít el csomagot)"
-        return 1
-    fi
-    ok "Csomagkezelő rendbe téve"
+# a csomagkezelő rendben van-e: nincs félbemaradt (megszakadt vagy be nem fejezett) csomagtelepítés. A light változat
+# ezeket nem folytatja és nem is törli (a felhasználó kérése) – ilyenkor az apt-ot egyáltalán nem futtatja.
+dpkg_rendben() {
+    [[ -z $(hibas_csomagok) ]] && ! compgen -G '/var/lib/dpkg/updates/[0-9]*' >/dev/null
 }
 
 # egy csomagtároló hibája a sajátja (aláírás, kulcs, hiányzó Release fájl) – nem hálózati és nem óra-probléma
@@ -458,11 +455,7 @@ apt_javit() {
         # hibás külső csomagtároló: kikapcsolom, hogy a többi működjön (a lépése a tartalék megoldással megy tovább)
         tarolo_kikapcsol "$szoveg"
     fi
-    # félbemaradt telepítés, törött függőségek
-    if grep -qE 'dpkg was interrupted|error processing|returned an error code|[Uu]nmet dependencies|fix-broken|held broken packages|not fully installed|Unable to correct problems' <<<"$szoveg" \
-        || [[ -n $(hibas_csomagok) ]]; then
-        csomagkezelo_rendbe || true
-    fi
+    # (félbemaradt telepítésnél nincs javítás: a light változat azt nem folytatja – az apt_ ilyenkor nem is próbálja újra)
     # hálózati vagy letöltési hiba: rövid szünet, a gyorsítótár ürítése, friss csomaglisták
     if grep -qE 'Failed to fetch|Temporary failure|Could not resolve|Could not connect|Connection (failed|timed out|refused|reset)|Hash Sum mismatch|unexpected size|Unable to fetch|Service Unavailable|Bad Gateway|Gateway Time' <<<"$szoveg"; then
         AKT_MUVELET="hálózati hiba – rövid várakozás, majd újra"
@@ -812,7 +805,7 @@ email_kerdesek() {
 lepesek_listaja() {
     LEPESEK=(
         "lepes_auto_frissites_ki|5|Automatikus rendszerfrissítés kikapcsolva: nem keres, nem tölt le (kevés a tárhely)"
-        "lepes_rendszer|180|Takarítás, rendszerfrissítés (ha belefér a helybe) és a szükséges eszközök"
+        "lepes_rendszer|15|A szükséges eszközök (rendszerfrissítés nélkül)"
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
         "lepes_usb|90|USB-meghajtó: rajta a Docker és az adatbázis, és a mentések másolatai (ha üres, formázza)"
         "lepes_docker|20|Docker – a meglévő Docker ellenőrzése: mindig fut, a géppel együtt indul"
@@ -860,7 +853,7 @@ futtat_lepesek() {
 # =============================================================================
 # Az automatikus rendszerfrissítés teljesen ki (a felhasználó kérése: kevés a tárhely, és ne fogyassza a gépet):
 # nem keres (apt update), nem tölt le és nem telepít – sem az apt / unattended-upgrades, sem a snap, sem a
-# firmware-frissítő, sem a hír- és kiadásfigyelő. A rendszer csak ennek a scriptnek a kézi futtatásakor frissül.
+# firmware-frissítő, sem a hír- és kiadásfigyelő. A light változat maga sem frissíti a rendszert.
 # Az őrszem 2 percenként ellenőrzi, hogy így maradjon.
 AUTO_FRISSITO_IDOZITOK=(apt-daily.timer apt-daily-upgrade.timer fwupd-refresh.timer update-notifier-download.timer
     update-notifier-motd.timer motd-news.timer ua-timer.timer)
@@ -869,7 +862,7 @@ lepes_auto_frissites_ki() {
     # az apt saját beállítása: a periodikus munkák (lista-frissítés, letöltés, telepítés, takarítás) ki
     cat > /etc/apt/apt.conf.d/99baninapro-nincs-automatikus-frissites <<'EOF'
 // BaninaPRO szerver: nincs automatikus frissítés – nem keres, nem tölt le, nem telepít (a szerver_beallitas.sh írta).
-// A rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül.
+// A szerver_beallitas_light.sh sem frissíti a rendszert.
 APT::Periodic::Enable "0";
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
@@ -896,66 +889,26 @@ EOF
         if fut timeout 120 snap refresh --hold; then ok "Snap: az automatikus frissítés ki"
         else figy "A snap automatikus frissítését nem sikerült kikapcsolni."; fi
     fi
-    ok "A rendszer csak akkor frissül, amikor ezt a scriptet kézzel futtatod (utána takarít: régi kernelek, letöltött csomagok)"
+    ok "A rendszer magától nem frissül – és ez a script sem frissíti"
 }
 
+# A szükséges eszközök – csak ami hiányzik, az kerül fel. A rendszert NEM frissíti (a felhasználó kérése), a félbemaradt
+# csomagtelepítést nem folytatja, és csomagot nem töröl; csak a letöltött csomagfájlokat (a telepített programok maradnak).
 lepes_rendszer() {
     local hiany=()
-    # egy korábbi, félbeszakadt futás vagy félbemaradt csomagtelepítés után a csomagkezelő rendbetétele
-    csomagkezelo_rendbe || true
-
-    # előbb helyet csinál: a már nem kellő csomagok (pl. a régi kernelek) és a letöltött csomagfájlok törlése
-    if apt_ autoremove --purge; then ok "Felesleges csomagok (pl. régi kernelek) törölve"
-    else figy "A felesleges csomagok törlése nem sikerült: $(apt_hibak)"; fi
     apt-get clean >/dev/null 2>&1 || true
-    apt_ update || figy "Az apt update hibát jelzett: $(apt_hibak) – folytatom."
-    rendszerfrissites
-    # a frissítés után feleslegessé vált csomagok (pl. az előző kernel) is mennek
-    apt_ autoremove --purge || true
-    apt-get clean >/dev/null 2>&1 || true
-
-    # alapcsomagok: csak a hiányzók (Ubuntu Serveren általában mind megvan – ilyenkor az apt-hoz sem nyúl)
+    if ! dpkg_rendben; then
+        figy "Félbemaradt csomagtelepítés van a gépen: $(hibas_csomagok | paste -sd ' ' - || true) – nem folytatom; amíg így marad, a script csomagot nem telepít."
+    fi
     # (az USB-meghajtóhoz: fdisk – partícionálás, dosfstools – FAT32, e2fsprogs – ext4)
     mapfile -t hiany < <(hianyzo ca-certificates curl git cron psmisc fdisk dosfstools e2fsprogs)
     if (( ${#hiany[@]} )); then
-        telepit_min "${hiany[@]}" || hiba "A szükséges csomagok nem telepíthetők: $(apt_hibak)"
+        if ! dpkg_rendben; then
+            hiba "Hiányzó csomagok: ${hiany[*]} – nem telepíthetők, mert félbemaradt csomagtelepítés van a gépen ($(hibas_csomagok | paste -sd ' ' - || true)), és azt a script nem folytatja. Ha kézzel rendbe teszed (pl. sudo dpkg --configure -a, vagy a félbemaradt csomag eltávolításával), futtasd újra."
+        fi
+        telepit_min "${hiany[@]}" || hiba "A hiányzó csomagok nem telepíthetők (${hiany[*]}): $(apt_hibak)"
     fi
-    ok "A szükséges eszközök megvannak (curl, git, cron, fdisk, dosfstools…) – szabad hely: $(hely_szoveg)"
-}
-
-# A rendszerfrissítés csak akkor fut, ha belefér a helybe: az apt előre megmondja, mennyit töltene le, és mennyi
-# helyet foglalna a telepítés – ha ez a tartalékkal együtt nem fér el, kimarad (egy megtelt lemezen félbemaradt
-# frissítés többet ártana, mint egy kihagyott).
-rendszerfrissites() {
-    local becsles letolt foglal kell szabad
-    apt_var
-    AKT_MUVELET="a rendszerfrissítés helyigényének becslése"
-    becsles="$(apt-get --assume-no -o DPkg::Lock::Timeout=600 full-upgrade 2>&1 || true)"
-    AKT_MUVELET=""
-    printf '%s\n' "$becsles" | tail -n 6
-    if grep -qE '^0 upgraded, 0 newly installed' <<<"$becsles"; then
-        ok "A rendszer naprakész – nincs mit frissíteni"
-        return 0
-    fi
-    letolt="$(apt_mb "$(sed -nE 's/^Need to get ([0-9.,]+ [kMG]?B).*/\1/p' <<<"$becsles" | head -n 1)")"
-    foglal="$(apt_mb "$(sed -nE 's/^After this operation, ([0-9.,]+ [kMG]?B) of additional disk space will be used.*/\1/p' <<<"$becsles" | head -n 1)")"
-    kell=$(( letolt + foglal + APT_TARTALEK_MB ))
-    szabad="$(szabad_mb)"
-    if (( kell > szabad )); then
-        figy "A rendszerfrissítés most kimarad, mert nem fér el: $letolt MB letöltés + $foglal MB telepítés + $APT_TARTALEK_MB MB tartalék kellene, és csak $(hely_szoveg "$szabad") szabad. A BaninaPRO enélkül is működik; ha több lesz a hely, a következő futás frissít."
-        return 0
-    fi
-    if apt_ full-upgrade; then
-        ok "Rendszer frissítve ($letolt MB letöltés, $foglal MB új hely)"
-    else
-        figy "A rendszerfrissítés nem sikerült teljesen: $(apt_hibak) – folytatom, a következő futás újra megpróbálja."
-    fi
-}
-# az apt méretkiírása MB-ban, felfelé kerekítve (az apt 1000-es váltószámmal számol): „45.3 MB” → 46, „0 B” → 0
-apt_mb() {
-    awk '{ gsub(",", "", $1); m = $1 + 0
-           if ($2 == "B") m /= 1000000; else if ($2 == "kB") m /= 1000; else if ($2 == "GB") m *= 1000
-           printf "%d\n", (m == int(m)) ? m : int(m) + 1 }' <<<"${1:-0 MB}"
+    ok "A szükséges eszközök megvannak (curl, git, cron, fdisk, dosfstools…) – rendszerfrissítés nincs; szabad hely: $(hely_szoveg)"
 }
 
 lepes_gepnev() {
@@ -2730,7 +2683,7 @@ if (( ${#auto_be[@]} )); then
     auto="BE: ${auto_be[*]}"
     pr "Az automatikus frissítés be van kapcsolva (${auto_be[*]}) – az őrszem kikapcsolja"
 else
-    auto="ki – a rendszer csak a szerver_beallitas_light.sh kézi futtatásakor frissül"
+    auto="ki – a rendszer magától nem frissül (a szerver_beallitas_light.sh sem frissíti)"
 fi
 
 if (( ${#problemak[@]} )); then allapot="FIGYELEM – ${#problemak[@]} probléma"; else allapot="MINDEN RENDBEN"; fi
@@ -3129,7 +3082,7 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     if [[ -f /var/run/reboot-required ]]; then UJRAINDITAS=1; fi
     if (( UJRAINDITAS )); then
         ki ""
-        ki "  Újraindítás kell: utána lesz érvényes az új gépnév vagy a rendszerfrissítés (pl. új kernel)."
+        ki "  Újraindítás kell: utána lesz érvényes az új gépnév (vagy egy korábbi, kézi rendszerfrissítés kéri)."
         if [[ -t 0 ]]; then
             printf '  Újraindítsam most? [I/n] (60 mp múlva magától igen): ' >&3
             read -r -t 60 v || true

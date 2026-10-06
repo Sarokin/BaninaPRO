@@ -220,8 +220,12 @@ A trimmed copy of the full installer for the real server: a minimized Ubuntu Ser
 Scope (the user's decision):
 - It does only the BaninaPRO side: containers, DB, nightly backup, watchdog, pushes, daily report, hostname/timezone, avahi, and never-sleep (including USB autosuspend off).
 - It never installs, configures or watches the desktop, LightDM, Xorg, AnyDesk, SSH or the language, and never installs Docker.
-- It never removes a package: `csomagkezelo_rendbe` only repairs.
-- Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, and the system upgrade runs only if apt's `--assume-no` estimate plus 300 MB fits.
+- No system update of any kind (no `full-upgrade`, no `autoremove`), on the user's request. Automatic updates are switched off as in the full script, so the OS updates only when someone runs apt by hand.
+- It never touches half-finished installs, never removes a package, and has no repair routine.
+  - Every apt run would try to finish them, because apt runs `dpkg --configure --pending` at the end. So `dpkg_rendben` gates every install: if there are broken packages or an interrupted dpkg, apt is not run at all.
+  - In that case a missing optional package is only a warning, and a missing required tool stops the run with a message.
+  - `apt-get update` runs only when something must be installed, at most once per run.
+- Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, but only downloaded package files, journals and the Docker cache.
 
 USB stick (default `/dev/sdb`, found later by label, never by name):
 - **Layout.** GPT with two partitions:
