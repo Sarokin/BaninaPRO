@@ -213,6 +213,49 @@ Testing: reproduce the server in a privileged systemd Ubuntu container:
 - Point pushes at a local ntfy server (`binwiederhier/ntfy serve`; `sed` `NTFY_SZERVER` in the test copy) and read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
 - `docker restart -t 180 <container>` simulates a clean reboot. `docker kill` followed by `docker start` simulates a power cut.
 
+## Light installer (`SERVER SETUP AND UPDATE/szerver_beallitas_light.sh`)
+
+A trimmed copy of the full installer for the real server: a minimized Ubuntu Server with only LightDM, the minimal Xorg and AnyDesk, Docker already installed and running, and 1.7 GB free on the internal disk. Everything must fit in 1 GB. Run it as `sudo bash szerver_beallitas_light.sh`; flags are `--email`, `--usb=/dev/sdX` and `--usb-formazas`.
+
+Scope (the user's decision):
+- It does only the BaninaPRO side: containers, DB, nightly backup, watchdog, pushes, daily report, hostname/timezone, avahi, and never-sleep (including USB autosuspend off).
+- It never installs, configures or watches the desktop, LightDM, Xorg, AnyDesk, SSH or the language, and never installs Docker.
+- It never removes a package: `csomagkezelo_rendbe` only repairs.
+- Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, and the system upgrade runs only if apt's `--assume-no` estimate plus 300 MB fits.
+
+USB stick (default `/dev/sdb`, found later by label, never by name):
+- **Layout.** GPT with two partitions:
+  - `BANINAPRO` (FAT32, 1/10 of the stick, 1–16 GiB) holds `BaninaPRO-mentesek/`, a mirror of every backup, plus `OLVASSEL.txt`. It is FAT so the user (on a Mac) can read the backups after pulling the stick; exFAT would need linux-modules-extra on a minimized kernel.
+  - `BANINAPRO-ADAT` (ext4) is bind-mounted onto `/var/lib/docker` and `/var/lib/containerd`, so images, containers, the MySQL volume and the app's LOG/DBBCKP all live on the stick. Docker 29 uses the containerd image store, so images are in `/var/lib/containerd` and both directories must move.
+  - `baninapro/` on the ext4 partition holds copies of `titkok` and `ntfy`, so the DB opens on a new server. The e-mail password is not copied.
+- **No stick, no Docker.** fstab has a managed block by UUID with `nofail`; `/etc/fstab.baninapro-elott` is the original. Docker and containerd get `RequiresMountsFor=` drop-ins. The empty mountpoints and placeholder dirs are `chattr +i`, so without the stick nothing can write to the small internal disk.
+- **Formatting safety.** It formats only a whole disk that is:
+  - USB (`TRAN=usb`), unmounted and unused (no LVM, RAID or crypt), and at least 8 GB;
+  - empty: each filesystem is mounted read-only and checked, and an unreadable filesystem counts as not empty.
+
+  Anything else needs `--usb-formazas`. It also refuses to prepare a new stick while `/etc/baninapro/usb` names one that is missing, because the DB would start empty.
+- **Migration.** Stop Docker and containerd, copy with `cp -a`, bind-mount, start, then compare the image/volume/container inventory. Only then delete the internal copy. On any failure it rolls back completely.
+  - The marker `baninapro/docker-athelyezve` means a finished move. A stick that has it is adopted: its data and secrets win, and the internal data is set aside, not deleted. A stick without it but with content is a half-finished copy and is wiped and redone.
+- **`/usr/local/sbin/baninapro-usb`** has the subcommands `ellenoriz`, `tukor`, `allapot`, `levalaszt` and `csatol`.
+  - The watchdog calls `ellenoriz` first. It remounts a stick that reappeared, possibly under a new name; a missing stick gives one push and no further recovery, so no reboot loop.
+  - The watchdog also calls `tukor` on every run, and the nightly wrapper calls it after the backup. `tukor` copies the newest files first and never deletes a newer copy to make room for an older one. The two newest backups also go to `/var/backups/baninapro` on the internal disk, in case the stick dies.
+  - The watchdog logs only failures, with a date. The daily report lists the last 24 hours of the watchdog log as interventions, and undated lines sort after the date filter and flood it.
+- **Adoption order.** An adopted stick's containers start by themselves as soon as Docker starts. So `titkok` and `/etc/baninapro/config.php` must exist before `docker_inditas`. Otherwise Docker creates a *directory* at the missing bind-mount source and the app container fails with "not a directory". `szerver_config` (in both scripts) removes such a directory.
+
+Testing: this Mac (Intel, macOS 15) has no Docker, so the installer is tested in a Lima VM.
+- Use `limactl` with `--vm-type=vz` and an extra raw disk (`limactl disk create`, `additionalDisks: format: false`) as the stick. Virtio disks are not `TRAN=usb`, so run with `BANINA_USB_LEMEZ=/dev/vdb BANINA_USB_TESZT=1`. In test mode, loop devices also pass the disk checks, which is how the formatting-safety cases are tested.
+- Scenarios worth repeating after changes:
+  - fresh run with an existing container and volume (data must survive the move);
+  - rerun;
+  - reboot;
+  - boot without the stick (`limactl edit --set '.additionalDisks=[]'`): Docker must not start, and the internal disk must not grow;
+  - `levalaszt` / `csatol`, and unmounting under a running system (the watchdog remounts);
+  - a "new server": move `/etc/baninapro` and the drop-ins aside, give Docker a fresh internal root, and the stick must be adopted with its data.
+- Claude Code's safety check blocks a script piped into the VM (`limactl shell … bash -s`) if it contains `rm`. Write test scripts without deletions.
+- `LIMA_HOME` must be a short path: socket paths are limited to 104 characters.
+- Pushes go to a local fake ntfy, set by pre-creating `/etc/baninapro/ntfy` with `NTFY_SZERVER=http://127.0.0.1:…`.
+- The light script is a copy. Fix the shared parts in both scripts: the apt helpers, the notifier, the login watcher, the watchdog, the report and the DB functions.
+
 ## Working notes (lessons learned)
 
 How to work with this user and this codebase. Keep this section current.

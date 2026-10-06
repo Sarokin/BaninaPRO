@@ -1,39 +1,61 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  BaninaPRO – szerver telepítő és frissítő
+#  BaninaPRO – szerver telepítő és frissítő – LIGHT változat (kevés hely a gépen + USB-meghajtó)
 #
-#  Egy friss (szűz) Ubuntu Serverből egyetlen futtatással kész BaninaPRO szerver lesz:
-#  magyar nyelv és billentyűzet, LXQt asztal automatikus belépéssel, AnyDesk, Docker Engine, SSH,
-#  és a BaninaPRO kész adatbázissal, a belső hálózat bármely gépéről elérhetően:
+#  A teljes szerver_beallitas.sh könnyített párja egy minimális Ubuntu Serverre, ahol MÁR MEGVAN:
+#    - a LightDM, a legszükségesebb Xorg és az AnyDesk (ezekhez a script egyáltalán nem nyúl),
+#    - a Docker (telepítve és fut).
+#  Csak a BaninaPRO-hoz kellő részt állítja be, ugyanúgy, mint a teljes változat: a weboldal és a phpMyAdmin
+#  (Docker-konténerek, adatbázis), az éjszakai adatbázis-mentés, az őrszem, a push-értesítések, a napi jelentés –
+#  és hogy a gép soha ne aludjon el:
 #    BaninaPRO:   http://<a szerver IP-címe>        vagy  http://baninapro.local
 #    phpMyAdmin:  http://<a szerver IP-címe>:8081   (BaninaPRO / BaninaPRO1234 – kezdőjelszó, változtasd meg)
-#  Szerverként üzemel: soha nem alszik el, nincs képernyővédő, áramszünet után magától bekapcsol (ahol a
-#  BIOS engedi), az AnyDesk mindig fut, és egy őrszem 2 percenként ellenőrzi a BaninaPRO-t: ha nem érhető el,
-#  emberi beavatkozás nélkül helyreállítja (konténerek indítása, újraindítása, a Docker újraindítása,
-#  végső esetben – ritkán – a gép újraindítása). Napló: /var/log/baninapro-orszem.log
+#  Az őrszem 2 percenként ellenőrzi a BaninaPRO-t: ha nem érhető el, emberi beavatkozás nélkül helyreállítja
+#  (konténerek indítása, újraindítása, a Docker újraindítása, végső esetben – ritkán – a gép újraindítása).
+#  Napló: /var/log/baninapro-orszem.log
 #  Push-értesítések a telefonra (ntfy, ingyenes, fiók nélkül): áramszünet / újraindulás / leállás, hibák és
-#  helyreállás (BaninaPRO, Docker, AnyDesk, konténerek, tárhely), az éjszakai mentés, a napi jelentés (03:30),
-#  a be- és kilépések. A feliratkozás leírása az összegzésben és az asztalon (BaninaPRO-ertesitesek.txt).
-#  A napi jelentés e-mailben is mehet, ha megadsz egy feladó-postafiókot:  sudo bash szerver_beallitas.sh --email
+#  helyreállás (BaninaPRO, Docker, USB-meghajtó, konténerek, tárhely), az éjszakai mentés, a napi jelentés (03:30),
+#  a be- és kilépések. A feliratkozás leírása az összegzésben és a ~/BaninaPRO-ertesitesek.txt fájlban.
+#  A napi jelentés e-mailben is mehet, ha megadsz egy feladó-postafiókot:  sudo bash szerver_beallitas_light.sh --email
 #
-#  ELŐKÉSZÜLET (egyszer, kézzel) – a repó nyilvános, a letöltéshez nem kell GitHub-fiók vagy -kulcs:
-#    1. Ubuntu Server telepítése – felhasználó: baninapro, gépnév: baninapro
-#    2. git clone https://github.com/Sarokin/BaninaPRO.git ~/BaninaPRO
-#       (ha a git még nincs fent: sudo apt install -y git)
-#    Az adatbázis-séma (sql/schema.sql) a repóval együtt jön. Ha csak ezt az egy fájlt töltöd le és
-#    futtatod, a script magától letölti a repót a ~/BaninaPRO mappába, és onnan folytatja.
+#  USB-MEGHAJTÓ – a gép saját lemezén kevés a hely, ezért a BaninaPRO adatai a géphez dugott pendrive-on vannak:
+#    - BANINAPRO (FAT32 rész): a BaninaPRO-mentesek mappában minden adatbázis-mentés másolata. Bármely Windows,
+#      Mac vagy Linux gépen megnyitható – ha baj van, csak kihúzod, és a mentések nálad vannak.
+#    - BANINAPRO-ADAT (ext4 rész): a Docker teljes tárhelye – a képek, a konténerek és maga az adatbázis.
+#      Így a Docker-gépek nem foglalnak helyet a gép saját lemezén, és az adatbázis is szabadon nőhet.
+#    Ha a meghajtó még nincs előkészítve, a script a /dev/sdb-t készíti elő: ha üres (gyárilag formázott vagy
+#    formázatlan), létrehozza rajta a két részt – ha bármilyen fájl van rajta, NEM formáz, hanem megáll.
+#    Csak USB-eszközt formáz, a rendszerlemezt és a csatolt lemezeket soha.
+#    Kapcsolók:  --usb=/dev/sdX     ha a pendrive nem sdb néven jelenik meg
+#                --usb-formazas     a nem üres pendrive formázása is (minden adat törlődik róla!)
+#    A meghajtót a címkéje alapján találja meg (BANINAPRO-ADAT): ha más néven jelenik meg, vagy egy új szerverbe
+#    kerül, ott is működik – az új szerveren ugyanez a script futtatva az összes adattal visszahozza a BaninaPRO-t.
+#    A legutóbbi mentések a gép saját lemezén is megvannak (/var/backups/baninapro), ha a pendrive tönkremenne.
+#    Biztonságos eltávolítás:  sudo baninapro-usb levalaszt   (utána kihúzható; visszadugva az őrszem magától
+#    visszacsatolja, és elindítja a BaninaPRO-t). A Docker a meghajtó nélkül el sem indul – így a gép saját lemezére
+#    sem tölt le semmit.
 #
-#  FUTTATÁS – első telepítés és később minden frissítés is ugyanez:
+#  TÁRHELY – a gép saját lemezén 1 GB-ba belefér (300 MB-tal is elindul):
+#    - először takarít: letöltött csomagfájlok, régi kernelek, rendszernaplók, Docker-gyorsítótár
+#      (a konténerekhez és az adatbázishoz nem nyúl);
+#    - a rendszerfrissítés csak akkor fut, ha az apt előzetes becslése szerint (letöltés + telepítés + tartalék)
+#      belefér a helybe – különben kimarad, és szól;
+#    - az őrszem és a napi jelentés 500 MB alatt jelez kevés helyet (előtte takarít).
+#
+#  FUTTATÁS – első futtatás és később minden frissítés is ugyanez:
 #    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
-#    sudo bash szerver_beallitas.sh
+#    sudo bash szerver_beallitas_light.sh
+#  (Ha csak ezt az egy fájlt töltöd le és futtatod, a script magától letölti a repót a ~/BaninaPRO mappába,
+#  és onnan folytatja.)
 #
-#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés → konténerek újraépítése → takarítás.
-#  Automatikus rendszerfrissítés NINCS (kevés a tárhely): a gép magától nem keres, nem tölt le és nem telepít
-#  frissítést – csak ennek a scriptnek a kézi futtatásakor frissül, utána törli a régi kerneleket és a letöltött csomagokat.
+#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés (ha belefér) → konténerek újraépítése
+#  → takarítás. Automatikus rendszerfrissítés NINCS: a gép magától nem keres, nem tölt le és nem telepít
+#  frissítést – csak ennek a scriptnek a kézi futtatásakor frissül.
 #  Bármikor nyugodtan újrafuttatható: ami már kész, azt csak ellenőrzi.
-#  Önjavító: ha valami elakad – félbemaradt csomagtelepítés, hiányzó csomag vagy bővítmény,
-#  hálózati hiba, rossz rendszeridő, hibás külső csomagtároló, foglalt 80-as port, hiányzó
-#  adatbázis-táblák –, a script megpróbálja magától rendbe tenni, és csak akkor áll meg, ha ez sem megy.
+#  Önjavító: ha valami elakad – félbemaradt csomagtelepítés, hiányzó csomag vagy bővítmény, hálózati hiba,
+#  rossz rendszeridő, hibás külső csomagtároló, foglalt 80-as port, leállt Docker, leválott USB-meghajtó,
+#  hiányzó adatbázis-táblák –, a script megpróbálja magától rendbe tenni, és csak akkor áll meg, ha ez sem megy.
+#  Csomagot nem távolít el.
 #  A képernyőn folyamatjelző mutatja, hol tart; a parancsok teljes kimenete a naplóba kerül:
 #  /var/log/baninapro-szerver.log  (hibánál a napló utolsó sorai a képernyőn is megjelennek).
 #  A végén – hiba esetén is – összegzés: minden lépés eredménye, és hogy a szerveren milyen címen érhető el
@@ -45,7 +67,6 @@ umask 022
 # ---- Beállítások ------------------------------------------------------------
 GEPNEV="baninapro"
 IDOZONA="Europe/Budapest"
-NYELV="hu_HU.UTF-8"
 # elérés: a BaninaPRO és a phpMyAdmin a belső hálózat bármely gépéről (a MySQL csak a szerveren belülről)
 APP_PORT="80"                         # BaninaPRO:  http://<a szerver IP-címe>  vagy  http://baninapro.local
 PMA_PORT="8081"                       # phpMyAdmin: http://<a szerver IP-címe>:8081 – jelszóval (root)
@@ -64,7 +85,7 @@ JELENTES_CIMZETT="sarokintamas@gmail.com"
 JELENTES_IDO="03:30"
 JELENTO="/usr/local/sbin/baninapro-jelentes"
 # Push-értesítések a telefonra (ntfy – nyílt forrású, ingyenes, fiók nélkül): a script egy titkos csatornát generál,
-# a telefonon az ntfy alkalmazással kell rá feliratkozni (az összegzés és az asztali jegyzet kiírja). Ha épp nincs
+# a telefonon az ntfy alkalmazással kell rá feliratkozni (az összegzés és a ~/BaninaPRO-ertesitesek.txt kiírja). Ha épp nincs
 # internet, az értesítés sorba áll, és az őrszem később elküldi. (Az ntfy.sh e-mail-továbbítása fiókot kérne – nincs.)
 NTFY_SZERVER="https://ntfy.sh"
 ERTESITO="/usr/local/sbin/baninapro-ertesites"
@@ -73,9 +94,32 @@ MENTO="/usr/local/sbin/baninapro-mentes"
 MENTES_CRON="0 3 * * *"              # éjszakai adatbázis-mentés, mint az éles cron
 # a nyilvános GitHub-repó: innen jön a kód és minden frissítés (https – kulcs és jelszó nélkül)
 REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
-# tartalék, ha az AnyDesk csomagtárolója nem működne (ha ez a változat már nincs fent, a legfrissebbet keresi meg)
-ANYDESK_DEB="https://deb.anydesk.com/pool/main/a/anydesk/anydesk_8.1.0_amd64.deb"
 NAPLO="/var/log/baninapro-szerver.log"
+
+# Tárhely (MB): ennyi alatt a script nem indul el; ennyi alatt előbb takarít és figyelmeztet; a rendszerfrissítés
+# az apt becslésén felül ennyi tartalékot hagy; a PHP-alapképet csak ennyi szabad hely fölött frissíti (a Docker
+# tárhelyén, az USB-n); ha a Docker-képek hiányoznak, a letöltésükhöz ennyi kell; az őrszem és a napi jelentés ennyi
+# alatt jelez kevés helyet a gép saját lemezén.
+HELY_MIN_MB=300
+HELY_FIGY_MB=1024
+APT_TARTALEK_MB=300
+ALAPKEP_FRISSITES_MB=1500
+KEP_LETOLTES_MB=2500
+KEVES_HELY_MB=500
+
+# USB-meghajtó (lásd fent): két rész, a címkéjük alapján megtalálva. Ha még nincs előkészítve, ezt a lemezt készíti elő
+# (a --usb=/dev/sdX kapcsolóval más is megadható). Az USB_TESZT=1 csak a próbagéphez kell (ott nem USB a lemez).
+USB_LEMEZ="${BANINA_USB_LEMEZ:-/dev/sdb}"
+USB_TESZT="${BANINA_USB_TESZT:-0}"
+USB_MIN_GB=8                              # ennél kisebb meghajtót nem használ
+USB_ADAT_CIMKE="BANINAPRO-ADAT"           # ext4: a Docker tárhelye (képek, konténerek, adatbázis)
+USB_MENTES_CIMKE="BANINAPRO"              # FAT32: a mentések másolatai – bármely gépen olvasható
+USB_ADAT="/mnt/baninapro-adat"
+USB_MENTES="/mnt/baninapro-mentes"
+USB_MENTES_MAPPA="$USB_MENTES/BaninaPRO-mentesek"
+USB_SEGED="/usr/local/sbin/baninapro-usb"      # csatolás-ellenőrzés, a mentések másolása, biztonságos leválasztás
+BELSO_MENTES="/var/backups/baninapro"          # a legutóbbi mentések a gép saját lemezén is (ha a pendrive tönkremenne)
+DOCKER_MAPPAK=(docker containerd)              # /var/lib/docker és /var/lib/containerd → az USB adat-részére
 
 # a docker-compose.yml-ből: konténer- és kötetnevek (projektnév: baninapro)
 PROJEKT="baninapro"
@@ -84,12 +128,11 @@ DB_KONTENER="baninapro-db"
 DB_KOTET="${PROJEKT}_db-adatok"
 ADATOK_KOTET="${PROJEKT}_adatok"         # az alkalmazás naplója és mentései (LOG, DBBCKP)
 ADMIN_KEZDO="admin / BaninaPRO-2026!"   # az sql/schema.sql kezdő adminja
-
-# Nem kötelező csomagok: ha a telepítésük félbemarad és nem javítható, a script eltávolítja őket, hogy ne
-# akasszák meg a többi telepítést (a következő futás újra megpróbálja). A Docker-lépés a saját csomagjait adja hozzá.
-NEM_KOTELEZO_CSOMAGOK=(anydesk firefox firefox-l10n-hu)
-DOCKER_CE_CSOMAGOK=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras)
-DOCKER_UBUNTU_CSOMAGOK=(docker.io docker-compose-v2 docker-buildx containerd runc)
+# a BaninaPRO Docker-képei (docker-compose.yml): az alkalmazásé a PHP-alapképből épül
+DB_KEP="mysql:latest"
+PMA_KEP="phpmyadmin:latest"
+APP_KEP="${PROJEKT}-app"
+PHP_ALAPKEP="php:8.3-apache"
 
 SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT")"
@@ -100,7 +143,8 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 export LC_ALL=C.UTF-8 LANG=C.UTF-8     # a script alatt futó programok kimenete egységes legyen
 unset LANGUAGE
 
-UJRAINDITAS=0 ELSO_INDITAS=0 ARCH="" CEL_FELH="" CEL_HOME="" ANYDESK_JELSZO="" TMPD="" APT_ALLAPOT=/dev/null
+UJRAINDITAS=0 ELSO_INDITAS=0 ARCH="" CEL_FELH="" CEL_HOME="" TMPD="" APT_ALLAPOT=/dev/null ARGOK=()
+USB_FORMAZAS=0 USB_ADAT_DEV="" USB_MENTES_DEV="" USB_ADAT_UUID="" USB_MENTES_UUID=""
 UTOLSO_PARANCS=""
 FIGYELMEZTETESEK=()
 LEPESEK=()
@@ -343,10 +387,17 @@ elerheto() {
 apt_hibak() {   # az apt utolsó hibaüzenetei a naplóból, egy sorban
     tail -n 80 "$NAPLO" 2>/dev/null | grep -E '^E: ' | awk '!volt[$0]++' | tail -n 2 | paste -sd ' ' - || true
 }
+# a megadott csomagok közül azok, amelyek még nincsenek telepítve (a meglévőkhöz az apt-ot sem hívja – helytakarékos)
+hianyzo() {
+    local p
+    for p in "$@"; do van_csomag "$p" || printf '%s\n' "$p"; done
+}
 # nem kötelező csomagok: ami nem érhető el vagy nem települ, arra csak figyelmeztet, és megy tovább
 telepit_opcionalis() {
     local csomagok=() hibas=() p
-    mapfile -t csomagok < <(elerheto "$@")
+    mapfile -t csomagok < <(hianyzo "$@")
+    (( ${#csomagok[@]} )) || return 0
+    mapfile -t csomagok < <(elerheto "${csomagok[@]}")
     (( ${#csomagok[@]} )) || return 0
     if telepit_min "${csomagok[@]}"; then return 0; fi
     fut dpkg --configure -a || true
@@ -367,10 +418,10 @@ hibas_csomagok() {
 }
 
 # A csomagkezelő rendbetétele: a félbemaradt telepítések befejezése, a hiányzó függőségek pótlása.
-# Ami így sem javul, és nem kötelező (vagy a hívó megengedi: $@), azt eltávolítja – a következő futás újra
-# megpróbálja telepíteni –, hogy ne akassza meg a többi telepítést. Ha így is maradt hiba, 1-gyel tér vissza.
+# A light változat semmit nem távolít el (az asztalhoz és az AnyDeskhez sem nyúl): ha így is maradt hiba,
+# figyelmeztet, és 1-gyel tér vissza – a többi lépés megy tovább.
 csomagkezelo_rendbe() {
-    local hibas=() maradt=() p eltavolithato=" ${NEM_KOTELEZO_CSOMAGOK[*]} $* "
+    local hibas=()
     AKT_MUVELET="csomagkezelő ellenőrzése"
     apt_var
     fut dpkg --configure -a || true
@@ -378,31 +429,13 @@ csomagkezelo_rendbe() {
     if (( ${#hibas[@]} == 0 )); then AKT_MUVELET=""; return 0; fi
 
     info "Félbemaradt csomagtelepítés: ${hibas[*]} – javítom…"
-    # Az AnyDesk telepítő szkriptje (postinst) az xdg-utils nélkül hibával áll le, és félbemaradt csomagot
-    # hagy maga után, ami minden további apt-ot megakaszt – ez a leggyakoribb ok, ezért ezzel kezdem.
-    AKT_MUVELET="hiányzó segédcsomagok pótlása"
-    if ! apt_nyers install --no-install-recommends xdg-utils desktop-file-utils; then
-        apt_nyers update || true
-        apt_nyers install --no-install-recommends xdg-utils desktop-file-utils || true
-    fi
     AKT_MUVELET="félbemaradt telepítések befejezése"
     apt_nyers -f install || true
     fut dpkg --configure -a || true
     mapfile -t hibas < <(hibas_csomagok)
-
-    for p in "${hibas[@]}"; do
-        if [[ $eltavolithato == *" $p "* || $p == *-l10n ]]; then
-            AKT_MUVELET="$p eltávolítása"
-            if apt_nyers remove "$p" || fut dpkg --remove --force-remove-reinstreq "$p"; then
-                figy "A(z) $p telepítése félbemaradt, és nem volt javítható – eltávolítottam, hogy ne akassza meg a többit (a következő futás újra megpróbálja)."
-            fi
-        fi
-    done
-    fut dpkg --configure -a || true
-    mapfile -t maradt < <(hibas_csomagok)
     AKT_MUVELET=""
-    if (( ${#maradt[@]} )); then
-        figy "Félbemaradt csomagok maradtak: ${maradt[*]} – $(apt_hibak)"
+    if (( ${#hibas[@]} )); then
+        figy "Félbemaradt csomagok maradtak: ${hibas[*]} – $(apt_hibak) (a light változat nem távolít el csomagot)"
         return 1
     fi
     ok "Csomagkezelő rendbe téve"
@@ -487,18 +520,49 @@ internet_van() {
     return 1
 }
 
-szabad_gb() { df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }'; }
+szabad_mb() { df -Pk / | awk 'NR == 2 { print int($4 / 1024) }'; }
+hely_szoveg() {   # a szabad hely olvashatóan: 850 MB, 1,7 GB
+    local m=${1:-$(szabad_mb)} t
+    t=$(( (m * 10 + 512) / 1024 ))   # tized GB-ra kerekítve
+    if (( m < 1024 )); then echo "$m MB"; else echo "$(( t / 10 )),$(( t % 10 )) GB"; fi
+}
 # helyfelszabadítás: letöltött csomagok, régi rendszernaplók, használaton kívüli Docker-képek és -gyorsítótár
 # (a konténerekhez és a kötetekhez – az adatbázishoz – nem nyúl)
 hely_felszabaditas() {
     AKT_MUVELET="hely felszabadítása"
     apt-get clean >/dev/null 2>&1 || true
-    journalctl --vacuum-size=200M >/dev/null 2>&1 || true
-    if command -v docker >/dev/null; then
+    journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+    if command -v docker >/dev/null && timeout 30 docker info >/dev/null 2>&1; then
         fut docker image prune -f || true
         fut docker builder prune -f || true
     fi
     AKT_MUVELET=""
+}
+
+# A BaninaPRO Docker-képei közül a hiányzók (ha a Docker nem válaszol, nem dönthető el – üres).
+# Az alkalmazás képe akkor hiányzik, ha sem a kész kép, sem a PHP-alapkép nincs meg (abból pár MB-tal felépül).
+hianyzo_kepek() {
+    local k
+    timeout 30 docker info >/dev/null 2>&1 || return 0
+    for k in "$DB_KEP" "$PMA_KEP"; do
+        docker image inspect "$k" >/dev/null 2>&1 || echo "$k"
+    done
+    if ! docker image inspect "$APP_KEP" >/dev/null 2>&1 && ! docker image inspect "$PHP_ALAPKEP" >/dev/null 2>&1; then
+        echo "$PHP_ALAPKEP"
+    fi
+}
+# a Docker tárhelyén (az USB adat-részén) szabad hely MB-ban
+docker_szabad_mb() { df -Pk /var/lib/docker 2>/dev/null | awk 'NR == 2 { print int($4 / 1024) }'; }
+# a képek első letöltése kb. 2–2,5 GB: ha hiányoznak, és a Docker tárhelyén nincs hozzájuk elég hely, inkább meg sem kezdi
+kepek_helye_rendben() {
+    local hiany=() szabad
+    mapfile -t hiany < <(hianyzo_kepek)
+    (( ${#hiany[@]} )) || return 0
+    szabad="$(docker_szabad_mb)"
+    if (( ${szabad:-0} < KEP_LETOLTES_MB )); then
+        hiba "A BaninaPRO Docker-képei még nincsenek meg (${hiany[*]}). Az első letöltésük kb. 2–2,5 GB helyet kér a Docker tárhelyén (az USB-meghajtón), de csak $(hely_szoveg "${szabad:-0}") szabad – használj nagyobb pendrive-ot, vagy szabadíts fel rajta helyet, majd futtasd újra."
+    fi
+    info "A BaninaPRO Docker-képei közül még hiányzik: ${hiany[*]} – letöltöm (a Docker tárhelyén $(hely_szoveg "$szabad") szabad)."
 }
 
 # az adatbázis-séma (sql/schema.sql) a gitben van; ha helyben elveszett, visszaállítja onnan
@@ -534,7 +598,7 @@ repo_cim_beallit() {
 repo_teljes() { [[ -f $REPO/docker-compose.yml && -f $REPO/docker/Dockerfile && -f $REPO/docker/config.php ]]; }
 repo_letoltes() {
     local cel="$CEL_HOME/BaninaPRO" uj
-    uj="$cel/SERVER SETUP AND UPDATE/szerver_beallitas.sh"
+    uj="$cel/SERVER SETUP AND UPDATE/szerver_beallitas_light.sh"
     info "A script nem a BaninaPRO mappájából fut – a repót letöltöm ide: $cel"
     if ! command -v git >/dev/null; then telepit git || hiba "A git nem telepíthető: $(apt_hibak)"; fi
     AKT_MUVELET="a BaninaPRO letöltése (git clone)"
@@ -549,7 +613,7 @@ repo_letoltes() {
     [[ -f $uj ]] || hiba "A letöltött repóban nincs meg a telepítő: $uj"
     ok "BaninaPRO letöltve: $cel – onnan folytatom."
     rm -rf "$TMPD"
-    exec bash "$uj"
+    exec bash "$uj" "${ARGOK[@]}"
 }
 
 # git pull; ha helyben lévő fájlok állnak az útjában, félrerakja őket (.git/baninapro-felrerakva), és újrapróbálja
@@ -598,25 +662,13 @@ kontener_naplok() {   # a konténerek utolsó naplósorai a képernyőre és a n
     done
 }
 
-# kulcs=érték beállítása egy INI-fájl szakaszában ($4, alapból [User] – AccountsService); ha kell, létrehozza
-ini_beallit() {
-    local f=$1 k=$2 v=$3 sz=${4:-User}
-    [[ -f $f ]] || printf '[%s]\n' "$sz" > "$f"
-    grep -q "^\[$sz\]" "$f" || printf '\n[%s]\n' "$sz" >> "$f"
-    if grep -q "^$k=" "$f"; then
-        sed -i "s|^$k=.*|$k=$v|" "$f"
-    else
-        sed -i "/^\[$sz\]/a $k=$v" "$f"
-    fi
-}
-
 # =============================================================================
 #  Előkészítés
 # =============================================================================
 elofeltetelek() {
     AKT_LEPES="előfeltételek"
     cim "Előfeltételek ellenőrzése"
-    local PRETTY_NAME="" ID="" szabad minimum=5
+    local PRETTY_NAME="" ID="" szabad
     # shellcheck disable=SC1091
     . /etc/os-release
     [[ $ID == ubuntu ]] || hiba "Ez a script Ubuntu Serverre készült (ez a rendszer: ${PRETTY_NAME:-ismeretlen})."
@@ -644,19 +696,23 @@ elofeltetelek() {
     repo_teljes || repo_letoltes
     ok "BaninaPRO mappa: $REPO"
 
-    # első telepítéshez (asztal + Docker + képek) jóval több hely kell, mint egy frissítéshez
-    if van_csomag lightdm && { van_csomag docker-ce || van_csomag docker.io; }; then minimum=2; fi
-    szabad="$(szabad_gb)"
-    if (( szabad < 8 )); then
+    # a light változat a már telepített Dockert használja (telepíteni nem telepíti)
+    command -v docker >/dev/null \
+        || hiba "A Docker nincs telepítve – a light változat a gépen már fent lévő Dockert használja. Docker nélküli géphez a teljes változat kell: sudo bash szerver_beallitas.sh"
+    ok "Docker telepítve ($(docker --version 2>/dev/null | head -n 1 || true))"
+
+    # kevés hely: előbb takarít (csomagfájlok, naplók, Docker-gyorsítótár), csak utána dönt
+    szabad="$(szabad_mb)"
+    if (( szabad < HELY_FIGY_MB )); then
         hely_felszabaditas
-        szabad="$(szabad_gb)"
+        szabad="$(szabad_mb)"
     fi
-    if (( szabad < minimum )); then
-        hiba "Túl kevés a szabad hely a lemezen: $szabad GB (legalább $minimum GB kell, első telepítéshez 8 GB ajánlott)."
-    elif (( szabad < 8 )); then
-        figy "Kevés a szabad hely: $szabad GB – első telepítéshez legalább 8 GB ajánlott."
+    if (( szabad < HELY_MIN_MB )); then
+        hiba "Túl kevés a szabad hely a gép saját lemezén: $(hely_szoveg "$szabad") (legalább $HELY_MIN_MB MB kell, 1 GB ajánlott)."
+    elif (( szabad < HELY_FIGY_MB )); then
+        figy "Kevés a szabad hely a gép saját lemezén: $(hely_szoveg "$szabad") – a light változat lefut, de 1 GB ajánlott."
     else
-        ok "Szabad hely: $szabad GB"
+        ok "Szabad hely a gép saját lemezén: $(hely_szoveg "$szabad") (a Docker és az adatbázis az USB-meghajtóra kerül)"
     fi
 
     if sema_biztosit; then
@@ -702,33 +758,13 @@ frissites_elokeszites() {
     fi
 }
 
-# Minden kérdés az elején, utána már nem kell a géphez nyúlni. Csak azt kérdezi, ami még nincs beállítva.
+# Minden kérdés az elején, utána már nem kell a géphez nyúlni. A light változat csak az e-mailről kérdez, és csak
+# kérésre (sudo bash szerver_beallitas_light.sh --email) – az értesítések push-ként mennek.
 kerdesek() {
-    local masodszor="" kell_anydesk=0 kell_email=0
     [[ -t 0 ]] || return 0
-    van_csomag anydesk || kell_anydesk=1
-    # az e-mailről csak kérésre kérdez (sudo bash szerver_beallitas.sh --email) – az értesítések push-ként mennek
-    kell_email=$EMAIL_KERDES
-    (( kell_anydesk || kell_email )) || return 0
+    (( EMAIL_KERDES )) || return 0
     cim "Kérdések az elején (utána már nem kell a géphez nyúlni)"
-    if (( kell_anydesk )); then
-        torol
-        printf '  AnyDesk jelszó a felügyelet nélküli eléréshez (Enter = kihagyás): ' >&3
-        read -r -s ANYDESK_JELSZO || true
-        printf '\n' >&3
-        if [[ -n $ANYDESK_JELSZO ]]; then
-            printf '  Még egyszer: ' >&3
-            read -r -s masodszor || true
-            printf '\n' >&3
-            if [[ $ANYDESK_JELSZO != "$masodszor" ]]; then
-                figy "A két jelszó nem egyezik – az AnyDesk jelszót most nem állítom be."
-                ANYDESK_JELSZO=""
-            fi
-        fi
-    fi
-    if (( kell_email )); then
-        email_kerdesek
-    fi
+    email_kerdesek
 }
 
 # a feladó-postafiók a napi jelentéshez (a címzett mindig a JELENTES_CIMZETT – ahhoz nem kell hozzáférés)
@@ -776,22 +812,18 @@ email_kerdesek() {
 lepesek_listaja() {
     LEPESEK=(
         "lepes_auto_frissites_ki|5|Automatikus rendszerfrissítés kikapcsolva: nem keres, nem tölt le (kevés a tárhely)"
-        "lepes_rendszer|300|Rendszerfrissítés és alapcsomagok"
+        "lepes_rendszer|180|Takarítás, rendszerfrissítés (ha belefér a helybe) és a szükséges eszközök"
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
-        "lepes_nyelv|45|Magyar nyelv és magyar billentyűzet"
-        "lepes_asztal|360|Asztali környezet: LXQt + Xorg + LightDM, magyar feliratokkal"
-        "lepes_autologin|2|Automatikus bejelentkezés ($CEL_FELH)"
-        "lepes_bongeszo|90|Firefox böngésző (magyar, kezdőlap: http://localhost)"
-        "lepes_anydesk|30|AnyDesk – mindig fut, a géppel együtt indul"
-        "lepes_docker|90|Docker Engine – mindig fut, a géppel együtt indul"
-        "lepes_ssh|15|Hálózat: SSH, gépnév ($GEPNEV.local), GitHub-elérés"
-        "lepes_energia|5|Energia: soha nem alszik el, nincs képernyővédő, áramszünet után bekapcsol"
+        "lepes_usb|90|USB-meghajtó: rajta a Docker és az adatbázis, és a mentések másolatai (ha üres, formázza)"
+        "lepes_docker|20|Docker – a meglévő Docker ellenőrzése: mindig fut, a géppel együtt indul"
+        "lepes_halozat|10|Hálózat: gépnév ($GEPNEV.local), GitHub-elérés"
+        "lepes_energia|5|Energia: soha nem alszik el (az USB-eszközök sem), áramszünet után bekapcsol"
         "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis – a belső hálózatról is elérhető"
-        "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00)"
+        "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00) – másolat az USB-re és a gép saját lemezére"
         "lepes_ertesitesek|10|Push-értesítések a telefonra (ntfy): leállás, indulás, hibák, mentés, belépések"
         "lepes_orszem|5|Őrszem: ha valami leáll, magától helyreállítja, és értesít"
-        "lepes_jelentes|20|Napi állapotjelentés ($JELENTES_IDO) és asztali ikon"
-        "lepes_ellenorzes|45|Végső ellenőrzés: oldal, API, adatbázis, hálózat"
+        "lepes_jelentes|10|Napi állapotjelentés ($JELENTES_IDO)"
+        "lepes_ellenorzes|45|Végső ellenőrzés: oldal, API, adatbázis, hálózat, tárhely"
     )
 }
 
@@ -868,36 +900,62 @@ EOF
 }
 
 lepes_rendszer() {
+    local hiany=()
     # egy korábbi, félbeszakadt futás vagy félbemaradt csomagtelepítés után a csomagkezelő rendbetétele
     csomagkezelo_rendbe || true
 
+    # előbb helyet csinál: a már nem kellő csomagok (pl. a régi kernelek) és a letöltött csomagfájlok törlése
+    if apt_ autoremove --purge; then ok "Felesleges csomagok (pl. régi kernelek) törölve"
+    else figy "A felesleges csomagok törlése nem sikerült: $(apt_hibak)"; fi
+    apt-get clean >/dev/null 2>&1 || true
     apt_ update || figy "Az apt update hibát jelzett: $(apt_hibak) – folytatom."
+    rendszerfrissites
+    # a frissítés után feleslegessé vált csomagok (pl. az előző kernel) is mennek
+    apt_ autoremove --purge || true
+    apt-get clean >/dev/null 2>&1 || true
+
+    # alapcsomagok: csak a hiányzók (Ubuntu Serveren általában mind megvan – ilyenkor az apt-hoz sem nyúl)
+    # (az USB-meghajtóhoz: fdisk – partícionálás, dosfstools – FAT32, e2fsprogs – ext4)
+    mapfile -t hiany < <(hianyzo ca-certificates curl git cron psmisc fdisk dosfstools e2fsprogs)
+    if (( ${#hiany[@]} )); then
+        telepit_min "${hiany[@]}" || hiba "A szükséges csomagok nem telepíthetők: $(apt_hibak)"
+    fi
+    ok "A szükséges eszközök megvannak (curl, git, cron, fdisk, dosfstools…) – szabad hely: $(hely_szoveg)"
+}
+
+# A rendszerfrissítés csak akkor fut, ha belefér a helybe: az apt előre megmondja, mennyit töltene le, és mennyi
+# helyet foglalna a telepítés – ha ez a tartalékkal együtt nem fér el, kimarad (egy megtelt lemezen félbemaradt
+# frissítés többet ártana, mint egy kihagyott).
+rendszerfrissites() {
+    local becsles letolt foglal kell szabad
+    apt_var
+    AKT_MUVELET="a rendszerfrissítés helyigényének becslése"
+    becsles="$(apt-get --assume-no -o DPkg::Lock::Timeout=600 full-upgrade 2>&1 || true)"
+    AKT_MUVELET=""
+    printf '%s\n' "$becsles" | tail -n 6
+    if grep -qE '^0 upgraded, 0 newly installed' <<<"$becsles"; then
+        ok "A rendszer naprakész – nincs mit frissíteni"
+        return 0
+    fi
+    letolt="$(apt_mb "$(sed -nE 's/^Need to get ([0-9.,]+ [kMG]?B).*/\1/p' <<<"$becsles" | head -n 1)")"
+    foglal="$(apt_mb "$(sed -nE 's/^After this operation, ([0-9.,]+ [kMG]?B) of additional disk space will be used.*/\1/p' <<<"$becsles" | head -n 1)")"
+    kell=$(( letolt + foglal + APT_TARTALEK_MB ))
+    szabad="$(szabad_mb)"
+    if (( kell > szabad )); then
+        figy "A rendszerfrissítés most kimarad, mert nem fér el: $letolt MB letöltés + $foglal MB telepítés + $APT_TARTALEK_MB MB tartalék kellene, és csak $(hely_szoveg "$szabad") szabad. A BaninaPRO enélkül is működik; ha több lesz a hely, a következő futás frissít."
+        return 0
+    fi
     if apt_ full-upgrade; then
-        ok "Rendszer frissítve"
+        ok "Rendszer frissítve ($letolt MB letöltés, $foglal MB új hely)"
     else
         figy "A rendszerfrissítés nem sikerült teljesen: $(apt_hibak) – folytatom, a következő futás újra megpróbálja."
     fi
-    # kevés a tárhely: a már nem kellő csomagok (pl. a régi kernelek) törlése – az automatikus frissítés ezt nem végzi
-    if apt_ autoremove --purge; then ok "Felesleges csomagok (pl. régi kernelek) törölve"
-    else figy "A felesleges csomagok törlése nem sikerült: $(apt_hibak)"; fi
-    telepit ca-certificates curl wget gnupg git openssh-server cron psmisc locales \
-        || hiba "Az alapcsomagok nem telepíthetők: $(apt_hibak)"
-    telepit_opcionalis keyboard-configuration console-setup software-properties-common
-    universe_bekapcsol
-    ok "Alapcsomagok telepítve (curl, wget, git, openssh-server, cron…)"
 }
-
-# az universe csomagtároló (innen jön az LXQt és az Ubuntu saját Docker-csomagja)
-universe_bekapcsol() {
-    [[ -z $(elerheto lxqt-core) ]] || return 0
-    AKT_MUVELET="universe csomagtároló bekapcsolása"
-    if ! fut add-apt-repository -y universe && [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
-        # tartalék: közvetlenül a forrásfájlba
-        sed -i -E '/^Components:/{/universe/!s/$/ universe/}' /etc/apt/sources.list.d/ubuntu.sources
-    fi
-    AKT_MUVELET=""
-    apt_ update || true
-    [[ -n $(elerheto lxqt-core) ]] || figy "Az universe csomagtároló nem kapcsolható be – az asztal telepítése elakadhat."
+# az apt méretkiírása MB-ban, felfelé kerekítve (az apt 1000-es váltószámmal számol): „45.3 MB” → 46, „0 B” → 0
+apt_mb() {
+    awk '{ gsub(",", "", $1); m = $1 + 0
+           if ($2 == "B") m /= 1000000; else if ($2 == "kB") m /= 1000; else if ($2 == "GB") m *= 1000
+           printf "%d\n", (m == int(m)) ? m : int(m) + 1 }' <<<"${1:-0 MB}"
 }
 
 lepes_gepnev() {
@@ -920,334 +978,638 @@ lepes_gepnev() {
     ok "Időzóna: $IDOZONA (most: $(date '+%Y-%m-%d %H:%M'))"
 }
 
-lepes_nyelv() {
-    telepit language-pack-hu language-pack-hu-base \
-        || figy "A magyar nyelvi csomagok nem települtek: $(apt_hibak) – a nyelvi beállítás enélkül is elkészül."
-    if [[ -f /etc/locale.gen ]] && ! grep -q "^$NYELV UTF-8" /etc/locale.gen; then
-        if grep -q "^# *$NYELV UTF-8" /etc/locale.gen; then
-            sed -i "s/^# *$NYELV UTF-8/$NYELV UTF-8/" /etc/locale.gen
-        else
-            echo "$NYELV UTF-8" >> /etc/locale.gen
-        fi
-    fi
-    AKT_MUVELET="magyar nyelvi beállítás létrehozása"
-    fut locale-gen "$NYELV" || true
-    if ! grep -qix 'hu_HU.utf8' <<<"$(locale -a)"; then
-        # a locales csomag sérült vagy hiányos: újratelepítés, majd még egy próba
-        apt_ install --reinstall locales || true
-        fut locale-gen "$NYELV" || true
-    fi
-    AKT_MUVELET=""
-    if ! grep -qix 'hu_HU.utf8' <<<"$(locale -a)"; then
-        figy "A magyar nyelvi beállítás ($NYELV) nem jött létre – a rendszer angolul marad (a BaninaPRO működését nem érinti)."
+# =============================================================================
+#  USB-meghajtó: a Docker tárhelye (képek, konténerek, adatbázis) és a mentések másolatai
+# =============================================================================
+# Két rész, a címkéjük alapján megtalálva (a meghajtó neve – sdb, sdc – változhat, a címke nem):
+#   BANINAPRO-ADAT (ext4): a /var/lib/docker és a /var/lib/containerd ide van befűzve (bind mount) – így a Docker
+#     minden adata (képek, konténerek, kötetek: az adatbázis, az alkalmazás naplói és mentései) a pendrive-on van;
+#   BANINAPRO (FAT32): a BaninaPRO-mentesek mappában minden adatbázis-mentés másolata – bármely gépen olvasható.
+lepes_usb() {
+    usb_keres
+    if [[ -z $USB_ADAT_DEV ]]; then
+        usb_elokeszit
+        usb_keres
+        [[ -n $USB_ADAT_DEV ]] || hiba "Az USB-meghajtó előkészítése után sem található a(z) $USB_ADAT_CIMKE rész."
     else
-        if ! grep -qE "^LANG=\"?$NYELV\"?$" /etc/default/locale 2>/dev/null; then UJRAINDITAS=1; fi
-        update-locale LANG="$NYELV" LANGUAGE=hu_HU:hu
-        localectl set-locale LANG="$NYELV" LANGUAGE=hu_HU:hu || true
-        ok "Rendszernyelv: magyar ($NYELV)"
+        ok "BaninaPRO USB-meghajtó: $USB_ADAT_DEV ($(usb_meghajto "$USB_ADAT_DEV"))"
     fi
-
-    # billentyűzet: konzol + grafikus felület (a localectl Ubuntun nem mindig ismeri a konzolos „hu”-t,
-    # ezért a végén az /etc/default/keyboard fájlt is beírjuk – az a mérvadó)
-    localectl set-keymap hu || true
-    localectl set-x11-keymap hu pc105 || true
-    printf '%s\n' \
-        'keyboard-configuration keyboard-configuration/layoutcode string hu' \
-        'keyboard-configuration keyboard-configuration/modelcode string pc105' \
-        'keyboard-configuration keyboard-configuration/variantcode string ' \
-        'keyboard-configuration keyboard-configuration/optionscode string ' | debconf-set-selections
-    AKT_MUVELET="billentyűzet beállítása"
-    fut dpkg-reconfigure -f noninteractive keyboard-configuration || true
-    AKT_MUVELET=""
-    cat > /etc/default/keyboard <<'EOF'
-# BaninaPRO szerver: magyar billentyűzet (a szerver_beallitas.sh írta)
-XKBMODEL="pc105"
-XKBLAYOUT="hu"
-XKBVARIANT=""
-XKBOPTIONS=""
-BACKSPACE="guess"
-EOF
-    fut setupcon --save-only || true
-    mkdir -p /etc/X11/xorg.conf.d
-    cat > /etc/X11/xorg.conf.d/00-keyboard.conf <<'EOF'
-# BaninaPRO szerver: magyar billentyűzet a grafikus felületen (a szerver_beallitas.sh írta)
-Section "InputClass"
-        Identifier "system-keyboard"
-        MatchIsKeyboard "on"
-        Option "XkbLayout" "hu"
-        Option "XkbModel" "pc105"
-EndSection
-EOF
-    ok "Billentyűzet: magyar (konzol és grafikus felület)"
+    USB_ADAT_UUID="$(blkid -s UUID -o value "$USB_ADAT_DEV" 2>/dev/null || true)"
+    [[ -n $USB_ADAT_UUID ]] || hiba "Az USB-meghajtó adat-részének ($USB_ADAT_DEV) nincs azonosítója (UUID)."
+    USB_MENTES_UUID=""
+    if [[ -n $USB_MENTES_DEV ]]; then USB_MENTES_UUID="$(blkid -s UUID -o value "$USB_MENTES_DEV" 2>/dev/null || true)"; fi
+    # a segédprogram, az őrszem és a jelentés innen tudja, melyik a BaninaPRO meghajtója
+    install -d -m 700 "$TITOK_MAPPA"
+    printf '# BaninaPRO USB-meghajtó (a %s írja)\nUSB_ADAT_UUID=%s\nUSB_MENTES_UUID=%s\n' \
+        "$(basename "$SCRIPT")" "$USB_ADAT_UUID" "$USB_MENTES_UUID" > "$TITOK_MAPPA/usb"
+    chmod 600 "$TITOK_MAPPA/usb"
+    usb_csatol
+    usb_titkok_vissza 0
+    docker_athelyezes
+    usb_seged_iras
+    usb_olvassel
+    ok "USB-meghajtó: Docker és adatbázis – $(hely_szoveg "$(df -Pm "$USB_ADAT" | awk 'NR == 2 { print $4 }')") szabad$(
+        if mountpoint -q "$USB_MENTES"; then echo "; mentések másolatai – $(hely_szoveg "$(df -Pm "$USB_MENTES" | awk 'NR == 2 { print $4 }')") szabad"; fi)"
 }
 
-lepes_asztal() {
-    if ! van_csomag lightdm; then UJRAINDITAS=1; fi
-    # a jegyzet szerinti minimális asztal – ez kötelező
-    telepit_min lxqt-core xorg lightdm || hiba "Az asztali környezet nem telepíthető: $(apt_hibak)"
-    ok "LXQt + Xorg + LightDM telepítve"
-    # kiegészítők: üdvözlőképernyő, ablakkezelő, terminál, asztali segédprogramok (xdg-utils: az AnyDesk
-    # telepítője is igényli) – ha valamelyik nem érhető el, attól még megy tovább
-    telepit_opcionalis lightdm-gtk-greeter openbox qterminal xdg-utils desktop-file-utils
+# A BaninaPRO USB-meghajtó részei a címkéjük alapján. A FAT32 részt csak akkor fogadja el, ha ugyanazon a meghajtón
+# van, mint az adat-rész (egy másik, véletlenül BANINAPRO nevű pendrive-hoz nem nyúl).
+usb_keres() {
+    local m
+    udevadm settle >/dev/null 2>&1 || true
+    USB_ADAT_DEV="$(blkid -c /dev/null -l -o device -t LABEL="$USB_ADAT_CIMKE" 2>/dev/null || true)"
+    USB_MENTES_DEV=""
+    [[ -n $USB_ADAT_DEV ]] || return 0
+    m="$(blkid -c /dev/null -l -o device -t LABEL="$USB_MENTES_CIMKE" 2>/dev/null || true)"
+    if [[ -n $m && $(lsblk -no PKNAME "$m" 2>/dev/null) == "$(lsblk -no PKNAME "$USB_ADAT_DEV" 2>/dev/null)" ]]; then
+        USB_MENTES_DEV="$m"
+    fi
+}
+usb_meghajto() {   # a teljes meghajtó gyártója, típusa és mérete (egy részéé is: a szülő lemezé)
+    local d=$1 p
+    p="$(lsblk -no PKNAME "$d" 2>/dev/null | head -n 1 || true)"
+    if [[ -n $p ]]; then d="/dev/$p"; fi
+    lsblk -dno VENDOR,MODEL,SIZE "$d" 2>/dev/null | xargs || true
+}
 
-    # magyar feliratok: a --no-install-recommends miatt a fordításcsomagok (…-l10n) maguktól nem jönnek
-    local jeloltek=(qttranslations5-l10n qt6-translations-l10n) l10n=() p
-    for p in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}\n' | awk -F'|' '$1 ~ /^ii/ {print $2}'); do
-        case $p in
-            *-l10n) continue ;;
-            lxqt*|liblxqt*|pcmanfm-qt*|libfm-qt*|qterminal*|lximage-qt*) ;;
-            *) continue ;;
-        esac
-        # pl. lxqt-panel → lxqt-panel-l10n, libfm-qt14 → libfm-qt-l10n
-        jeloltek+=("$p-l10n" "$(sed -E 's/[0-9.-]+(t64)?$//' <<<"$p")-l10n")
+# A meghajtó előkészítése – csak ha még nincs BaninaPRO-címkéjű rész a gépben. Csak USB-eszközt, csak teljes lemezt
+# formáz, amiről semmi nincs csatolva és semmi nem használja (rendszerlemez, swap, LVM, RAID, titkosítás), és csak
+# akkor, ha üres – a nem üres meghajtót csak a --usb-formazas kapcsolóval.
+usb_elokeszit() {
+    local d=$USB_LEMEZ meret fat_mib tartalom resz=() i regi tipus
+    # a BaninaPRO meghajtója már be volt állítva, csak most nincs a gépben: egy másik meghajtóval az adatbázis üresen
+    # indulna – ezt csak kifejezett kérésre (--usb-formazas)
+    regi="$(sed -n 's/^USB_ADAT_UUID=//p' "$TITOK_MAPPA/usb" 2>/dev/null || true)"
+    if [[ -n $regi ]] && (( ! USB_FORMAZAS )); then
+        hiba "A BaninaPRO USB-meghajtója (rajta az adatbázissal) nincs a gépben – dugd vissza, majd futtasd újra. (Ha szándékosan egy új, üres meghajtóval kezdenél – az adatbázis üresen indulna! –: sudo bash $(basename "$SCRIPT") --usb-formazas)"
+    fi
+    [[ -b $d ]] || hiba "Nincs a gépben BaninaPRO USB-meghajtó, és a(z) $d sem található. Dugd be a pendrive-ot (ha más néven jelenik meg – lsblk –, add meg így: sudo bash $(basename "$SCRIPT") --usb=/dev/sdX), majd futtasd újra."
+    tipus="$(lsblk -dno TYPE "$d" 2>/dev/null || true)"
+    [[ $tipus == disk ]] || { (( USB_TESZT )) && [[ $tipus == loop ]]; } \
+        || hiba "A(z) $d nem teljes lemez – a teljes meghajtót add meg (pl. --usb=/dev/sdb, nem /dev/sdb1)."
+    if [[ $(lsblk -dno TRAN "$d" 2>/dev/null | xargs || true) != usb ]] && (( ! USB_TESZT )); then
+        hiba "A(z) $d nem USB-eszköz ($(lsblk -dno TRAN "$d" 2>/dev/null | xargs || true)) – biztonsági okból nem formázom. Ha a pendrive más néven látszik (lsblk), add meg így: --usb=/dev/sdX"
+    fi
+    if lsblk -nrpo MOUNTPOINT "$d" 2>/dev/null | grep -q .; then
+        hiba "A(z) $d (vagy egy része) csatolva van ($(lsblk -nrpo NAME,MOUNTPOINT "$d" | awk 'NF > 1' | paste -sd ' ' - || true)) – nem formázom. Válaszd le (sudo umount …), majd futtasd újra."
+    fi
+    if lsblk -nrpo TYPE "$d" 2>/dev/null | grep -qvxE "disk|part$( (( USB_TESZT )) && echo '|loop')"; then
+        hiba "A(z) $d használatban van (LVM, RAID vagy titkosított kötet) – nem formázom."
+    fi
+    meret="$(blockdev --getsize64 "$d" 2>/dev/null || echo 0)"
+    (( meret >= USB_MIN_GB * 1000000000 )) \
+        || hiba "A(z) $d túl kicsi ($(lsblk -dno SIZE "$d" | xargs || true)) – legalább $USB_MIN_GB GB-os pendrive kell."
+    if (( ! USB_FORMAZAS )); then
+        tartalom="$(usb_tartalom "$d")"
+        if [[ -n $tartalom ]]; then
+            hiba "A(z) $d ($(usb_meghajto "$d")) nem üres – $tartalom. Adatot nem törlök: ha a pendrive tartalma törölhető, futtasd így: sudo bash $(basename "$SCRIPT") --usb-formazas"
+        fi
+    fi
+    # a FAT32 rész a meghajtó tizede (1–16 GB) – a mentések kicsik; a többi az ext4 részé
+    fat_mib=$(( meret / 1048576 / 10 ))
+    if (( fat_mib < 1024 )); then fat_mib=1024; fi
+    if (( fat_mib > 16384 )); then fat_mib=16384; fi
+    info "Az USB-meghajtó előkészítése: $d ($(usb_meghajto "$d")) – két rész: $USB_MENTES_CIMKE (FAT32, $(hely_szoveg "$fat_mib"), a mentések másolatai) és $USB_ADAT_CIMKE (ext4, a többi: Docker és adatbázis)"
+    AKT_MUVELET="az USB-meghajtó formázása"
+    printf 'label: gpt\nsize=%sMiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="%s"\ntype=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="%s"\n' \
+        "$fat_mib" "$USB_MENTES_CIMKE" "$USB_ADAT_CIMKE" > "$TMPD/particiok"
+    fut wipefs -a -f "$d" || hiba "A(z) $d régi partíciós táblája nem törölhető."
+    # (az sfdisk a bemenetét fájlból kapja: a háttérben futó parancs bemenete egyébként üres)
+    fut sh -c 'exec sfdisk --wipe always --wipe-partitions always "$1" < "$2"' _ "$d" "$TMPD/particiok" \
+        || hiba "A(z) $d nem partícionálható: $(tail -n 3 "$NAPLO" | paste -sd ' ' - || true)"
+    for i in $(seq 1 20); do
+        udevadm settle >/dev/null 2>&1 || true
+        mapfile -t resz < <(lsblk -nrpo NAME,TYPE "$d" 2>/dev/null | awk '$2 == "part" { print $1 }' || true)
+        if (( ${#resz[@]} >= 2 )) && [[ -b ${resz[0]} && -b ${resz[1]} ]]; then break; fi
+        partx -u "$d" >/dev/null 2>&1 || true
+        varj 1
     done
-    # shellcheck disable=SC2046  # szándékos szófelbontás: csomagnevek listája
-    mapfile -t l10n < <(elerheto $(printf '%s\n' "${jeloltek[@]}" | sort -u))
-    telepit_opcionalis "${l10n[@]}"
-    ok "Magyar feliratok: ${#l10n[@]} fordításcsomag"
-
-    echo /usr/sbin/lightdm > /etc/X11/default-display-manager
-    systemctl enable lightdm
-    systemctl set-default graphical.target
-    ok "A gép grafikus felülettel indul (LightDM)"
+    (( ${#resz[@]} >= 2 )) || hiba "A(z) $d új részei nem jelentek meg."
+    fut mkfs.vfat -F 32 -n "$USB_MENTES_CIMKE" "${resz[0]}" || hiba "A(z) ${resz[0]} nem formázható (FAT32)."
+    fut mkfs.ext4 -F -q -m 1 -L "$USB_ADAT_CIMKE" "${resz[1]}" || hiba "A(z) ${resz[1]} nem formázható (ext4)."
+    udevadm settle >/dev/null 2>&1 || true
+    AKT_MUVELET=""
+    ok "USB-meghajtó előkészítve: ${resz[0]} = $USB_MENTES_CIMKE (FAT32: mentések), ${resz[1]} = $USB_ADAT_CIMKE (ext4: Docker és adatbázis)"
 }
 
-lepes_autologin() {
-    local sesszio="lxqt" greeter="" ses=()
-    if [[ ! -f /usr/share/xsessions/lxqt.desktop ]]; then
-        ses=(/usr/share/xsessions/*.desktop)
-        [[ -e ${ses[0]} ]] || hiba "Nem található grafikus munkamenet (/usr/share/xsessions)."
-        sesszio="$(basename "${ses[0]}" .desktop)"
-    fi
-    if [[ -f /usr/share/xgreeters/lightdm-gtk-greeter.desktop ]]; then
-        greeter="greeter-session=lightdm-gtk-greeter"
-    fi
-    mkdir -p /etc/lightdm/lightdm.conf.d
-    cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf <<EOF
-# BaninaPRO szerver: automatikus bejelentkezés (a szerver_beallitas.sh írta)
-[Seat:*]
-autologin-user=$CEL_FELH
-autologin-user-timeout=0
-autologin-session=$sesszio
-user-session=$sesszio
-$greeter
-EOF
-    groupadd -f -r autologin
-    usermod -aG autologin "$CEL_FELH"
-
-    # a felhasználó munkamenete is magyarul induljon (a LightDM innen veszi a nyelvet, ha van)
-    local f="/var/lib/AccountsService/users/$CEL_FELH"
-    if [[ -d /var/lib/AccountsService/users ]]; then
-        [[ -f $f ]] || printf '[User]\n' > "$f"
-        ini_beallit "$f" Language "$NYELV"
-        ini_beallit "$f" Session "$sesszio"
-        ini_beallit "$f" XSession "$sesszio"
-    fi
-    printf '[Desktop]\nSession=%s\nLanguage=%s\n' "$sesszio" "$NYELV" > "$CEL_HOME/.dmrc"
-    chown "$CEL_FELH:" "$CEL_HOME/.dmrc"
-    chmod 644 "$CEL_HOME/.dmrc"
-    ok "Automatikus bejelentkezés: $CEL_FELH → $sesszio munkamenet, magyarul"
-}
-
-lepes_bongeszo() {
-    local lista=/etc/apt/sources.list.d/mozilla.list jelolt
-    if ! van_csomag firefox; then
-        # a Mozilla saját csomagtárolójából (nem snap): apt-tal frissül, van magyar nyelvi csomagja
-        if [[ ! -f $lista ]]; then
-            install -m 0755 -d /etc/apt/keyrings
-            if ! fut curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc; then
-                figy "A Mozilla csomagtároló kulcsa nem tölthető le – a böngésző kimarad."
-                return 0
-            fi
-            echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > "$lista"
-            printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla
-            apt_ update || true
-        fi
-        # ha nem a Mozilla-féle (hanem a snap-es átmeneti) változat a jelölt, a csomagtároló nem működik
-        jelolt="$(apt-cache policy firefox 2>/dev/null | awk '/^  Candidate:/ {print $2}' || true)"
-        if [[ -z $jelolt || $jelolt == "(none)" || $jelolt == *snap* ]]; then
-            rm -f "$lista" /etc/apt/preferences.d/mozilla
-            figy "A Mozilla csomagtároló nem működik – a böngésző kimarad."
-            return 0
-        fi
-        if ! telepit firefox; then
-            csomagkezelo_rendbe || true
-            figy "A Firefox telepítése nem sikerült: $(apt_hibak)"
-            return 0
-        fi
-    fi
-    telepit_opcionalis firefox-l10n-hu
-    mkdir -p /etc/firefox/policies
-    cat > /etc/firefox/policies/policies.json <<'EOF'
-{
-  "policies": {
-    "Homepage": { "URL": "http://localhost/", "StartPage": "homepage" },
-    "RequestedLocales": ["hu"],
-    "OverrideFirstRunPage": "",
-    "OverridePostUpdatePage": "",
-    "DontCheckDefaultBrowser": true,
-    "DisableAppUpdate": true
-  }
-}
-EOF
-    ok "Firefox – magyarul, a kezdőlapja a BaninaPRO (http://localhost)"
-}
-
-lepes_anydesk() {
-    local lista=/etc/apt/sources.list.d/anydesk-stable.list
-    # Az AnyDesk telepítő szkriptje (postinst) az xdg-utils nélkül hibával áll le, és félbemaradt csomagot hagy
-    # maga után, ami minden további apt-telepítést (pl. a Dockerét) megakaszt – ezért ennek előbb fent kell lennie.
-    telepit_opcionalis xdg-utils desktop-file-utils
-    if ! van_csomag anydesk; then
-        # elsősorban a hivatalos csomagtárolóból – így a rendszerfrissítéssel együtt frissül
-        install -m 0755 -d /etc/apt/keyrings
-        AKT_MUVELET="AnyDesk csomagtároló beállítása"
-        if fut curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY -o /etc/apt/keyrings/keys.anydesk.com.asc; then
-            chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
-            echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] https://deb.anydesk.com all main" > "$lista"
-            apt_ update || true
-        fi
-        AKT_MUVELET=""
-        if [[ -n $(elerheto anydesk) ]] && telepit anydesk; then
-            ok "AnyDesk telepítve (hivatalos csomagtárolóból)"
+# Mi van a meghajtón? Üres szöveg, ha semmi (a rendszerek rejtett mappáin kívül). A fájlrendszereit csak olvasásra
+# csatolja; amit nem tud megnézni (ismeretlen, titkosított, vagy nincs hozzá meghajtóprogram), azt nem üresnek veszi.
+USB_SZEMET='^(System Volume Information|\$RECYCLE\.BIN|RECYCLER|\.Trashes|\.Trash-[0-9]+|\.Spotlight-V100|\.fseventsd|\.TemporaryItems|\.DocumentRevisions-V100|\.DS_Store|\._.*|\.VolumeIcon\.icns|desktop\.ini|IndexerVolumeGuid|lost\+found)$'
+usb_tartalom() {
+    local d=$1 p e tipus lista db ki="" m="$TMPD/usb-nezo" reszek=()
+    mkdir -p "$m"
+    mapfile -t reszek < <(lsblk -nrpo NAME,TYPE "$d" 2>/dev/null | awk '$2 == "part" { print $1 }' || true)
+    for p in "$d" "${reszek[@]}"; do
+        tipus="$(blkid -p -s TYPE -o value "$p" 2>/dev/null || true)"
+        [[ -n $tipus ]] || continue   # ezen a részen nincs fájlrendszer
+        if mount -o ro "$p" "$m" >/dev/null 2>&1; then
+            lista="" db=0
+            shopt -s nullglob dotglob
+            for e in "$m"/*; do
+                e="${e##*/}"
+                if [[ $e =~ $USB_SZEMET ]]; then continue; fi   # a rendszerek rejtett mappái, fájljai
+                db=$(( db + 1 ))
+                if (( db <= 6 )); then lista+="${lista:+, }$e"; fi
+            done
+            shopt -u nullglob dotglob
+            umount "$m" >/dev/null 2>&1 || umount -l "$m" >/dev/null 2>&1 || true
+            if (( db > 6 )); then lista+=" … (összesen $db)"; fi
+            if (( db )); then ki+="${ki:+; }${p##*/} ($tipus): $lista"; fi
         else
-            # egy félbemaradt próbálkozás ne akassza meg a többi telepítést
-            csomagkezelo_rendbe || true
-            if [[ -z $(elerheto anydesk) ]]; then rm -f "$lista"; fi
+            ki+="${ki:+; }${p##*/}: $tipus fájlrendszer, a tartalma nem nézhető meg"
         fi
-        if ! van_csomag anydesk; then
-            info "A csomagtárolóból nem sikerült – a .deb csomagot telepítem."
-            if ! anydesk_deb_telepit; then
-                csomagkezelo_rendbe || true
-                figy "Az AnyDesk most nem települt ($(apt_hibak)) – a következő futás újra megpróbálja."
-                return 0
-            fi
-            ok "AnyDesk telepítve (.deb csomagból)"
+    done
+    printf '%s' "$ki"
+}
+
+# Csatolás: az /etc/fstab-ba a részek UUID-ja kerül (nem a nevük – az változhat); nofail: ha a meghajtó nincs a gépben,
+# a gép akkor is elindul. Az üres csatolási pontok írásvédettek (chattr +i): a meghajtó nélkül semmi nem írhat beléjük.
+usb_csatol() {
+    local m kotes=0
+    for m in "$USB_ADAT" "$USB_MENTES"; do
+        if ! mountpoint -q "$m"; then
+            mkdir -p "$m"
+            chattr +i "$m" 2>/dev/null || true
         fi
+    done
+    # ha a Docker tárhelye már az USB-n van, a befűzés sorai maradnak
+    if grep -qE "^$USB_ADAT/docker[[:space:]]+/var/lib/docker[[:space:]]" /etc/fstab; then kotes=1; fi
+    usb_fstab_iras "$kotes"
+    if ! usb_csatolva "$USB_ADAT" "$USB_ADAT_UUID"; then
+        umount -l "$USB_ADAT" >/dev/null 2>&1 || true   # egy korábbi, közben leválott csatolás maradéka
+        mount "$USB_ADAT" || hiba "Az USB-meghajtó adat-része ($USB_ADAT_DEV) nem csatolható: $(tail -n 2 "$NAPLO" | paste -sd ' ' - || true)"
     fi
-    anydesk_szolgaltatas
-    if [[ -n $ANYDESK_JELSZO ]]; then
-        if echo "$ANYDESK_JELSZO" | anydesk --set-password; then
-            ok "AnyDesk jelszó beállítva (felügyelet nélküli elérés)"
-        else
-            figy "Az AnyDesk jelszót nem sikerült beállítani – később: echo 'JELSZÓ' | sudo anydesk --set-password"
+    install -d -m 710 "$USB_ADAT/docker"
+    install -d -m 711 "$USB_ADAT/containerd"
+    install -d -m 700 "$USB_ADAT/baninapro"
+    if [[ -z $USB_MENTES_UUID ]]; then
+        figy "Az USB-meghajtón nincs $USB_MENTES_CIMKE (FAT32) rész – a mentések hordozható másolata nem készül (az adatbázis és a mentések az adat-részen így is megvannak)."
+        return 0
+    fi
+    if ! usb_csatolva "$USB_MENTES" "$USB_MENTES_UUID"; then
+        umount -l "$USB_MENTES" >/dev/null 2>&1 || true
+        mount "$USB_MENTES" || figy "Az USB-meghajtó mentés-része ($USB_MENTES_DEV) nem csatolható – a mentések másolata most nem készül."
+    fi
+    if mountpoint -q "$USB_MENTES"; then mkdir -p "$USB_MENTES_MAPPA"; fi
+}
+usb_csatolva() {   # $1 = csatolási pont, $2 = a várt UUID: valóban az a fájlrendszer van-e ott, és él-e az eszköz
+    local forras
+    forras="$(findmnt -rno SOURCE --mountpoint "$1" 2>/dev/null | tail -n 1 || true)"
+    [[ -n $forras && -b $forras && $(blkid -s UUID -o value "$forras" 2>/dev/null || true) == "$2" ]]
+}
+
+# Az /etc/fstab BaninaPRO-blokkja (minden futáskor újraírva; az első módosítás előtti állapot: /etc/fstab.baninapro-elott).
+# A blokkon kívüli, ugyanerre a meghajtóra vagy csatolási pontra mutató sorokat kikapcsolja (megjegyzéssé teszi).
+usb_fstab_iras() {   # $1 = 1: a Docker tárhelyének befűzése (bind mount) is
+    local uj="$TMPD/fstab" m
+    [[ -f /etc/fstab.baninapro-elott ]] || cp -p /etc/fstab /etc/fstab.baninapro-elott
+    sed '/^# BaninaPRO USB-meghajtó – eleje/,/^# BaninaPRO USB-meghajtó – vége/d' /etc/fstab \
+        | awk -v a="UUID=$USB_ADAT_UUID" -v b="UUID=${USB_MENTES_UUID:-nincs}" -v m1="$USB_ADAT" -v m2="$USB_MENTES" \
+            '$0 !~ /^[[:space:]]*#/ && ($1 == a || $1 == b || $2 == m1 || $2 == m2) { $0 = "# (a BaninaPRO kikapcsolta) " $0 } { print }' > "$uj"
+    {
+        printf '# BaninaPRO USB-meghajtó – eleje (a %s írja minden futáskor, kézzel ne módosítsd)\n' "$(basename "$SCRIPT")"
+        printf 'UUID=%s %s ext4 defaults,noatime,nofail,x-systemd.device-timeout=20s 0 2\n' "$USB_ADAT_UUID" "$USB_ADAT"
+        if [[ -n $USB_MENTES_UUID ]]; then
+            printf 'UUID=%s %s vfat defaults,noatime,nofail,flush,uid=0,gid=0,fmask=0133,dmask=0022,utf8,x-systemd.device-timeout=20s 0 2\n' \
+                "$USB_MENTES_UUID" "$USB_MENTES"
         fi
-        ANYDESK_JELSZO=""
+        if (( $1 )); then
+            for m in "${DOCKER_MAPPAK[@]}"; do
+                printf '%s/%s /var/lib/%s none bind,nofail,x-systemd.requires-mounts-for=%s 0 0\n' "$USB_ADAT" "$m" "$m" "$USB_ADAT"
+            done
+        fi
+        printf '# BaninaPRO USB-meghajtó – vége\n'
+    } >> "$uj"
+    if ! cmp -s "$uj" /etc/fstab; then
+        cat "$uj" > /etc/fstab
+        systemctl daemon-reload || true
     fi
 }
 
-# AnyDesk .deb csomagból: előbb a jegyzetben szereplő változat, ha az már nincs fent (vagy nem ehhez
-# a géphez való), akkor a legfrissebb a csomagtároló listájából
-anydesk_deb_telepit() {
-    local deb="$TMPD/anydesk.deb" url
-    for url in "$ANYDESK_DEB" "$(anydesk_deb_legfrissebb)"; do
-        [[ -n $url && $url == *"_$ARCH.deb" ]] || continue
-        AKT_MUVELET="AnyDesk letöltése"
-        if fut curl -fsSL "$url" -o "$deb"; then
+# A szerver adatbázis-jelszavai és az értesítési csatorna az USB-n is (csak a root olvashatja; az e-mail-postafiók
+# jelszava nem kerül rá): ha a meghajtó egy új szerverre kerül, ott az adatbázis a régi jelszavakkal nyílik, és az
+# értesítések ugyanoda mennek.
+usb_titkok_vissza() {   # az USB-ről a gépre: $1 = 0 – csak ami a gépen hiányzik; 1 – minden (a meghajtó egy másik szerverről jött)
+    local hely="$USB_ADAT/baninapro" f
+    mountpoint -q "$USB_ADAT" || return 0
+    install -d -m 700 "$TITOK_MAPPA"
+    for f in titkok ntfy; do
+        [[ -s $hely/$f ]] || continue
+        if [[ -s $TITOK_MAPPA/$f ]] && { (( ! $1 )) || cmp -s "$hely/$f" "$TITOK_MAPPA/$f"; }; then continue; fi
+        if [[ -s $TITOK_MAPPA/$f ]]; then cp -p "$TITOK_MAPPA/$f" "$TITOK_MAPPA/$f.$(date +%Y%m%d_%H%M%S).regi"; fi
+        install -m 600 "$hely/$f" "$TITOK_MAPPA/$f"
+        ok "A(z) $TITOK_MAPPA/$f az USB-meghajtóról (az adatbázisa ehhez tartozik)"
+    done
+}
+usb_titkok_ment() {     # a gépről az USB-re (ami változott)
+    local hely="$USB_ADAT/baninapro" f
+    mountpoint -q "$USB_ADAT" || return 0
+    install -d -m 700 "$hely"
+    for f in titkok ntfy; do
+        if [[ -s $TITOK_MAPPA/$f ]] && ! cmp -s "$TITOK_MAPPA/$f" "$hely/$f"; then install -m 600 "$TITOK_MAPPA/$f" "$hely/$f"; fi
+    done
+}
+
+# A Docker tárhelye (/var/lib/docker és /var/lib/containerd: képek, konténerek, kötetek – köztük az adatbázis) az USB
+# adat-részére kerül, befűzéssel (bind mount): a Docker és a containerd beállításai nem változnak.
+#  - A meglévő adatokat átmásolja, a Docker indulása után ellenőrzi (ugyanazok a képek, kötetek és konténerek), és csak
+#    ezután törli a gép saját lemezéről – ha bármi nem stimmel, mindent visszaállít az eredetire.
+#  - Ha az USB-n már vannak (befejezett áthelyezésből származó) Docker-adatok – a meghajtó egy másik szerverről jött –,
+#    azok érvényesek: a gép saját Docker-adatai félrekerülnek, nem törlődnek.
+DOCKER_ATHELYEZVE_JEL="baninapro/docker-athelyezve"   # az USB adat-részén: az áthelyezés befejeződött
+docker_athelyezes() {
+    local m elotte="" utana="" idegen=0 felre=() datum gyoker
+    if docker_usb_n_van; then
+        docker_usb_vedelem
+        ok "A Docker tárhelye az USB-meghajtón van ($USB_ADAT)"
+        return 0
+    fi
+    gyoker="$(timeout 60 docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+    if [[ -n $gyoker && $gyoker != /var/lib/docker ]]; then
+        hiba "A Docker egyedi helyen tárolja az adatait ($gyoker) – a light változat csak az alapértelmezett /var/lib/docker-t helyezi át az USB-re."
+    fi
+    if grep -qsE '^[[:space:]]*root[[:space:]]*=' /etc/containerd/config.toml \
+        && ! grep -qsE '^[[:space:]]*root[[:space:]]*=[[:space:]]*"/var/lib/containerd"' /etc/containerd/config.toml; then
+        hiba "A containerd egyedi helyen tárolja az adatait (/etc/containerd/config.toml: root) – nem helyezem át."
+    fi
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        if mountpoint -q "/var/lib/$m" && [[ $(stat -c %d "/var/lib/$m") != "$(stat -c %d "$USB_ADAT")" ]]; then
+            hiba "A /var/lib/$m már egy másik meghajtóra van csatolva ($(findmnt -no SOURCE "/var/lib/$m" || true)) – nem helyezem át."
+        fi
+    done
+    if [[ -f $USB_ADAT/$DOCKER_ATHELYEZVE_JEL ]]; then
+        idegen=1
+        info "Az USB-meghajtón már vannak BaninaPRO Docker-adatok (az adatbázissal együtt) – ezekkel indul a Docker."
+    else
+        # egy korábbi, félbeszakadt másolás maradéka: az eredeti a gép saját lemezén van, elölről kezdi
+        for m in "${DOCKER_MAPPAK[@]}"; do find "$USB_ADAT/$m" -mindepth 1 -delete 2>/dev/null || true; done
+        info "A Docker tárhelyének áthelyezése az USB-meghajtóra (a konténerek erre az időre leállnak)…"
+    fi
+    if timeout 60 docker info >/dev/null 2>&1; then elotte="$(docker_leltar)"; fi
+    docker_leallitas || hiba "A Docker nem állítható le – a tárhelye most nem helyezhető át (a gép újraindítása után futtasd újra)."
+    datum="$(date +%Y%m%d_%H%M%S)"
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        chattr -i "/var/lib/$m" 2>/dev/null || true
+        if (( ! idegen )) && [[ -n $(ls -A "/var/lib/$m" 2>/dev/null) ]]; then
+            AKT_MUVELET="a Docker adatainak másolása az USB-re (/var/lib/$m, $(du -sh "/var/lib/$m" 2>/dev/null | cut -f1 || true))"
+            if ! fut cp -a "/var/lib/$m/." "$USB_ADAT/$m/"; then
+                AKT_MUVELET=""
+                docker_athelyezes_vissza "$datum" "$idegen"
+                hiba "A Docker adatainak másolása az USB-re nem sikerült (betelt a pendrive?) – mindent visszaállítottam."
+            fi
             AKT_MUVELET=""
-            chmod 644 "$deb"
-            if telepit "$deb"; then return 0; fi
-            csomagkezelo_rendbe || true
-            if van_csomag anydesk; then return 0; fi
+        fi
+        if [[ -n $(ls -A "/var/lib/$m" 2>/dev/null) ]]; then
+            mv "/var/lib/$m" "/var/lib/$m.athelyezes-$datum"
+            felre+=("/var/lib/$m.athelyezes-$datum")
+        else
+            rmdir "/var/lib/$m" 2>/dev/null || true
+        fi
+        mkdir -p "/var/lib/$m"
+        if [[ $m == docker ]]; then chmod 710 "/var/lib/$m"; else chmod 711 "/var/lib/$m"; fi
+        chattr +i "/var/lib/$m" 2>/dev/null || true   # a meghajtó nélkül semmi nem írhat bele
+    done
+    usb_fstab_iras 1
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        if ! mount "/var/lib/$m"; then
+            docker_athelyezes_vissza "$datum" "$idegen"
+            hiba "A(z) /var/lib/$m nem fűzhető be az USB-ről – mindent visszaállítottam."
         fi
     done
-    AKT_MUVELET=""
-    return 1
-}
-anydesk_deb_legfrissebb() {
-    curl -fsSL --max-time 30 "https://deb.anydesk.com/dists/all/main/binary-$ARCH/Packages" 2>/dev/null \
-        | awk '/^Filename:/ { f = $2 } END { if (f != "") print "https://deb.anydesk.com/" f }' || true
-}
-
-anydesk_szolgaltatas() {
-    local egyseg=/etc/systemd/system/anydesk.service
-    # a csomag telepítője másolja a helyére – ha egy félbemaradt telepítés miatt hiányzik, pótolom
-    if [[ ! -f $egyseg && -f /usr/share/anydesk/files/systemd/anydesk.service ]]; then
-        cp /usr/share/anydesk/files/systemd/anydesk.service "$egyseg"
+    docker_usb_vedelem
+    if (( idegen )); then
+        # a meghajtó konténerei a Docker indulásakor maguktól elindulnak: az alkalmazás beállítófájlja (és hozzá a
+        # meghajtó adatbázisának jelszavai) már előtte legyen meg
+        usb_titkok_vissza 1
+        titkok_biztosit
+        szerver_config
     fi
-    # mindig fusson: a géppel indul, és ha bármiért leállna, a systemd 5 mp múlva újraindítja
-    mkdir -p /etc/systemd/system/anydesk.service.d
-    cat > /etc/systemd/system/anydesk.service.d/50-baninapro.conf <<'EOF'
-# BaninaPRO szerver: az AnyDesk mindig fusson – ha leáll, magától újraindul (a szerver_beallitas.sh írta)
-[Unit]
-StartLimitIntervalSec=0
-
-[Service]
-Restart=always
-RestartSec=5
-EOF
-    systemctl daemon-reload || true
-    if systemctl enable --now anydesk \
-        || { systemctl reset-failed anydesk || true; systemctl restart anydesk; }; then
-        ok "AnyDesk fut, a géppel együtt indul, és ha leállna, magától újraindul"
+    if ! docker_inditas; then
+        docker_athelyezes_vissza "$datum" "$idegen"
+        hiba "A Docker nem indult el az USB-n lévő tárhellyel – mindent visszaállítottam."
+    fi
+    if (( ! idegen )) && [[ -n $elotte ]]; then
+        utana="$(docker_leltar)"
+        if [[ $utana != "$elotte" ]]; then
+            printf 'Áthelyezés előtt:\n%s\nUtána:\n%s\n' "$elotte" "$utana"
+            docker_athelyezes_vissza "$datum" "$idegen"
+            hiba "Az áthelyezés után nem ugyanazok a Docker-képek, -kötetek és -konténerek látszanak – mindent visszaállítottam (részletek a naplóban)."
+        fi
+    fi
+    if (( idegen )); then
+        for m in "${felre[@]}"; do
+            figy "A gép saját, korábbi Docker-adatai félretéve: $m ($(du -sh "$m" 2>/dev/null | cut -f1 || true)) – ha nem kellenek, törölhetők: sudo rm -rf $m"
+        done
+        ok "A Docker az USB-meghajtón lévő adatokkal fut (a meghajtó egy korábbi szerverről jött)"
     else
-        figy "Az AnyDesk szolgáltatás nem indult el (systemctl status anydesk) – a gép újraindítása után általában rendben van."
+        date '+%Y-%m-%d %H:%M:%S' > "$USB_ADAT/$DOCKER_ATHELYEZVE_JEL"
+        AKT_MUVELET="a gép saját lemezén maradt példány törlése"
+        if (( ${#felre[@]} )); then fut rm -rf "${felre[@]}" || figy "A régi Docker-adatok nem törölhetők: ${felre[*]}"; fi
+        AKT_MUVELET=""
+        ok "A Docker tárhelye az USB-meghajtóra költözött – a gép saját lemezén $(hely_szoveg) szabad"
+    fi
+}
+docker_usb_n_van() {   # a /var/lib/docker és a /var/lib/containerd valóban az USB adat-részéről van-e befűzve
+    local m
+    usb_csatolva "$USB_ADAT" "$USB_ADAT_UUID" || return 1
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        [[ $(stat -c %d:%i "/var/lib/$m" 2>/dev/null || true) == "$(stat -c %d:%i "$USB_ADAT/$m" 2>/dev/null || true)" ]] || return 1
+    done
+}
+docker_leltar() {   # a Docker képei, kötetei és konténerei – az áthelyezés előtti és utáni állapot összevetéséhez
+    { docker image ls -aq --no-trunc; docker volume ls -q; docker ps -aq --no-trunc; } 2>/dev/null | sort || true
+}
+# A Docker és a containerd csak az USB-meghajtóval indulhat: nélküle a gép saját, kicsi lemezére töltené le a képeket
+docker_usb_vedelem() {
+    local e d valt=0
+    for e in containerd docker; do
+        d="/etc/systemd/system/$e.service.d"
+        mkdir -p "$d"
+        printf '# BaninaPRO szerver: a Docker tárhelye az USB-meghajtón van – nélküle nem indul (a %s írta)\n[Unit]\nRequiresMountsFor=/var/lib/docker /var/lib/containerd\n' \
+            "$(basename "$SCRIPT")" > "$d/50-baninapro-usb.conf.uj"
+        if cmp -s "$d/50-baninapro-usb.conf.uj" "$d/50-baninapro-usb.conf"; then
+            rm -f "$d/50-baninapro-usb.conf.uj"
+        else
+            mv -f "$d/50-baninapro-usb.conf.uj" "$d/50-baninapro-usb.conf"
+            valt=1
+        fi
+    done
+    if (( valt )); then systemctl daemon-reload || true; fi
+}
+docker_leallitas() {   # a Docker és a containerd leállítása (a konténerek is leállnak); 1, ha nem álltak le
+    local i
+    AKT_MUVELET="a Docker leállítása"
+    fut systemctl stop docker.socket docker.service containerd.service || true
+    for (( i = 0; i < 30; i++ )); do
+        if ! pgrep -x dockerd >/dev/null && ! pgrep -x containerd >/dev/null; then break; fi
+        varj 1
+    done
+    AKT_MUVELET=""
+    if pgrep -x dockerd >/dev/null || pgrep -x containerd >/dev/null; then return 1; fi
+    # a konténerek esetleg megmaradt csatolásai (rendes leállás után nincs ilyen)
+    findmnt -rno TARGET 2>/dev/null | grep -E '^/var/lib/(docker|containerd)/' | sort -r \
+        | while read -r m; do umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true; done || true
+    return 0
+}
+docker_athelyezes_vissza() {   # $1 = a félretett mappák dátuma, $2 = 1: az USB-n lévő adatok nem a mieink (maradnak)
+    local m
+    figy "A Docker tárhelyének áthelyezése nem sikerült – visszaállítom az eredeti állapotot."
+    docker_leallitas || true
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        if mountpoint -q "/var/lib/$m"; then umount "/var/lib/$m" 2>/dev/null || umount -l "/var/lib/$m" 2>/dev/null || true; fi
+    done
+    usb_fstab_iras 0
+    rm -f /etc/systemd/system/containerd.service.d/50-baninapro-usb.conf /etc/systemd/system/docker.service.d/50-baninapro-usb.conf
+    systemctl daemon-reload || true
+    for m in "${DOCKER_MAPPAK[@]}"; do
+        chattr -i "/var/lib/$m" 2>/dev/null || true
+        if [[ -e /var/lib/$m.athelyezes-$1 ]]; then
+            rmdir "/var/lib/$m" 2>/dev/null || true
+            mv "/var/lib/$m.athelyezes-$1" "/var/lib/$m"
+        fi
+        if (( ! $2 )); then find "$USB_ADAT/$m" -mindepth 1 -delete 2>/dev/null || true; fi
+    done
+    docker_inditas || true
+}
+
+# A segédprogram: az USB-meghajtó csatolásának ellenőrzése (és ha kell, visszacsatolása), a mentések másolása,
+# állapot a napi jelentéshez, biztonságos leválasztás
+usb_seged_iras() {
+    {
+        printf '#!/bin/bash\n# BaninaPRO USB-meghajtó – a %s írta, kézzel ne módosítsd (minden futása újraírja).\n' "$(basename "$SCRIPT")"
+        printf 'USB_ADAT=%q\nUSB_MENTES=%q\nUSB_MENTES_MAPPA=%q\nBELSO_MENTES=%q\nKOTET=%q\nBEALLITAS=%q\nKEVES_HELY_MB=%q\n' \
+            "$USB_ADAT" "$USB_MENTES" "$USB_MENTES_MAPPA" "$BELSO_MENTES" "$ADATOK_KOTET" "$TITOK_MAPPA/usb" "$KEVES_HELY_MB"
+        cat <<'EOF'
+#   baninapro-usb ellenoriz   csatolva van-e az USB-meghajtó (és rajta a Docker tárhelye); ha leválott, de a gépben van,
+#                             visszacsatolja, és újraindítja a Dockert. Kilépési kód: 0 rendben, 3 most csatolta vissza,
+#                             4 szándékosan leválasztva (kihúzásra vár), 1 nincs a gépben, 2 nem csatolható
+#   baninapro-usb tukor       a mentések másolatai: az USB FAT32 részére (BaninaPRO-mentesek) mind, a gép saját lemezére
+#                             (/var/backups/baninapro) a 2 legújabb – 1, ha valamelyik nem sikerült
+#   baninapro-usb allapot     állapot a napi jelentéshez (a „!”-lel kezdődő sor probléma)
+#   baninapro-usb levalaszt   biztonságos eltávolítás: a BaninaPRO (Docker) leáll, a meghajtó leválik – utána kihúzható.
+#                             Visszadugva az őrszem 2 percen belül visszacsatolja, és elindítja a BaninaPRO-t.
+#   baninapro-usb csatol      a leválasztott (de ki nem húzott) meghajtó visszacsatolása most
+set -u
+export LC_ALL=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ADAT_UUID="$(sed -n 's/^USB_ADAT_UUID=//p' "$BEALLITAS" 2>/dev/null)"
+MENTES_UUID="$(sed -n 's/^USB_MENTES_UUID=//p' "$BEALLITAS" 2>/dev/null)"
+LEVALASZTVA=/run/baninapro-usb-levalasztva
+MAPPAK=(docker containerd)
+
+csatolva() {   # $1 = csatolási pont, $2 = UUID: valóban az a fájlrendszer van-e ott, és él-e az eszköz
+    local forras
+    [[ -n $2 ]] || return 1
+    forras="$(findmnt -rno SOURCE --mountpoint "$1" 2>/dev/null | tail -n 1)"
+    [[ -n $forras && -b $forras && $(blkid -s UUID -o value "$forras" 2>/dev/null) == "$2" ]]
+}
+docker_rajta() {   # a Docker tárhelye valóban az USB-ről van befűzve
+    local m
+    for m in "${MAPPAK[@]}"; do
+        [[ $(stat -c %d:%i "/var/lib/$m" 2>/dev/null) == "$(stat -c %d:%i "$USB_ADAT/$m" 2>/dev/null)" ]] || return 1
+    done
+}
+mentes_csatol() {   # a FAT32 rész (a mentések másolatai): ha leválott, visszacsatolja
+    [[ -n $MENTES_UUID ]] || return 1
+    csatolva "$USB_MENTES" "$MENTES_UUID" && return 0
+    [[ -e /dev/disk/by-uuid/$MENTES_UUID ]] || return 1
+    umount -l "$USB_MENTES" >/dev/null 2>&1
+    mount "$USB_MENTES" >/dev/null 2>&1 && mkdir -p "$USB_MENTES_MAPPA"
+}
+ellenoriz() {
+    local m
+    if [[ -f $LEVALASZTVA ]]; then
+        if [[ -e /dev/disk/by-uuid/$ADAT_UUID ]]; then echo "Az USB-meghajtó le van választva, kihúzásra vár."; return 4; fi
+        rm -f "$LEVALASZTVA"   # kihúzták – ha visszadugják, újra csatolódik
+    fi
+    if csatolva "$USB_ADAT" "$ADAT_UUID" && docker_rajta; then mentes_csatol; return 0; fi
+    if [[ ! -e /dev/disk/by-uuid/$ADAT_UUID ]]; then echo "Az USB-meghajtó nincs a gépben."; return 1; fi
+    # a gépben van, de nincs (jól) csatolva – pl. leválott, vagy kihúzták és visszadugták: a Docker leáll, minden újra csatolódik
+    echo "Az USB-meghajtó nincs (jól) csatolva – visszacsatolom."
+    systemctl stop docker.socket docker.service containerd.service >/dev/null 2>&1
+    for m in "${MAPPAK[@]}"; do umount -l "/var/lib/$m" >/dev/null 2>&1; done
+    umount -l "$USB_ADAT" >/dev/null 2>&1
+    if ! mount "$USB_ADAT" || ! mount /var/lib/containerd || ! mount /var/lib/docker; then
+        echo "Az USB-meghajtó nem csatolható."
+        return 2
+    fi
+    mentes_csatol
+    systemctl start containerd.service docker.service >/dev/null 2>&1
+    echo "Az USB-meghajtó visszacsatolva, a Docker újraindult."
+    return 3
+}
+tukor() {   # a mentések másolatai; az utolsó kiírt sor az összefoglaló
+    local d f nev cel meret regi legujabb uj=0 gond=() n
+    d="$(docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)/DBBCKP"
+    if [[ ! -d $d ]] || ! compgen -G "$d/*.sql" >/dev/null; then echo "Másolat: még nincs adatbázis-mentés."; return 0; fi
+    # 1) az USB FAT32 része: a legújabbaktól visszafelé mindet, ami még nincs ott. Ha betelt, a másolatok közül a
+    #    legrégebbiek mennek (egy régebbi mentés kedvéért újabbat sosem töröl). A teljes sor az adat-részen is megvan.
+    if mentes_csatol; then
+        mkdir -p "$USB_MENTES_MAPPA"
+        while IFS= read -r f; do
+            nev="${f##*/}" cel="$USB_MENTES_MAPPA/${f##*/}"
+            if [[ -f $cel && $(stat -c %s "$cel") == "$(stat -c %s "$f")" ]]; then continue; fi
+            meret=$(( $(stat -c %s "$f") / 1048576 + 1 ))
+            while (( $(df -Pm "$USB_MENTES" | awk 'NR == 2 { print $4 }') < meret + 20 )); do
+                regi="$(ls -1 "$USB_MENTES_MAPPA"/*.sql 2>/dev/null | head -n 1)"
+                if [[ -z $regi || ! ${regi##*/} < $nev ]]; then break 2; fi
+                rm -f "$regi"
+            done
+            if cp --preserve=timestamps "$f" "$USB_MENTES_MAPPA/.$nev.tmp" 2>/dev/null && mv -f "$USB_MENTES_MAPPA/.$nev.tmp" "$cel"; then
+                uj=$(( uj + 1 ))
+            else
+                rm -f "$USB_MENTES_MAPPA/.$nev.tmp"
+                gond+=("a(z) $nev nem másolható az USB-re")
+                break
+            fi
+        done < <(ls -1r "$d"/*.sql 2>/dev/null)
+        sync -f "$USB_MENTES_MAPPA/." 2>/dev/null || sync
+        legujabb="$(ls -1 "$d"/*.sql 2>/dev/null | tail -n 1)"
+        if [[ ! -f $USB_MENTES_MAPPA/${legujabb##*/} ]] && (( ${#gond[@]} == 0 )); then
+            gond+=("a legújabb mentés nem fér el az USB mentés-részén")
+        fi
+    else
+        gond+=("az USB-meghajtó mentés-része nincs csatolva")
+    fi
+    # 2) a legújabb mentés a gép saját lemezére is (a 2 legújabb marad) – ha a pendrive tönkremenne
+    legujabb="$(ls -1 "$d"/*.sql 2>/dev/null | tail -n 1)"
+    if [[ -n $legujabb && ! -f $BELSO_MENTES/${legujabb##*/} ]]; then
+        install -d -m 700 "$BELSO_MENTES"
+        meret=$(( $(stat -c %s "$legujabb") / 1048576 + 1 ))
+        if (( $(df -Pm / | awk 'NR == 2 { print $4 }') - meret > KEVES_HELY_MB )) \
+            && cp --preserve=timestamps "$legujabb" "$BELSO_MENTES/.masolas.tmp" \
+            && mv -f "$BELSO_MENTES/.masolas.tmp" "$BELSO_MENTES/${legujabb##*/}"; then
+            chmod 600 "$BELSO_MENTES/${legujabb##*/}"
+            ls -1 "$BELSO_MENTES"/*.sql 2>/dev/null | head -n -2 | xargs -r rm -f
+        else
+            rm -f "$BELSO_MENTES/.masolas.tmp"
+            gond+=("a gép saját lemezén nincs hely a legutóbbi mentés másolatának")
+        fi
+    fi
+    n="$(ls -1 "$USB_MENTES_MAPPA"/*.sql 2>/dev/null | wc -l)"
+    if (( ${#gond[@]} )); then
+        printf 'Másolat – HIBA: %s (az USB-n %s mentés)\n' "$(IFS=';'; echo "${gond[*]}" | sed 's/;/; /g')" "$n"
+        return 1
+    fi
+    printf 'Másolat: az USB-n (BaninaPRO-mentesek: %s mentés%s) és a gép saját lemezén is\n' "$n" "$( (( uj )) && echo ", most $uj új")"
+}
+allapot() {
+    local n uj
+    if [[ -f $LEVALASZTVA ]]; then echo "!Az USB-meghajtó le van választva (sudo baninapro-usb levalaszt) – a BaninaPRO nem fut"; fi
+    if csatolva "$USB_ADAT" "$ADAT_UUID"; then
+        echo "USB adat-rész (Docker, adatbázis): $(df -hP "$USB_ADAT" | awk 'NR == 2 { print $4 " szabad / " $2 }')"
+        docker_rajta || echo "!A Docker tárhelye nincs az USB-meghajtóról befűzve"
+        if (( $(df -Pm "$USB_ADAT" | awk 'NR == 2 { print $4 }') < 1024 )); then
+            echo "!Kevés a szabad hely az USB-meghajtón: $(df -hP "$USB_ADAT" | awk 'NR == 2 { print $4 }')"
+        fi
+    else
+        echo "!Az USB-meghajtó adat-része nincs csatolva – a BaninaPRO nem tud futni"
+    fi
+    if mentes_csatol; then
+        n="$(ls -1 "$USB_MENTES_MAPPA"/*.sql 2>/dev/null | wc -l)"
+        uj="$(ls -1 "$USB_MENTES_MAPPA"/*.sql 2>/dev/null | tail -n 1)"
+        uj="${uj##*/}"
+        echo "USB mentés-rész (BaninaPRO-mentesek): $n mentés, a legújabb: ${uj:-–} – $(df -hP "$USB_MENTES" | awk 'NR == 2 { print $4 }') szabad"
+    else
+        echo "!Az USB-meghajtó mentés-része nincs csatolva – a mentések hordozható másolata nem készül"
+    fi
+    uj="$(ls -1 "$BELSO_MENTES"/*.sql 2>/dev/null | tail -n 1)"
+    uj="${uj##*/}"
+    echo "A gép saját lemezén ($BELSO_MENTES): ${uj:-még nincs mentés-másolat}"
+}
+levalaszt() {
+    local m
+    exec 9>/run/baninapro-orszem.lock   # közben az őrszem ne avatkozzon be
+    flock -w 300 9 || true
+    echo "Az utolsó mentések átmásolása, a BaninaPRO leállítása…"
+    tukor >/dev/null 2>&1
+    touch "$LEVALASZTVA"
+    systemctl stop docker.socket docker.service containerd.service
+    sync
+    for m in "${MAPPAK[@]}"; do umount "/var/lib/$m" 2>/dev/null || umount -l "/var/lib/$m" 2>/dev/null; done
+    umount "$USB_MENTES" 2>/dev/null || umount -l "$USB_MENTES" 2>/dev/null
+    if umount "$USB_ADAT" 2>/dev/null; then
+        echo "Kész – az USB-meghajtó most kihúzható."
+    else
+        umount -l "$USB_ADAT" 2>/dev/null
+        sync
+        echo "Leválasztva – várj fél percet, utána húzd ki."
+    fi
+    echo "Visszadugva az őrszem 2 percen belül visszacsatolja, és elindítja a BaninaPRO-t (azonnal: sudo baninapro-usb csatol)."
+}
+csatol() {
+    local r
+    rm -f "$LEVALASZTVA"
+    ellenoriz
+    r=$?
+    if (( r == 0 || r == 3 )); then echo "Az USB-meghajtó csatolva – a BaninaPRO pár percen belül elérhető."; return 0; fi
+    return "$r"
+}
+
+case "${1:-}" in
+    ellenoriz) ellenoriz ;;
+    tukor)     tukor ;;
+    allapot)   allapot ;;
+    levalaszt) levalaszt ;;
+    csatol)    csatol ;;
+    *) echo "Használat: baninapro-usb ellenoriz | tukor | allapot | levalaszt | csatol"; exit 1 ;;
+esac
+EOF
+    } > "$USB_SEGED.uj"
+    chmod 755 "$USB_SEGED.uj"
+    mv -f "$USB_SEGED.uj" "$USB_SEGED"
+}
+
+# Leírás a FAT32 részen: aki a pendrive-ot egy másik gépbe dugja, ebből tudja, mi van rajta, és mit kezdjen vele
+usb_olvassel() {
+    mountpoint -q "$USB_MENTES" || return 0
+    cat > "$USB_MENTES/OLVASSEL.txt.uj" <<'EOF'
+BaninaPRO – adatbázis-mentések
+
+Ez a pendrive a BaninaPRO szerveré. Két része van:
+
+  BANINAPRO (ez a rész)
+    A BaninaPRO-mentesek mappában az adatbázis minden mentésének másolata (.sql fájlok).
+    Bármely Windows, Mac vagy Linux gépen megnyitható. A fájlnév a mentés ideje: ÉÉÉÉHHNN_ÓÓPP.sql –
+    a legfrissebb a legnagyobb dátumú. A szerver minden éjjel 03:00-kor ment, és ide is átmásolja.
+
+  BANINAPRO-ADAT
+    A szerveren futó adatbázis és a Docker. Windows és Mac nem tudja olvasni –
+    ha a gép felajánlja, hogy „inicializálja” vagy „formázza”, NE engedd!
+
+Visszaállítás egy mentésből: a BaninaPRO-ban Admin → Adatbázis-mentések: a .sql fájl feltöltése, majd visszaállítás.
+
+Ha a szerver tönkrement: dugd ezt a pendrive-ot az új szerverbe, töltsd le a BaninaPRO-t
+(git clone https://github.com/Sarokin/BaninaPRO.git ~/BaninaPRO), és futtasd:
+    cd ~/BaninaPRO/"SERVER SETUP AND UPDATE"
+    sudo bash szerver_beallitas_light.sh
+A BaninaPRO az összes adatával visszajön (az adatbázis jelszavai is a pendrive-on vannak).
+
+Biztonságos eltávolítás a szerverből:  sudo baninapro-usb levalaszt  – utána kihúzható.
+Visszadugva a szerver 2 percen belül magától visszacsatolja, és elindítja a BaninaPRO-t.
+EOF
+    if cmp -s "$USB_MENTES/OLVASSEL.txt.uj" "$USB_MENTES/OLVASSEL.txt"; then
+        rm -f "$USB_MENTES/OLVASSEL.txt.uj"
+    else
+        mv -f "$USB_MENTES/OLVASSEL.txt.uj" "$USB_MENTES/OLVASSEL.txt"
     fi
 }
 
+# A light változat a gépen már fent lévő Dockert használja: nem telepít és nem cserél Docker-csomagot, csak
+# ellenőrzi, hogy fut-e és a géppel együtt indul-e, korlátozza a naplói méretét, és ha kell, pótolja a „docker compose”-t.
 lepes_docker() {
-    # egy korábbi félbemaradt telepítés (pl. az AnyDeské) ne akassza meg; a félig felkerült Docker-csomagokat is
-    # eltávolíthatja – ezeket alább újratelepítem (a konténerek adatai a /var/lib/docker alatt megmaradnak)
-    csomagkezelo_rendbe "${DOCKER_CE_CSOMAGOK[@]}" "${DOCKER_UBUNTU_CSOMAGOK[@]}" || true
-    if ! van_csomag docker-ce && ! van_csomag docker.io; then
-        docker_telepites
-    fi
+    command -v docker >/dev/null \
+        || hiba "A Docker nincs telepítve – a light változat a gépen már fent lévő Dockert használja (Docker nélküli géphez: sudo bash szerver_beallitas.sh)."
     docker_daemon_json
     if ! docker_inditas; then
         torol
         journalctl -u docker -n 15 --no-pager 2>/dev/null | sed 's/^/    | /' >&3 || true
         hiba "A Docker nem indul el (systemctl status docker)."
     fi
-    usermod -aG docker "$CEL_FELH"
+    if getent group docker >/dev/null && ! id -nG "$CEL_FELH" | grep -qw docker; then
+        usermod -aG docker "$CEL_FELH" || figy "A(z) $CEL_FELH felhasználó nem került be a docker csoportba."
+    fi
     compose_biztosit
     ok "Docker $(docker version -f '{{.Server.Version}}') fut és a géppel együtt indul; Compose $(docker compose version --short)"
-}
-
-# Docker Engine: elsősorban a Docker hivatalos csomagtárolójából, ha az nem megy, az Ubuntu saját csomagjaiból
-docker_telepites() {
-    local p kod
-    # a Docker leírása szerint az ütköző csomagok eltávolítása (friss gépen általában nincs ilyen)
-    for p in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
-        if van_csomag "$p"; then apt_ remove "$p" || true; fi
-    done
-    if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
-        info "A snap-es Docker eltávolítása (ütközne a Docker Engine-nel)…"
-        AKT_MUVELET="snap-es Docker eltávolítása"
-        fut snap remove --purge docker || true
-        AKT_MUVELET=""
-    fi
-    install -m 0755 -d /etc/apt/keyrings
-    kod="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
-    AKT_MUVELET="Docker csomagtároló beállítása"
-    if fut curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
-        chmod a+r /etc/apt/keyrings/docker.asc
-        printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
-            "$kod" "$ARCH" > /etc/apt/sources.list.d/docker.sources
-        apt_ update || true
-    fi
-    AKT_MUVELET=""
-    if [[ -n $(elerheto docker-ce) ]] \
-        && telepit docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
-        ok "Docker Engine telepítve (hivatalos Docker csomagtárolóból)"
-        return 0
-    fi
-    figy "A Docker hivatalos csomagtárolójából nem sikerült ($kod: $(apt_hibak)) – az Ubuntu saját Docker csomagjait telepítem."
-    # a félig felkerült hivatalos csomagok le, hogy ne ütközzenek
-    docker_csomagok_le "${DOCKER_CE_CSOMAGOK[@]}"
-    rm -f /etc/apt/sources.list.d/docker.sources
-    apt_ update || true
-    telepit docker.io docker-compose-v2 \
-        || hiba "A Docker sem a hivatalos, sem az Ubuntu csomagtárolójából nem telepíthető: $(apt_hibak)"
-    telepit_opcionalis docker-buildx
-    ok "Docker Engine telepítve (az Ubuntu csomagtárolójából)"
-}
-docker_csomagok_le() {   # eltávolítás (nem purge – a /var/lib/docker adatai megmaradnak)
-    local p le=()
-    for p in "$@"; do
-        if [[ $(dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null) =~ ^[ih][iUFHWt] ]]; then le+=("$p"); fi
-    done
-    (( ${#le[@]} )) || return 0
-    apt_ remove "${le[@]}" || fut dpkg --remove --force-remove-reinstreq "${le[@]}" || true
 }
 
 # a konténerek naplói ne nőjenek a végtelenségig (konténerenként legfeljebb 3 × 10 MB)
@@ -1292,10 +1654,12 @@ compose_eleg_uj() {
     [[ -n $v && $(printf '%s\n' 2.24.4 "$v" | sort -V | head -n 1) == 2.24.4 ]]
 }
 compose_biztosit() {
-    local cel=/usr/local/lib/docker/cli-plugins/docker-compose arch
+    local cel=/usr/local/lib/docker/cli-plugins/docker-compose arch p=docker-compose-v2
     if compose_eleg_uj; then return 0; fi
     info "A „docker compose” bővítmény hiányzik vagy túl régi – pótolom…"
-    if van_csomag docker-ce; then telepit_opcionalis docker-compose-plugin; else telepit_opcionalis docker-compose-v2; fi
+    # a Docker saját csomagjaihoz illő bővítmény (ha már fent van, de régi, az apt frissíti)
+    if van_csomag docker-ce; then p=docker-compose-plugin; fi
+    if [[ -n $(elerheto "$p") ]]; then telepit_min "$p" || true; fi
     if compose_eleg_uj; then return 0; fi
     case $ARCH in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; armhf) arch=armv7 ;; *) arch=$ARCH ;; esac
     install -d -m 755 "$(dirname "$cel")"
@@ -1308,18 +1672,8 @@ compose_biztosit() {
     ok "docker compose pótolva (a Docker GitHub-oldaláról)"
 }
 
-lepes_ssh() {
-    # SSH szerver – távoli belépés a gépre (Ubuntu 22.10 óta socketről indul)
-    if systemctl is-active --quiet ssh.socket; then
-        systemctl enable ssh.socket || true
-    elif systemctl is-active --quiet ssh; then
-        systemctl enable ssh || true
-    else
-        systemctl enable --now ssh.socket || systemctl enable --now ssh \
-            || figy "Az SSH szerver nem indult el (systemctl status ssh)."
-    fi
-    ok "SSH szerver fut – távoli belépés: ssh $CEL_FELH@$GEPNEV"
-
+# Hálózat: a gép neve a belső hálózaton, és a frissítések forrása (az SSH-hoz és a távoli eléréshez nem nyúl)
+lepes_halozat() {
     # a gép neve a belső hálózaton: baninapro.local – akkor is megtalálható, ha a router más IP-címet ad neki
     telepit_opcionalis avahi-daemon
     if systemctl enable --now avahi-daemon >/dev/null 2>&1; then
@@ -1363,46 +1717,19 @@ AllowSuspendThenHibernate=no
 AllowHybridSleep=no
 EOF
     ok "Alvó mód és hibernálás letiltva – a gép soha nem alszik el"
+    # az USB-eszközök se aludjanak el (rajtuk van az adatbázis): a most csatlakoztatottak és a később bedugottak sem
+    cat > /etc/udev/rules.d/50-baninapro-usb-ebren.rules <<'EOF'
+# BaninaPRO szerver: az USB-eszközök ne aludjanak el – az adatbázis USB-meghajtón van (a szerver_beallitas_light.sh írta)
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="on"
+EOF
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    for f in /sys/bus/usb/devices/*/power/control; do
+        if [[ -w $f ]]; then echo on > "$f" 2>/dev/null || true; fi
+    done
+    ok "Az USB-eszközök energiatakarékos alvása kikapcsolva (az adatbázis USB-meghajtón van)"
+    # (a képernyővédőhöz és az asztal energiabeállításaihoz a light változat nem nyúl)
 
-    # 2) soha ne legyen képernyővédő, és a kijelző se kapcsoljon ki: az X szerverben, a LightDM-ben és a munkamenetben
-    mkdir -p /etc/X11/xorg.conf.d /etc/lightdm/lightdm.conf.d
-    cat > /etc/X11/xorg.conf.d/10-baninapro-kepernyo.conf <<'EOF'
-# BaninaPRO szerver: nincs képernyővédő és kijelző-kikapcsolás (a szerver_beallitas.sh írta)
-Section "ServerFlags"
-        Option "BlankTime"   "0"
-        Option "StandbyTime" "0"
-        Option "SuspendTime" "0"
-        Option "OffTime"     "0"
-EndSection
-EOF
-    cat > /etc/lightdm/lightdm.conf.d/60-baninapro-kepernyo.conf <<'EOF'
-# BaninaPRO szerver: az X szerver képernyővédő és energiatakarékos kijelző nélkül indul (a szerver_beallitas.sh írta)
-[Seat:*]
-xserver-command=X -s 0 -dpms
-EOF
-    # a bejelentkezett munkamenetben is (ha egy program mégis bekapcsolná): xset induláskor, az LXQt energiakezelője
-    # tétlenségi műveletek nélkül, az xscreensaver (ha fent van) kikapcsolva
-    felh mkdir -p "$CEL_HOME/.config/autostart" "$CEL_HOME/.config/lxqt"
-    cat > "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=BaninaPRO: nincs képernyővédő
-Exec=sh -c "xset s off; xset s noblank; xset -dpms"
-NoDisplay=true
-EOF
-    f="$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
-    ini_beallit "$f" enableIdlenessWatcher false General
-    ini_beallit "$f" enableIdlenessBacklightWatcher false General
-    ini_beallit "$f" enableLidWatcher false General
-    if command -v xscreensaver >/dev/null; then
-        f="$CEL_HOME/.xscreensaver"
-        if [[ -f $f ]] && grep -q '^mode:' "$f"; then sed -i 's/^mode:.*/mode:\t\toff/' "$f"; else printf 'mode:\t\toff\n' >> "$f"; fi
-        chown "$CEL_FELH:" "$f"
-    fi
-    chown "$CEL_FELH:" "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" "$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
-    ok "Képernyővédő és kijelző-kikapcsolás letiltva"
-
-    # 3) áramszünet után magától bekapcsol: ez a BIOS beállítása – ahol a gép engedi, innen állítja be
+    # 2) áramszünet után magától bekapcsol: ez a BIOS beállítása – ahol a gép engedi, innen állítja be
     aram_utan_bekapcsol
 }
 
@@ -1482,13 +1809,19 @@ EOF
     # 4) a 80-as port legyen szabad (ha a BaninaPRO már fut rajta, az rendben van)
     port80_felszabadit
 
-    # 5) építés és indítás – átmeneti hálózati hibánál újrapróbálja
+    # 5) építés és indítás – átmeneti hálózati hibánál újrapróbálja. A Docker tárhelye (az USB-meghajtó) helyén
+    #    kevés helynél előbb a Docker-gyorsítótár megy (a konténerekhez és az adatbázishoz nem nyúl), a hiányzó képek
+    #    letöltése pedig csak akkor indul, ha elfér.
+    kepek_helye_rendben
+    if (( $(docker_szabad_mb) < ALAPKEP_FRISSITES_MB )); then hely_felszabaditas; fi
     AKT_MUVELET="az alkalmazás építése (PHP 8.3 + Apache)"
-    if ! ujraprobal 3 dc build --pull app; then
-        # ha az alapkép frissítése nem megy, a meglévővel is felépülhet
+    if (( $(docker_szabad_mb) >= ALAPKEP_FRISSITES_MB )) && ujraprobal 3 dc build --pull app; then
+        ok "Az alkalmazás képe elkészült (a PHP-alapkép is frissítve)"
+    else
+        # kevés a hely (vagy az alapkép frissítése nem megy): a meglévő PHP-alapképből épül – ez csak pár MB
         ujraprobal 2 dc build app || hiba "Az alkalmazás képe nem épült fel – a napló végén látszik, miért."
+        ok "Az alkalmazás képe elkészült (a meglévő PHP-alapképből – annak frissítése $(hely_szoveg "$ALAPKEP_FRISSITES_MB") szabad hely fölött fut)"
     fi
-    ok "Az alkalmazás képe elkészült"
     AKT_MUVELET="konténerek indítása (első induláskor a MySQL 1-2 percig készíti az adatbázist)"
     if ! ujraprobal 2 dc up -d --remove-orphans; then
         # a félig elindult konténerek leállítása (az adatok a kötetekben megmaradnak), majd még egy próba
@@ -1639,15 +1972,24 @@ lepes_mentes_cron() {
     systemctl enable --now cron || true
     # a mentést egy kis burkoló futtatja: naplóz, és az eredményről push-értesítést küld
     {
-        printf '#!/bin/bash\n# BaninaPRO éjszakai adatbázis-mentés – a szerver_beallitas.sh írta, kézzel ne módosítsd.\n'
-        printf 'APP_KONTENER=%q\nERTESITO=%q\n' "$APP_KONTENER" "$ERTESITO"
+        printf '#!/bin/bash\n# BaninaPRO éjszakai adatbázis-mentés – a %s írta, kézzel ne módosítsd.\n' "$(basename "$SCRIPT")"
+        printf 'APP_KONTENER=%q\nERTESITO=%q\nUSB_SEGED=%q\n' "$APP_KONTENER" "$ERTESITO" "$USB_SEGED"
         cat <<'EOF'
+# A mentés után a másolatai: az USB-meghajtó FAT32 részére (bármely gépen olvasható) és a gép saját lemezére.
 NAPLO=/var/log/baninapro-mentes.log
 kimenet="$(timeout 1800 docker exec "$APP_KONTENER" php -q cron_mentes.php 2>&1)"
 rc=$?
 printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${kimenet//$'\n'/ | }" >> "$NAPLO"
 if (( rc == 0 )) && [[ $kimenet == OK* ]]; then
-    "$ERTESITO" -p 2 -t floppy_disk "Éjszakai mentés kész" "$(tail -n 1 <<<"$kimenet")" >/dev/null 2>&1 || true
+    masolat="$("$USB_SEGED" tukor 2>&1)"
+    mrc=$?
+    masolat="$(tail -n 1 <<<"$masolat")"
+    printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$masolat" >> "$NAPLO"
+    if (( mrc == 0 )); then
+        "$ERTESITO" -p 2 -t floppy_disk "Éjszakai mentés kész" "$(tail -n 1 <<<"$kimenet") · $masolat" >/dev/null 2>&1 || true
+    else
+        "$ERTESITO" -p 4 -t warning,floppy_disk "Éjszakai mentés kész – a másolata NEM" "$(tail -n 1 <<<"$kimenet") · $masolat" >/dev/null 2>&1 || true
+    fi
 else
     "$ERTESITO" -p 4 -t x,floppy_disk "Az éjszakai mentés NEM sikerült" "Kilépési kód: $rc – $(tail -n 3 <<<"$kimenet")" >/dev/null 2>&1 || true
 fi
@@ -1664,12 +2006,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 $MENTES_CRON root $MENTO
 EOF
     chmod 644 /etc/cron.d/baninapro
-    ok "Éjszakai adatbázis-mentés: minden nap 03:00, az eredményről push-értesítés (napló: /var/log/baninapro-mentes.log)"
+    ok "Éjszakai adatbázis-mentés: minden nap 03:00 – másolat az USB-re ($USB_MENTES_MAPPA) és a gép saját lemezére ($BELSO_MENTES), az eredményről push-értesítés"
 }
 
 # ---- Push-értesítések (ntfy) ----------------------------------------------------
 lepes_ertesitesek() {
-    local f="$TITOK_MAPPA/ntfy" asztal
+    local f="$TITOK_MAPPA/ntfy" leiras="$CEL_HOME/BaninaPRO-ertesitesek.txt"
     install -d -m 700 "$TITOK_MAPPA"
     # a titkos csatorna: egyszer készül, utána mindig ugyanaz (aki ismeri, olvashatja az értesítéseket)
     if ! grep -qE '^NTFY_CSATORNA=baninapro-[a-z0-9]{16,}$' "$f" 2>/dev/null; then
@@ -1736,7 +2078,7 @@ EOF
     # első alkalommal próba-értesítés (a feliratkozás után ez már látszik a telefonon)
     if ! grep -q '^NTFY_PROBA_KESZ=1' "$f"; then
         if "$ERTESITO" -p 3 -t bell "Értesítések bekapcsolva" \
-            "Ez a próba-értesítés: a BaninaPRO szerver ($GEPNEV) mostantól ide jelez – leállás, újraindulás, áramszünet, hibák és helyreállás, AnyDesk / Docker, éjszakai mentés, napi jelentés ($JELENTES_IDO), belépések."; then
+            "Ez a próba-értesítés: a BaninaPRO szerver ($GEPNEV) mostantól ide jelez – leállás, újraindulás, áramszünet, hibák és helyreállás, Docker, éjszakai mentés, napi jelentés ($JELENTES_IDO), belépések."; then
             echo 'NTFY_PROBA_KESZ=1' >> "$f"
             ok "Próba-értesítés elküldve"
         else
@@ -1744,27 +2086,27 @@ EOF
         fi
     fi
 
-    # a feliratkozás leírása az asztalon is (nem kötelező: ha nem sikerül, csak figyelmeztet)
-    asztal="$(asztal_mappa)"
-    if cat > "$asztal/BaninaPRO-ertesitesek.txt" <<EOF
+    # a feliratkozás leírása a felhasználó mappájában is (az asztalhoz a light változat nem nyúl; nem kötelező:
+    # ha nem sikerül, csak figyelmeztet)
+    if cat > "$leiras" <<EOF
 BaninaPRO szerver – értesítések a telefonra (ntfy)
 
 1. Telepítsd az ingyenes „ntfy” alkalmazást (iPhone: App Store, Android: Google Play).
 2. Az alkalmazásban:  +  (Subscribe to topic)  →  Topic:  $NTFY_CSATORNA  →  Subscribe
    (a szerver az alapértelmezett ntfy.sh – nem kell átírni; az értesítéseket engedélyezd)
 3. Kész: ide érkezik minden értesítés – áramszünet / újraindulás / leállás, hibák és helyreállás (BaninaPRO,
-   AnyDesk, Docker, cron, konténerek, tárhely), az éjszakai mentés eredménye, a napi jelentés ($JELENTES_IDO),
+   Docker, cron, konténerek, tárhely), az éjszakai mentés eredménye, a napi jelentés ($JELENTES_IDO),
    a telepítő (frissítés) eredménye, belépések és kilépések.
 
 Böngészőben is olvasható: $NTFY_SZERVER/$NTFY_CSATORNA
 A csatorna neve olyan, mint egy jelszó: aki ismeri, olvashatja az értesítéseket – ne add ki.
 EOF
     then
-        chown "$CEL_FELH:" "$asztal/BaninaPRO-ertesitesek.txt" || true
-        chmod 600 "$asztal/BaninaPRO-ertesitesek.txt" || true
-        ok "Push-értesítések: ntfy alkalmazás → + → $NTFY_CSATORNA (a leírás az asztalon: BaninaPRO-ertesitesek.txt)"
+        chown "$CEL_FELH:" "$leiras" || true
+        chmod 600 "$leiras" || true
+        ok "Push-értesítések: ntfy alkalmazás → + → $NTFY_CSATORNA (a leírás: $leiras)"
     else
-        figy "A feliratkozás leírása nem került az asztalra ($asztal) – a csatorna: $NTFY_CSATORNA (az összegzésben is benne van)."
+        figy "A feliratkozás leírása nem készült el ($leiras) – a csatorna: $NTFY_CSATORNA (az összegzésben is benne van)."
     fi
 }
 veletlen_kod() { tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c "$1" || true; }
@@ -1959,12 +2301,13 @@ EOF
 orszem_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO őrszem – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'REPO=%q\nAPP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nJELENTO=%q\nERTESITO=%q\n' \
-            "$REPO" "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$JELENTO" "$ERTESITO"
+        printf 'REPO=%q\nAPP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nJELENTO=%q\nERTESITO=%q\nKEVES_HELY_MB=%q\nUSB_SEGED=%q\n' \
+            "$REPO" "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$JELENTO" "$ERTESITO" "$KEVES_HELY_MB" "$USB_SEGED"
         printf 'AUTO_FRISSITO_IDOZITOK=(%s)\n' "${AUTO_FRISSITO_IDOZITOK[*]}"
         cat <<'EOF'
-# 2 percenként: életjel és a sorban álló értesítések elküldése; a részek ellenőrzése (Docker, AnyDesk, cron, hogy az
-# automatikus frissítés ki maradjon, konténerek, tárhely, frissítés utáni újraindítás) – minden változásról
+# 2 percenként: életjel és a sorban álló értesítések elküldése; az USB-meghajtó (rajta a Docker és az adatbázis: ha
+# leválott, visszacsatolja; ha nincs a gépben, szól, és nem próbálkozik tovább); a részek ellenőrzése (Docker, cron,
+# hogy az automatikus frissítés ki maradjon, konténerek, tárhely, frissítés utáni újraindítás) – minden változásról
 # push-értesítés –, végül a BaninaPRO elérhetősége.
 # Ha nem érhető el, lépcsőzetesen helyreállítja: a hiányzó / leállt konténerek indítása → a konténerek
 # újraindítása → a Docker újraindítása (legfeljebb félóránként) → ha 1 órán át sem sikerül, a gép újraindítása
@@ -1996,6 +2339,15 @@ var_rendben() {   # legfeljebb $1 másodpercig vár, hogy helyreálljon
     rendben
 }
 mp_ota() { echo $(( $(date +%s) - $(cat "$1" 2>/dev/null || echo 0) )); }
+szabad_mb() { df -Pk / | awk 'NR == 2 { print int($4 / 1024) }'; }
+# a felesleg törlése: letöltött csomagok, rendszernaplók, használaton kívüli Docker-képek és -gyorsítótár
+# (a konténerekhez és a kötetekhez – az adatokhoz – nem nyúl)
+takarit() {
+    timeout 300 docker image prune -f >> "$NAPLO" 2>&1
+    timeout 300 docker builder prune -f >> "$NAPLO" 2>&1
+    journalctl --vacuum-size=100M >> "$NAPLO" 2>&1
+    apt-get clean
+}
 helyreallt() {
     naplo "Helyreállt: $1"
     ert -p 3 -t white_check_mark "A BaninaPRO újra elérhető" "Helyreállt $1 (kb. $(( $(mp_ota "$ALLAPOT/hiba_ota") / 60 )) perc kiesés után)."
@@ -2013,6 +2365,24 @@ if [[ -f $NAPLO ]] && (( $(stat -c %s "$NAPLO") > 5000000 )); then mv -f "$NAPLO
 # életjel (egy áramszünet hosszát ebből becsüli az induláskori értesítés) és a korábban el nem küldött értesítések
 "$ERTESITO" --eletjel >/dev/null 2>&1 || true
 "$ERTESITO" --sorbol >/dev/null 2>&1 || true
+
+# --- az USB-meghajtó: rajta van a Docker tárhelye és az adatbázis – nélküle semmi más nem segítene ---
+if [[ -x $USB_SEGED ]]; then
+    u="$("$USB_SEGED" ellenoriz 2>&1)"
+    ur=$?
+    if [[ -n $u ]]; then naplo "${u//$'\n'/ – }"; fi   # (rendben esetén nem ír semmit)
+    case $ur in
+        0)  if valtozott usb ok; then ert -p 3 -t white_check_mark "Az USB-meghajtó rendben" "Az USB-meghajtó csatolva van – a BaninaPRO adatbázisa újra elérhető."; fi ;;
+        3)  echo ok > "$ALLAPOT/allapot-usb"
+            ert -p 4 -t warning "Az USB-meghajtó újracsatolva" "Leválott (vagy kihúzták és visszadugták) – az őrszem visszacsatolta, és újraindította a Dockert."
+            var_rendben 120 || true ;;   # a konténerek induljanak el, mielőtt az elérhetőséget nézi
+        4)  if valtozott usb levalasztva; then ert -p 3 -t eject "Az USB-meghajtó leválasztva" "Most kihúzható. Visszadugva az őrszem 2 percen belül visszacsatolja, és elindítja a BaninaPRO-t (azonnal: sudo baninapro-usb csatol)."; fi
+            exit 0 ;;
+        *)  if valtozott usb hiba; then ert -p 5 -t rotating_light "Az USB-meghajtó nincs a gépben" "Rajta van a BaninaPRO adatbázisa és a Docker – a BaninaPRO most nem fut. Dugd vissza: az őrszem 2 percen belül magától visszacsatolja, és elindítja."; fi
+            naplo "Az USB-meghajtó nincs a gépben (vagy nem csatolható) – a többi helyreállítás nélküle nem segítene"
+            exit 0 ;;
+    esac
+fi
 
 # --- a részek: minden változásról értesítés ---
 # Docker
@@ -2050,7 +2420,6 @@ figyel() {   # $1 = systemd-egység, $2 = megnevezés, $3 = mi nem működik né
         ert -p 4 -t warning "$2 nem fut" "$2 leállt, és újraindítás után sem indult el – $3."
     fi
 }
-figyel anydesk "Az AnyDesk" "a távoli elérés most nem működik"
 figyel cron "A cron (ütemező)" "az éjszakai adatbázis-mentés nem fut le"
 # az automatikus rendszerfrissítés maradjon kikapcsolva (kevés a tárhely) – ha valami visszakapcsolta, újra ki
 for e in "${AUTO_FRISSITO_IDOZITOK[@]}"; do
@@ -2087,18 +2456,37 @@ if (( docker_fut )); then
         fi
     done
 fi
-# tárhely
-szabad=$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')
-if (( szabad < 5 )); then
-    if valtozott tarhely hiba; then ert -p 4 -t warning "Kevés a szabad hely" "Már csak $szabad GB szabad a lemezen."; fi
+# tárhely (MB): kevés helynél előbb a felesleg törlése, csak ha az sem segít, akkor értesít
+szabad=$(szabad_mb)
+if (( szabad < KEVES_HELY_MB )); then
+    naplo "Kevés a szabad hely ($szabad MB) – a felesleg törlése"
+    takarit
+    szabad=$(szabad_mb)
+fi
+if (( szabad < KEVES_HELY_MB )); then
+    if valtozott tarhely hiba; then ert -p 4 -t warning "Kevés a szabad hely" "Takarítás után is csak $szabad MB szabad a lemezen – ha elfogy, az adatbázis nem tud írni."; fi
 elif valtozott tarhely ok; then
-    ert -p 3 -t white_check_mark "Van elég szabad hely" "Szabad hely a lemezen: $szabad GB."
+    ert -p 3 -t white_check_mark "Van elég szabad hely" "Szabad hely a lemezen: $szabad MB."
 fi
 # rendszerfrissítés után újraindítás kellene (a gép magától nem indul újra)
 if [[ -f /var/run/reboot-required ]]; then
     if valtozott ujrainditas_kell hiba; then ert -p 2 -t information_source "Újraindítás ajánlott" "Rendszerfrissítés után a gép újraindítása szükséges – alkalmas időben: sudo reboot"; fi
 else
     valtozott ujrainditas_kell ok || true
+fi
+
+# a mentések másolatai (az USB FAT32 részére és a gép saját lemezére) – a kézzel készült mentéseké is. A naplóba csak
+# a hiba kerül (a rendben lefutó másolás nem beavatkozás – a napi jelentés az őrszem beavatkozásait sorolja).
+if [[ -x $USB_SEGED ]]; then
+    m="$("$USB_SEGED" tukor 2>&1)"
+    mr=$?
+    m="$(tail -n 1 <<<"$m")"
+    if (( mr == 0 )); then
+        if valtozott usb-masolat ok; then ert -p 3 -t white_check_mark "A mentések másolata újra rendben" "$m"; fi
+    else
+        naplo "$m"
+        if valtozott usb-masolat hiba; then ert -p 4 -t warning "A mentések másolata nem készül" "$m"; fi
+    fi
 fi
 
 # --- a BaninaPRO elérhetősége ---
@@ -2112,13 +2500,10 @@ if [[ ! -f $ALLAPOT/hiba_ota ]]; then
 fi
 naplo "A BaninaPRO nem érhető el – helyreállítás…"
 
-# kevés hely: a felesleg törlése (a konténerekhez és a kötetekhez – az adatokhoz – nem nyúl)
-if (( $(df -Pk / | awk 'NR == 2 { print int($4 / 1024) }') < 2048 )); then
+# kevés hely: a felesleg törlése
+if (( $(szabad_mb) < 2048 )); then
     naplo "Kevés a szabad hely – a felesleg törlése"
-    docker image prune -f >> "$NAPLO" 2>&1
-    docker builder prune -f >> "$NAPLO" 2>&1
-    journalctl --vacuum-size=200M >> "$NAPLO" 2>&1
-    apt-get clean
+    takarit
 fi
 # 1) a Docker fusson
 if ! timeout 30 docker info >/dev/null 2>&1; then
@@ -2198,9 +2583,9 @@ EOF
 }
 
 # Napi állapotjelentés: push-értesítés (ntfy), és ha van feladó-postafiók, e-mail is – a levelet a curl beépített
-# SMTP-küldése viszi, külön program, modul vagy licenc nem kell hozzá. Asztali ikon is készül a kézi futtatáshoz.
+# SMTP-küldése viszi, külön program, modul vagy licenc nem kell hozzá. Kézzel: sudo baninapro-jelentes kezi
+# (asztali ikont a light változat nem készít).
 lepes_jelentes() {
-    local asztal
     install -d -m 700 "$TITOK_MAPPA"
     if [[ -n $EMAIL_FELADO && -n $EMAIL_JELSZO ]]; then email_mentes; fi
     jelento_iras
@@ -2229,19 +2614,7 @@ WantedBy=timers.target
 EOF
     systemctl daemon-reload
     systemctl enable --now baninapro-jelentes.timer
-
-    # asztali ikon: az ellenőrzés és a jelentés kézzel, terminálablakban (a sudo-szabály csak erre az egy parancsra szól)
-    printf '%s ALL=(root) NOPASSWD: %s kezi\n' "$CEL_FELH" "$JELENTO" > "$TMPD/sudoers"
-    if visudo -cf "$TMPD/sudoers" >/dev/null 2>&1; then
-        install -m 440 -o root -g root "$TMPD/sudoers" /etc/sudoers.d/baninapro-jelentes
-    else
-        figy "A kézi ellenőrzés sudo-szabálya nem állítható be – az asztali ikon jelszót fog kérni."
-    fi
-    asztal="$(asztal_mappa)"
-    ikon_iras "$asztal/baninapro-ellenorzes.desktop"
-    felh mkdir -p "$CEL_HOME/.local/share/applications"
-    ikon_iras "$CEL_HOME/.local/share/applications/baninapro-ellenorzes.desktop"
-    ok "Asztali ikon: „BaninaPRO ellenőrzés” ($asztal) – kézzel is lefuttatja az ellenőrzést, és elküldi a jelentést"
+    ok "Kézi ellenőrzés és jelentés bármikor: sudo $JELENTO kezi"
 
     JELENTES_FELADO="$(sed -n 's/^EMAIL_FELADO=//p; s/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null | head -n 1 || true)"
     if [[ -n $JELENTES_FELADO ]]; then
@@ -2267,44 +2640,17 @@ email_mentes() {
     EMAIL_UJ=1
 }
 
-# a felhasználó asztal-mappája (magyarul általában ~/Asztal) az xdg-user-dirs szerint – ha kell, létrehozza.
-# A hívó $(...)-ben olvassa: a kimenetén csak az útvonal lehet, minden más (pl. a csomagtelepítésé) a naplóba megy.
-asztal_mappa() {
-    local m=""
-    command -v xdg-user-dirs-update >/dev/null || telepit_opcionalis xdg-user-dirs >&2
-    felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dirs-update >/dev/null 2>&1 || true
-    m="$(felh env LANG="$NYELV" LC_ALL="$NYELV" xdg-user-dir DESKTOP 2>/dev/null || true)"
-    if [[ -z $m || $m == "$CEL_HOME" || $m != "$CEL_HOME"/* || $m == *$'\n'* ]]; then m="$CEL_HOME/Asztal"; fi
-    felh mkdir -p "$m" >&2
-    echo "$m"
-}
-ikon_iras() {
-    cat > "$1" <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=BaninaPRO ellenőrzés
-Comment=A szerver ellenőrzése, és az állapotjelentés elküldése (push-értesítés, e-mail)
-Exec=sudo $JELENTO kezi
-Icon=utilities-system-monitor
-Terminal=true
-Categories=System;Monitor;
-EOF
-    chown "$CEL_FELH:" "$1"
-    chmod 755 "$1"
-}
-
 # A jelentő script (a beállításokkal együtt íródik ki)
 jelento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO állapotjelentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\nERTESITO=%q\n' \
-            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT" "$ERTESITO"
+        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\nERTESITO=%q\nKEVES_HELY_MB=%q\nUSB_SEGED=%q\n' \
+            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT" "$ERTESITO" "$KEVES_HELY_MB" "$USB_SEGED"
         printf 'AUTO_FRISSITO_IDOZITOK=(%s)\n' "${AUTO_FRISSITO_IDOZITOK[*]}"
         cat <<'EOF'
 # Ellenőrzi a szervert, és az eredményt elküldi push-értesítésként (rövid összefoglaló) és e-mailben (ha van feladó):
 #   baninapro-jelentes napi             minden nap 03:30-kor (systemd-időzítő)
-#   baninapro-jelentes kezi             az asztali ikonról – ugyanez, a képernyőn is
+#   baninapro-jelentes kezi             kézzel (sudo baninapro-jelentes kezi) – ugyanez, a képernyőn is
 #   baninapro-jelentes proba            próba-jelentés (a telepítő küldi, amikor az e-mailt beállítja)
 #   (a riasztásról az őrszem maga küld push-értesítést – a riasztas mód csak e-mailt küld)
 #   baninapro-jelentes riasztas SZÖVEG  az őrszem értesítése (nem tudta helyreállítani / helyreállt)
@@ -2350,12 +2696,21 @@ else
 fi
 mentes_naplo="$(tail -n 1 /var/log/baninapro-mentes.log 2>/dev/null || true)"
 
+# --- az USB-meghajtó (rajta a Docker és az adatbázis) és a mentések másolatai ---
+usb=()
+if [[ -x $USB_SEGED ]]; then
+    "$USB_SEGED" tukor >/dev/null 2>&1 || true
+    while IFS= read -r sor; do
+        if [[ $sor == '!'* ]]; then pr "${sor#!}"; usb+=("HIBA: ${sor#!}"); else usb+=("$sor"); fi
+    done < <("$USB_SEGED" allapot 2>&1)
+fi
+
 # --- a gép ---
-szabad_gb="$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
-(( szabad_gb >= 5 )) || pr "Kevés a szabad hely a lemezen: $szabad_gb GB"
+szabad_mb="$(df -Pk / | awk 'NR == 2 { print int($4 / 1024) }')"
+(( szabad_mb >= KEVES_HELY_MB )) || pr "Kevés a szabad hely a lemezen: $szabad_mb MB"
 read -r fut _ < /proc/uptime
 fut=${fut%.*}
-for sz in docker containerd cron baninapro-orszem.timer baninapro-belepesfigyelo anydesk; do
+for sz in docker containerd cron baninapro-orszem.timer baninapro-belepesfigyelo; do
     if systemctl is-active --quiet "$sz"; then allapotok+=("$sz: fut"); else allapotok+=("$sz: NEM FUT"); pr "Nem fut: $sz"; fi
 done
 for k in "$APP_KONTENER" "$DB_KONTENER" baninapro-phpmyadmin; do
@@ -2375,9 +2730,8 @@ if (( ${#auto_be[@]} )); then
     auto="BE: ${auto_be[*]}"
     pr "Az automatikus frissítés be van kapcsolva (${auto_be[*]}) – az őrszem kikapcsolja"
 else
-    auto="ki – a rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül"
+    auto="ki – a rendszer csak a szerver_beallitas_light.sh kézi futtatásakor frissül"
 fi
-anydesk_id="$(timeout 15 anydesk --get-id 2>/dev/null | tr -dc '0-9' || true)"
 
 if (( ${#problemak[@]} )); then allapot="FIGYELEM – ${#problemak[@]} probléma"; else allapot="MINDEN RENDBEN"; fi
 fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod").txt"
@@ -2396,6 +2750,11 @@ fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod"
     echo "  Ma éjjel:       $mentes"
     echo "  Mentések:       ${db_mentes:-0} db"
     if [[ -n $mentes_naplo ]]; then echo "  Mentési napló:  $mentes_naplo"; fi
+    if (( ${#usb[@]} )); then
+        echo
+        echo "USB-meghajtó"
+        printf '  %s\n' "${usb[@]}"
+    fi
     echo
     echo "Gép"
     echo "  Név / IP:       $(hostname) / ${lan:-ismeretlen}"
@@ -2409,7 +2768,6 @@ fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod"
     echo
     echo "Szolgáltatások"
     printf '  %s\n' "${allapotok[@]}"
-    echo "  AnyDesk ID:     ${anydesk_id:-–}"
     echo
     echo "Konténerek"
     printf '  %s\n' "${kont[@]}"
@@ -2511,7 +2869,7 @@ lepes_ellenorzes() {
     local oldal="$TMPD/oldal.html" kod="" felhasznalok="" api="" i k s allapot lan pma_db
     # kevés a tárhely: a telepítéshez letöltött csomagfájlok törlése (a telepített programok maradnak)
     apt-get clean >/dev/null 2>&1 || true
-    ok "Letöltött csomagfájlok törölve – szabad hely: $(szabad_gb) GB"
+    ok "Letöltött csomagfájlok törölve – szabad hely: $(hely_szoveg)"
     AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul"
     for i in $(seq 1 60); do
         fut ellenorzo_lekeres || true
@@ -2594,13 +2952,24 @@ lepes_ellenorzes() {
             figy "$k állapota: $allapot"
         fi
     done
-    for s in docker containerd anydesk lightdm baninapro-orszem.timer baninapro-jelentes.timer \
+    for s in docker containerd baninapro-orszem.timer baninapro-jelentes.timer \
         baninapro-indulas.service baninapro-leallas.service baninapro-belepesfigyelo.service; do
         if systemctl is-enabled --quiet "$s" 2>/dev/null; then ok "$s: a géppel együtt indul"
         else figy "$s: nem indul automatikusan"; fi
     done
     if systemctl is-active --quiet baninapro-belepesfigyelo.service; then ok "A belépésfigyelő fut (be- és kilépésekről értesít)"
     else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
+    # az USB-meghajtó: csatolva, rajta a Docker tárhelye; a mentések másolatai; a jelszavak az USB-n is (új szerverhez)
+    if docker_usb_n_van; then ok "USB-meghajtó csatolva – rajta a Docker tárhelye és az adatbázis ($(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true) → $USB_ADAT)"
+    else figy "A Docker tárhelye nincs az USB-meghajtóról befűzve (sudo baninapro-usb ellenoriz)."; fi
+    for s in containerd docker; do
+        if systemctl show -p RequiresMountsFor --value "$s.service" 2>/dev/null | grep -q /var/lib/docker; then ok "$s: csak az USB-meghajtóval indul"
+        else figy "$s: az USB-meghajtó nélkül is elindulhat"; fi
+    done
+    AKT_MUVELET="a mentések másolása az USB-re és a gép saját lemezére"
+    if fut "$USB_SEGED" tukor; then ok "$(tail -n 1 "$NAPLO")"; else figy "$(tail -n 1 "$NAPLO")"; fi
+    AKT_MUVELET=""
+    usb_titkok_ment
     # a push-értesítések: a sorban álló (még el nem küldött) értesítések elküldése – ha nem megy, nincs internet
     fut "$ERTESITO" --sorbol || true
     s="$(find /var/spool/baninapro-ertesites -name '*.json' 2>/dev/null | wc -l)"
@@ -2653,22 +3022,10 @@ web_cim() {
 }
 
 osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód (a script hibával állt le)
-    local rc=${1:-0} i e fv suly nev jel szin megj id="" v="" f app pma mysql lan mdns
+    local rc=${1:-0} i e fv suly nev jel szin megj v="" f app pma mysql lan mdns
     OSSZEGZES_KESZ=1
     AKT_LEPES="összegzés" AKT_ROVID="összegzés"
-    if (( rc == 0 )); then
-        if command -v anydesk >/dev/null; then
-            AKT_MUVELET="AnyDesk azonosító lekérése"
-            for i in 1 2 3; do
-                fut sh -c 'timeout 15 anydesk --get-id > "$1" 2>/dev/null' _ "$TMPD/anydesk_id" || true
-                id="$(tr -dc '0-9' < "$TMPD/anydesk_id" 2>/dev/null || true)"
-                if [[ -n $id && $id != 0 ]]; then break; fi
-                varj 5
-            done
-            AKT_MUVELET=""
-        fi
-        kesz_sav
-    fi
+    if (( rc == 0 )); then kesz_sav; fi
 
     cim "ÖSSZEGZÉS"
     i=0
@@ -2722,12 +3079,16 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     if (( ELSO_INDITAS )); then
         osz "" "  Első belépés a BaninaPRO-ba: $ADMIN_KEZDO  → belépés után azonnal változtasd meg!"
     fi
-    osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
+    if systemctl is-active --quiet ssh.socket ssh 2>/dev/null; then
+        osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
+    else
+        osz "" "  A gép IP-címe: ${lan:-ismeretlen}"
+    fi
     osz "" "  (Tipp: a routerben foglald le ezt az IP-címet a szervernek – DHCP-foglalás –, hogy ne változzon.)"
     if [[ -z $NTFY_CSATORNA ]]; then NTFY_CSATORNA="$(sed -n 's/^NTFY_CSATORNA=//p' "$TITOK_MAPPA/ntfy" 2>/dev/null || true)"; fi
     if [[ -n $NTFY_CSATORNA ]]; then
         osz "" "  Értesítések a telefonra: ntfy alkalmazás → + (Subscribe to topic) → Topic: $NTFY_CSATORNA"
-        osz "" "                 (böngészőben: $NTFY_SZERVER/$NTFY_CSATORNA – leírás az asztalon: BaninaPRO-ertesitesek.txt)"
+        osz "" "                 (böngészőben: $NTFY_SZERVER/$NTFY_CSATORNA – leírás: $CEL_HOME/BaninaPRO-ertesitesek.txt)"
     fi
     if [[ -n $JELENTES_FELADO ]]; then
         osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor push-értesítésként és e-mailben → $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
@@ -2735,9 +3096,15 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
         osz "" "  Napi jelentés: minden nap $JELENTES_IDO-kor push-értesítésként (e-mailben is: sudo bash $(basename "$SCRIPT") --email)"
     fi
     osz "" "  Az adatbázis root-jelszava (ha valaha kellene): sudo cat $TITOK_MAPPA/titkok"
-    osz "" "  Kézi ellenőrzés: az asztalon a „BaninaPRO ellenőrzés” ikon (vagy: sudo $JELENTO kezi)"
+    if [[ -n $USB_ADAT_UUID ]]; then
+        osz "" "  USB-meghajtó:  rajta a Docker és az adatbázis ($USB_ADAT_CIMKE, $(df -hP "$USB_ADAT" 2>/dev/null | awk 'NR == 2 { print $4 }') szabad)"
+        osz "" "                 és minden mentés másolata: $USB_MENTES_CIMKE → BaninaPRO-mentesek – Windows / Mac gépen is olvasható"
+        osz "" "                 (a legutóbbi mentések a gép saját lemezén is: $BELSO_MENTES)"
+        osz "" "  Biztonságos eltávolítás: sudo baninapro-usb levalaszt  (visszadugva magától visszacsatolódik)"
+    fi
+    osz "" "  Kézi ellenőrzés: sudo $JELENTO kezi"
     osz "" "  Őrszem:        2 percenként ellenőriz, és ha kell, helyreállít (napló: /var/log/baninapro-orszem.log)"
-    osz "" "  AnyDesk ID:    ${id:-(újraindítás után: sudo anydesk --get-id)}"
+    osz "" "  Szabad hely:   $(hely_szoveg) a gép saját lemezén (az őrszem $KEVES_HELY_MB MB alatt takarít és értesít)"
     osz "" "  Frissítés:     cd \"$SCRIPT_DIR\" && sudo bash $(basename "$SCRIPT")"
     osz "" "  Napló:         $NAPLO"
 
@@ -2759,10 +3126,10 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     vegeredmeny_ertesites "$rc"
     if (( rc )); then return 0; fi
 
-    if [[ -f /var/run/reboot-required ]] || ! systemctl is-active --quiet lightdm; then UJRAINDITAS=1; fi
+    if [[ -f /var/run/reboot-required ]]; then UJRAINDITAS=1; fi
     if (( UJRAINDITAS )); then
         ki ""
-        ki "  Újraindítás kell: utána indul az asztal, a magyar nyelv és az automatikus belépés."
+        ki "  Újraindítás kell: utána lesz érvényes az új gépnév vagy a rendszerfrissítés (pl. új kernel)."
         if [[ -t 0 ]]; then
             printf '  Újraindítsam most? [I/n] (60 mp múlva magától igen): ' >&3
             read -r -t 60 v || true
@@ -2785,7 +3152,7 @@ vegeredmeny_ertesites() {   # $1 = 0: sikeres; különben a kilépési kód
     if (( $1 )); then
         if (( AKT_I > 0 )); then IFS='|' read -r _ _ nev <<<"${LEPESEK[AKT_I - 1]}"; fi
         "$ERTESITO" -p 4 -t x "Telepítés / frissítés: HIBA" \
-            "A szerver_beallitas.sh megállt${nev:+ ($AKT_I. lépés: $nev)}: ${HIBA_UZENET%%$'\n'*}. A hiba javítása után újrafuttatható. Napló: $NAPLO" \
+            "A $(basename "$SCRIPT") megállt${nev:+ ($AKT_I. lépés: $nev)}: ${HIBA_UZENET%%$'\n'*}. A hiba javítása után újrafuttatható. Napló: $NAPLO" \
             >/dev/null 2>&1 || true
         return 0
     fi
@@ -2817,8 +3184,14 @@ main() {
         exit 1
     fi
     local a
+    ARGOK=("$@")   # egy újraindított (frissült vagy letöltött) példány is ugyanezekkel fut
     for a in "$@"; do
-        if [[ $a == --email ]]; then EMAIL_KERDES=1; fi   # a feladó-postafiók (újra)beállítása
+        case $a in
+            --email)        EMAIL_KERDES=1 ;;          # a feladó-postafiók (újra)beállítása
+            --usb-formazas) USB_FORMAZAS=1 ;;          # a nem üres pendrive formázása is
+            --usb=*)        USB_LEMEZ="${a#--usb=}" ;; # ha a pendrive nem /dev/sdb néven jelenik meg
+            *) ;;
+        esac
     done
     naplo_inditas
     kepernyo_beallitas
@@ -2830,7 +3203,8 @@ main() {
     flock -w 900 8 || true
     LEPES_KEZDET=$SECONDS
     printf '\n\n######## %s – futás indul ########\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-    printf '\n%sBaninaPRO szerver – telepítés és frissítés%s  (%s)\n' "$C_F" "$C_N" "$(date '+%Y-%m-%d %H:%M')" >&3
+    printf '\n%sBaninaPRO szerver – telepítés és frissítés (light: asztal és AnyDesk nélkül, kevés helyhez)%s  (%s)\n' \
+        "$C_F" "$C_N" "$(date '+%Y-%m-%d %H:%M')" >&3
 
     elofeltetelek
     frissites_elokeszites "$@"
