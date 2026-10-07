@@ -151,14 +151,16 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
 * **Állapot vizsgálat – a számlák állapota és a cég egyenlege egy adott napon (1.19):** az időszak-szűrő *Dátum*
   választójának 4. lehetősége (a cég oldalán, a kötés oldalán és a kimenő számláknál is). Kiválasztva a -tól / -ig
   mellett megjelenik a **Vizsgált időpont** mező.
-  * Az időszak a számla **kelte** szerint szűr. A találatok azzal az állapottal látszanak, ami a vizsgált napon volt:
+  * Az időszak a számla **teljesítési dátuma** szerint szűr (1.19.1-től; az 1.19.0 még a kelt szerint). A találatok
+    azzal az állapottal látszanak, ami a vizsgált napon volt:
     * **FIZETETLEN** – azon a napon még nem volt kifizetve (akkor is, ha azóta kifizették). A hátralékát csak az
       addig érkezett részteljesítések csökkentik;
     * **FIZETVE / BESZÁMÍTVA** – a fizetés napja (bejövőnél az utalás dátuma, kimenőnél a bankkivonati hozzárendelés
       dátuma) legkésőbb a vizsgált nap;
-    * **MÉG NEM LÉTEZETT** – a kelte a vizsgált nap utáni. Az egyenlegbe nem számít bele.
+    * **MÉG NEM LÉTEZETT** – a teljesítése a vizsgált nap utáni (akkor is, ha a kelte korábbi). Az egyenlegbe nem
+      számít bele.
   * Példa: a 2026.01.01-jén kelt, 01.10-i teljesítésű számlát 2026.01.15-én fizették ki. Időszak 2026.01.01. –
-    2026.01.31., vizsgált időpont 2026.01.14. → a számla **FIZETETLEN**, a 01.14. után kelt számlák **MÉG NEM
+    2026.01.31., vizsgált időpont 2026.01.14. → a számla **FIZETETLEN**, a 01.14. utáni teljesítésű számlák **MÉG NEM
     LÉTEZETT** állapotúak.
   * A *Szűrés* után a fül magától a **MIND**-re vált (a vizsgált napon bármilyen számla lehet, olyan is, amit azóta
     fizettünk). Utána a fülek a vizsgált napi állapot szerint válogatnak: NYITOTT = fizetetlen, FIZETETT / FIZETVE =
@@ -167,7 +169,7 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   * A **lap tetején az egyenleg** is a vizsgált napra szól (a kötés oldalán a kötésé, a kimenő oldalon az „Ennyivel
     tartozik nekem” helyén a cégé): teljes forgalom · fizetetlen · fizetett, a még nem létezett számlák száma külön.
     A cég oldalán a kötéskártyák zöld sávja a kötés vizsgált napi fizetetlen összegét mutatja.
-  * A sorokban a tényleges fizetési nap is látszik (*fizetve 2026.01.15.* – szürkén, ha a vizsgált nap utáni). A régi,
+  * A sorokban a teljesítés dátuma (*telj.*) és a tényleges fizetési nap is látszik (*fizetve 2026.01.15.* – szürkén, ha a vizsgált nap utáni). A régi,
     Excelből FIZETVE-ként importált bejövő számláknak nincs fizetési dátuma: náluk a fizetési határidő számít
     (*határidő ~*), ahogy a kimenő importnál is.
   * **„Állapot a kosárba”:** a teljes vizsgálat egy tételként kerül a nyomtatási kosárba (lásd a Nyomtatás résznél).
@@ -175,7 +177,7 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
     beállított dátumok a mezőkben maradnak). Egy sor számla-linkje kilép az állapot vizsgálatból, és a számla
     kártyáját mutatja.
   * Adatbázis-módosítás nem kellett: a rendszer a meglévő dátumokból számol (kelt, utalás / fizetés dátuma,
-    részteljesítések dátuma), adatot nem ír.
+    részteljesítések dátuma, teljesítés), adatot nem ír.
 * **UTALÁSHOZ gomb** a kötés sorában (minden FIZETENDŐ számláját hozzáadja) és a számla sorában.
   Hozzáadáskor felugró ablak: *UTALÁSHOZ ADVA! UTALÁS ÖSSZEGE EDDIG: …*
 * **Utalás dátuma:** FIZETVE / BESZÁMÍTVA számlánál a kártyán zölddel látszik *Utalva: 2026.09.25.* (az utalás
@@ -393,7 +395,7 @@ kattintással odaugrik.
   Utána a jobb alsó nyomtató gombbal jön a PDF, mint eddig.
 * **Állapot vizsgálat a PDF-ben (1.19):** az állapot vizsgálat (*Bejövő számlák* rész) sárga **„Állapot a kosárba
   (N számla)”** gombja a teljes vizsgálatot egy tételként teszi a kosárba. A PDF elején saját, narancssárga szakasz
-  lesz belőle (*Állapot 2026.01.14. – cég neve*, bejövő / kimenő, kelt-időszak, kötés):
+  lesz belőle (*Állapot 2026.01.14. – cég neve*, bejövő / kimenő, teljesítési időszak, kötés):
   * a vizsgált napi **egyenleg** pénznemenként: számlák · összes pénzforgalom · fizetett / beszámított · ebből
     részteljesítés · **NYITOTT a vizsgált napon**;
   * a számlák a vizsgált napi állapotukkal (FIZETETLEN / FIZETVE / BESZÁMÍTVA / MÉG NEM LÉTEZETT), a tényleges fizetési
@@ -549,6 +551,12 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.19.0-ról 1.19.1-re (az állapot vizsgálat a teljesítés dátuma szerint):** adatbázis-módosítás
+nincs. Az állapot vizsgálat időszaka a számla teljesítési dátuma szerint szűr (eddig a kelte szerint), és a
+**MÉG NEM LÉTEZETT** állapotot is a teljesítés dátuma dönti el. Ha az 1.19.0-t már feltöltötted, elég a frissített
+`includes/api_riport.php`, `includes/nyomtatas.php`, `includes/config.php` (csak a verziószám), `assets/app.js` és
+`TELEPITES.md`; ha még nem, töltsd fel az 1.19.0 fájljait is (lásd lent).
 
 **Frissítés 1.18.2-ről 1.19.0-ra (állapot vizsgálat: a számlák állapota és a cég egyenlege egy adott napon):**
 adatbázis-módosítás **nincs** – a rendszer a meglévő dátumokból számol, az adatokhoz nem nyúl. Telefonon az
@@ -882,4 +890,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.19.0 (2026-10-07)
+Verzió: 1.19.1 (2026-10-07)

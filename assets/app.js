@@ -393,7 +393,7 @@
   // A kosár csak azt jegyzi meg, MELY sorokat kérted ({t, id, cimke}); a PDF a
   // szerveren, mindig friss adatokból készül. Felhasználónként külön kosár, felső korlát nélkül.
   // osszevetes: az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak a 'q' mezőben)
-  // allapot: állapot vizsgálat (1.19) – irány + cég (+ kötés) + kelt szerinti időszak + vizsgált nap a 'q' mezőben
+  // allapot: állapot vizsgálat (1.19) – irány + cég (+ kötés) + teljesítés szerinti időszak + vizsgált nap a 'q' mezőben
   const KOSAR_TIPUS = { osszevetes: 'Összevetés', allapot: 'Állapot vizsgálat', ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
   /** A lekérdezést hordozó kosártételek 'q' mezője (típusonként tisztítva) */
   const KOSAR_Q = {
@@ -489,10 +489,10 @@
     return { t: 'allapot', id: lekerdezesId(`${q.i}|${q.ceg}|${q.kotes}|${q.tol}|${q.ig}|${q.nap}`), cimke, q };
   }
   /** Időszak-szűrő sáv (tól–ig + dátummező) – a szűrt sorok egy gombbal a nyomtatási kosárba */
-  // allapot (1.19): ÁLLAPOT VIZSGÁLAT – a kelt szerint az időszakba eső számlák a VIZSGÁLT IDŐPONT-beli állapotukkal
+  // allapot (1.19): ÁLLAPOT VIZSGÁLAT – a teljesítés dátuma szerint az időszakba eső számlák a VIZSGÁLT IDŐPONT-beli állapotukkal
   const IDOSZAK_MEZOK = { kelt: 'Kelt', teljesites: 'Teljesítés', hatarido: 'Határidő', allapot: 'Állapot vizsgálat' };
   /** Az időszak-szűrés címkéje: „Kelt 2026.01.01. – 2026.01.31.”, állapot vizsgálatnál „… · 2026.01.14. napi állapot” */
-  const idoszakCimke = (e) => (e.mezo === 'allapot' ? `Kelt ${fmtDatum(e.tol)} – ${fmtDatum(e.ig)} · ${fmtDatum(e.nap)} napi állapot` : `${IDOSZAK_MEZOK[e.mezo]} ${fmtDatum(e.tol)} – ${fmtDatum(e.ig)}`);
+  const idoszakCimke = (e) => (e.mezo === 'allapot' ? `Teljesítés ${fmtDatum(e.tol)} – ${fmtDatum(e.ig)} · ${fmtDatum(e.nap)} napi állapot` : `${IDOSZAK_MEZOK[e.mezo]} ${fmtDatum(e.tol)} – ${fmtDatum(e.ig)}`);
   function idoszakSav(o) {
     const sz = o.ertek || {};
     const ev = App.ma.slice(0, 4);
@@ -501,12 +501,12 @@
       <div class="cim">${I.calendar} ${esc(o.cim || 'Számlák időszak szerint')}</div>
       <div class="mezok${allapot ? ' allapot' : ''}">
         <div class="mezo"><label>Dátum</label><select name="mezo" data-act="idoszak-mezo">${Object.keys(IDOSZAK_MEZOK).map((k) => `<option value="${k}" ${(sz.mezo || 'kelt') === k ? 'selected' : ''}>${IDOSZAK_MEZOK[k]}</option>`).join('')}</select></div>
-        <div class="mezo"><label><span class="${allapot ? '' : 'rejtett'}" data-allapot-mutat>Kelt </span>-tól</label><input type="date" name="tol" value="${esc(sz.tol || ev + '-01-01')}"></div>
+        <div class="mezo"><label><span class="${allapot ? '' : 'rejtett'}" data-allapot-mutat>Telj. </span>-tól</label><input type="date" name="tol" value="${esc(sz.tol || ev + '-01-01')}"></div>
         <div class="mezo"><label>-ig</label><input type="date" name="ig" value="${esc(sz.ig || App.ma)}"></div>
         <div class="mezo${allapot ? '' : ' rejtett'}" data-allapot-mutat><label>Vizsgált időpont</label><input type="date" name="nap" value="${esc(sz.nap || App.ma)}"></div>
         <button class="btn btn-sm" type="button" data-act="${esc(o.act)}" ${o.data || ''}>${I.filter} Szűrés</button>
       </div>
-      <div class="allapot-sugo${allapot ? '' : ' rejtett'}" data-allapot-mutat>A <b>kelt</b> szerint az időszakba eső számlák azzal az állapottal, ami a <b>vizsgált időpontban</b> volt: fizetetlen, fizetve / beszámítva, vagy még nem létezett. Az egyenleg is erre a napra szól, a fül MIND-re vált.</div>
+      <div class="allapot-sugo${allapot ? '' : ' rejtett'}" data-allapot-mutat>A <b>teljesítés dátuma</b> szerint az időszakba eső számlák azzal az állapottal, ami a <b>vizsgált időpontban</b> volt: fizetetlen, fizetve / beszámítva, vagy még nem létezett (a teljesítése későbbi). Az egyenleg is erre a napra szól, a fül MIND-re vált.</div>
       <div class="eredmeny" data-idoszak-eredmeny>${o.eredmeny || ''}</div>
     </div>`;
   }
@@ -1273,19 +1273,19 @@
       if (ful === 'FIZETETT' || ful === 'FIZETVE') return `<div class="ce-pn" data-pn="${esc(pn)}">${sor('Fizetett összesen', e.fizetett, pn, 'fo fizetett')}<div class="ce-meta">${e.fizetett_db} fizetett / beszámított számla${e.reszt ? ` · ebből részteljesítés ${fmtOsszeg(e.reszt, pn)}` : ''}</div></div>`;
       return `<div class="ce-pn harom" data-pn="${esc(pn)}">${sor('Teljes forgalom', e.teljes, pn, 'fo')}${sor(allapot ? 'Fizetetlen' : 'Nyitott', e.nyitott, pn, 'nyitott')}${sor('Fizetett', e.fizetett, pn, 'fizetett')}<div class="ce-meta">${e.db} számla: ${e.nyitott_db} ${allapot ? 'fizetetlen' : 'nyitott'} · ${e.fizetett_db} fizetett / beszámított${nemLetezett(e)}</div></div>`;
     };
-    const hatokor = !isz ? 'teljes időszak' : allapot ? `<b>${fmtDatum(isz.nap)}</b> napi állapot · kelt ${fmtDatum(isz.tol)} – ${fmtDatum(isz.ig)}` : `${esc(IDOSZAK_MEZOK[isz.mezo])} szerint: ${fmtDatum(isz.tol)} – ${fmtDatum(isz.ig)}`;
+    const hatokor = !isz ? 'teljes időszak' : allapot ? `<b>${fmtDatum(isz.nap)}</b> napi állapot · teljesítés ${fmtDatum(isz.tol)} – ${fmtDatum(isz.ig)}` : `${esc(IDOSZAK_MEZOK[isz.mezo])} szerint: ${fmtDatum(isz.tol)} – ${fmtDatum(isz.ig)}`;
     return `<div class="kartya ceg-egyenleg${allapot ? ' allapot' : ''}">
       <div class="ce-fej"><span class="ce-cim">${I.scale} ${esc(cim || 'A cég egyenlege')}</span><span class="ce-hatokor">${hatokor}</span></div>
       ${pnek.length ? pnek.map(blokk).join('') : `<div class="ce-meta">${isz ? 'Ebben az időszakban nincs számla.' : 'Még nincs számla.'}</div>`}
     </div>`;
   }
-  /** Állapot vizsgálat: egy számla sora – a vizsgált napi állapot, a kelt, a tényleges fizetési nap és a vizsgált napi hátralék */
+  /** Állapot vizsgálat: egy számla sora – a vizsgált napi állapot, a teljesítés dátuma, a tényleges fizetési nap és a vizsgált napi hátralék */
   function allapotSor(s, nap, link, tipus) {
     const nincs = s.allapot === 'MEG_NEM_LETEZETT';
     const fizetetlen = s.allapot === 'FIZETETLEN';
     const ertek = fizetetlen ? s.hatralek_napon : s.osszeg;
     const fiz = s.fizetve_datum ? `<span class="fiz-nap${s.fizetve_datum <= nap ? ' korabban' : ''}" title="${s.fizetve_becsult ? 'A régi, importált számlának nincs fizetési dátuma – a fizetési határidő számít' : 'A tényleges fizetés napja'}">${s.fizetve_becsult ? 'határidő ~' : 'fizetve'} ${fmtDatum(s.fizetve_datum)}</span>` : '';
-    return `<div class="szamla-sor${nincs ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><a class="k" href="${link(s)}" title="Ugrás a számlához">${esc(s.kod)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}<span class="kicsi szurke">kelt ${fmtDatum(s.kelt)}</span>${fiz}${fizetetlen && s.reszt_napon > 0 ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, s.penznem)} · részt. −${fmtOsszeg(s.reszt_napon, s.penznem)}</span>` : ''}</div><span class="o${negOszt(ertek)}">${fmtOsszeg(ertek, s.penznem)}</span>${nyomtatGomb(tipus, s.id, `${s.kod} · „${s.szamlaszam}”`)}</div>`;
+    return `<div class="szamla-sor${nincs ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><a class="k" href="${link(s)}" title="Ugrás a számlához">${esc(s.kod)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}<span class="kicsi szurke">telj. ${fmtDatum(s.teljesites_datum)}</span>${fiz}${fizetetlen && s.reszt_napon > 0 ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, s.penznem)} · részt. −${fmtOsszeg(s.reszt_napon, s.penznem)}</span>` : ''}</div><span class="o${negOszt(ertek)}">${fmtOsszeg(ertek, s.penznem)}</span>${nyomtatGomb(tipus, s.id, `${s.kod} · „${s.szamlaszam}”`)}</div>`;
   }
   /**
    * Állapot vizsgálat eredménye a szűrő-sávban (mindhárom oldalon): összegzés, „Állapot a kosárba” (egy tétel: a teljes
@@ -1303,7 +1303,7 @@
       <button class="btn btn-outline btn-sm" type="button" data-act="${o.torol}">${I.x} Szűrés törlése</button>
       ${lista.length > max ? `<div class="kicsi szurke">A lenti lista az első ${max} számlát mutatja, a PDF mindet tartalmazza.</div>` : ''}
       ${lista.length ? `<div class="reszletes idoszak-lista">${lista.slice(0, max).map((s) => allapotSor(s, d.nap, o.link, o.tipus)).join('')}</div>`
-        : `<div class="kicsi szurke">${d.szamlak.length ? 'Ezen a fülön nincs számla – válts a MIND fülre.' : 'A kelt szerint ebben az időszakban nincs számla.'}</div>`}`;
+        : `<div class="kicsi szurke">${d.szamlak.length ? 'Ezen a fülön nincs számla – válts a MIND fülre.' : 'A teljesítés dátuma szerint ebben az időszakban nincs számla.'}</div>`}`;
   }
   /** Az állapot vizsgálat kosár-tétele + címkéje a szűrő-sáv adatai közé („Állapot a kosárba” gomb) */
   function allapotSavAdat(sav, d, nev) {

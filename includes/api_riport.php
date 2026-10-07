@@ -263,11 +263,11 @@ function allapot_gyujt(array &$o, array $s): void
 }
 
 /**
- * ÁLLAPOT VIZSGÁLAT: egy cég bejövő vagy kimenő számlái (bejövőnél egy kötésre is szűkíthető), amelyek KELTE a
+ * ÁLLAPOT VIZSGÁLAT: egy cég bejövő vagy kimenő számlái (bejövőnél egy kötésre is szűkíthető), amelyek TELJESÍTÉSI DÁTUMA a
  * tól–ig időszakba esik – azzal az állapottal és egyenleggel, ami a VIZSGÁLT NAPON ($nap) volt érvényes.
  * Az oldal és a PDF (nyomtatási kosár) is ezt használja, így a kettő mindig ugyanazt mutatja.
  * Új adat nem kell hozzá, a meglévő dátumokból számol:
- *   - kelt > nap                                             → MEG_NEM_LETEZETT (az egyenlegbe nem számít bele)
+ *   - teljesítés > nap                                       → MEG_NEM_LETEZETT (az egyenlegbe nem számít bele)
  *   - most rendezett (FIZETVE / BESZÁMÍTVA), fizetés napja ≤ nap → FIZETVE / BESZAMITVA
  *   - minden más                                             → FIZETETLEN; hátraléka = összeg − a nap végéig érkezett
  *                                                              részteljesítések
@@ -299,8 +299,8 @@ function allapot_vizsgalat_adat(string $irany, int $cegId, ?int $kotesId, string
                FROM bejovo_szamlak b
                JOIN kotesek k ON k.id = b.kotes_id
                LEFT JOIN utalasok u ON u.id = b.utalas_id
-              WHERE k.ceg_id = ? AND b.kelt BETWEEN ? AND ?' . ($kotes ? ' AND b.kotes_id = ?' : '') . '
-              ORDER BY b.kelt, b.kod',
+              WHERE k.ceg_id = ? AND b.teljesites_datum BETWEEN ? AND ?' . ($kotes ? ' AND b.kotes_id = ?' : '') . '
+              ORDER BY b.teljesites_datum, b.kod',
             array_merge([$cegId, $tol, $ig], $kotes ? [$kotes['id']] : [])
         );
     } else {
@@ -309,8 +309,8 @@ function allapot_vizsgalat_adat(string $irany, int $cegId, ?int $kotesId, string
                     bk.azonosito AS banki_azonosito
                FROM kimeno_szamlak s
                LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id
-              WHERE s.ceg_id = ? AND s.kelt BETWEEN ? AND ?
-              ORDER BY s.kelt, s.kod',
+              WHERE s.ceg_id = ? AND s.teljesites_datum BETWEEN ? AND ?
+              ORDER BY s.teljesites_datum, s.kod',
             [$cegId, $tol, $ig]
         );
     }
@@ -331,7 +331,7 @@ function allapot_vizsgalat_adat(string $irany, int $cegId, ?int $kotesId, string
         // csak a vizsgált nap végéig érkezett részteljesítések
         $rl = array_values(array_filter($resztek[$id] ?? [], fn(array $r): bool => $r['datum'] <= $nap));
         $reszt = round(array_sum(array_column($rl, 'osszeg')), 2);
-        if ($s['kelt'] > $nap) {
+        if ($s['teljesites_datum'] > $nap) {
             [$allapot, $hatralek, $fizetett, $rl, $reszt] = ['MEG_NEM_LETEZETT', 0.0, 0.0, [], 0.0];
         } elseif ($rendezett && $fizNap <= $nap) {
             [$allapot, $hatralek, $fizetett] = [$s['statusz'], 0.0, $o];
@@ -380,6 +380,6 @@ function act_allapot_vizsgalat(array $be): array
     }
     $d = allapot_vizsgalat_adat($irany, $cegId, $kotesId, $tol, $ig, $nap);
     naplo('ALLAPOT_VIZSGALAT', ($irany === 'BEJOVO' ? 'bejövő' : 'kimenő') . " számlák, cég #{$cegId} ({$d['ceg']['nev']})"
-        . ($d['kotes'] ? ", kötés {$d['kotes']['kod']}" : '') . ", kelt $tol – $ig, állapot $nap napon: " . count($d['szamlak']) . ' db');
+        . ($d['kotes'] ? ", kötés {$d['kotes']['kod']}" : '') . ", teljesítés $tol – $ig, állapot $nap napon: " . count($d['szamlak']) . ' db');
     return $d;
 }

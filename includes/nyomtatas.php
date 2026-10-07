@@ -192,7 +192,7 @@ function ny_megjegyzes(PdfIro $pdf, string $hu, string $en, float $utana = 3): v
 }
 
 /**
- * ÁLLAPOT VIZSGÁLAT (1.19) – ugyanaz, mint az oldalon: a kelt szerint az időszakba eső számlák a vizsgált napi állapotukkal,
+ * ÁLLAPOT VIZSGÁLAT (1.19) – ugyanaz, mint az oldalon: a teljesítés dátuma szerint az időszakba eső számlák a vizsgált napi állapotukkal,
  * felül az egyenleg a vizsgált napon (pénznemenként), alatta a számlák a részteljesítésekkel (csak a vizsgált napig érkezettek).
  * $d: allapot_vizsgalat_adat() eredménye.
  */
@@ -210,8 +210,8 @@ function ny_allapot(PdfIro $pdf, array $d): void
         $db[in_array($s['allapot'], ['FIZETETLEN', 'MEG_NEM_LETEZETT'], true) ? $s['allapot'] : 'rendezett']++;
     }
     $kotes = $d['kotes'] ? ' · kötés ' . $d['kotes']['kod'] : '';
-    $pdf->szakasz("Állapot $nap – " . $d['ceg']['nev'], ($bejovo ? 'bejövő' : 'kimenő') . " számlák · kelt $idoszak$kotes", [254, 131, 2],
-        "Status on $nap – " . $d['ceg']['nev'], ($bejovo ? 'incoming' : 'outgoing') . " invoices · issued $idoszak" . ($d['kotes'] ? ' · contract ' . $d['kotes']['kod'] : ''));
+    $pdf->szakasz("Állapot $nap – " . $d['ceg']['nev'], ($bejovo ? 'bejövő' : 'kimenő') . " számlák · teljesítés $idoszak$kotes", [254, 131, 2],
+        "Status on $nap – " . $d['ceg']['nev'], ($bejovo ? 'incoming' : 'outgoing') . " invoices · completion $idoszak" . ($d['kotes'] ? ' · contract ' . $d['kotes']['kod'] : ''));
 
     // 1) egyenleg a vizsgált napon, pénznemenként
     $esorok = [];
@@ -230,9 +230,9 @@ function ny_allapot(PdfIro $pdf, array $d): void
     ny_megjegyzes($pdf,
         "A vizsgált nap ($nap) állapota: {$db['FIZETETLEN']} fizetetlen · {$db['rendezett']} fizetett / beszámított · {$db['MEG_NEM_LETEZETT']} még nem létezett számla. "
         . 'FIZETETLEN = azon a napon még nem volt kifizetve (a hátralékban csak az addig érkezett részteljesítések számítanak); '
-        . 'MÉG NEM LÉTEZETT = a kelte a vizsgált nap utáni, az egyenlegbe nem számít bele.',
+        . 'MÉG NEM LÉTEZETT = a teljesítése a vizsgált nap utáni, az egyenlegbe nem számít bele.',
         "Status on the examined day ($nap): {$db['FIZETETLEN']} unpaid · {$db['rendezett']} paid / offset · {$db['MEG_NEM_LETEZETT']} not yet issued. "
-        . 'UNPAID = not yet paid on that day (only partial payments received by then reduce the balance); NOT YET ISSUED = issued after the examined day, not part of the balance.');
+        . 'UNPAID = not yet paid on that day (only partial payments received by then reduce the balance); NOT YET ISSUED = completed after the examined day, not part of the balance.');
 
     // 2) a számlák a vizsgált napi állapotukkal
     $sorok = [];
