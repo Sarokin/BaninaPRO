@@ -13,12 +13,14 @@ require_once __DIR__ . '/api_riport.php';
  */
 
 // 'osszevetes': az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak – a tétel 'q' mezőjében)
-const NY_TIPUSOK = ['osszevetes', 'ceg', 'kotes', 'bejovo', 'utalas', 'kimeno', 'kivonat'];
+// 'allapot': állapot vizsgálat (1.19) – irány + cég (+ kötés) + kelt szerinti időszak + vizsgált nap (a 'q' mezőben)
+const NY_TIPUSOK = ['osszevetes', 'allapot', 'ceg', 'kotes', 'bejovo', 'utalas', 'kimeno', 'kivonat'];
 
 /** Angol megfelelők (státusz, mód) */
 const NY_EN_STATUSZ = [
     'FIZETENDO' => 'PAYABLE', 'UTALASHOZ_ADVA' => 'IN TRANSFER', 'FIZETVE' => 'PAID', 'BESZAMITVA' => 'OFFSET',
     'NYITOTT' => 'OPEN', 'FIZETETT' => 'PAID', 'UTALVA' => 'TRANSFERRED', 'MANUAL' => 'manual', 'HATARERTEK' => 'threshold',
+    'FIZETETLEN' => 'UNPAID', 'MEG_NEM_LETEZETT' => 'NOT YET ISSUED',
 ];
 
 function ny_datum(?string $d): string
@@ -42,7 +44,8 @@ function ny_osszeg($o, string $pn = ''): string
 function ny_statusz(string $s): string
 {
     return ['FIZETENDO' => 'FIZETENDŐ', 'UTALASHOZ_ADVA' => 'UTALÁSHOZ ADVA', 'FIZETVE' => 'FIZETVE', 'BESZAMITVA' => 'BESZÁMÍTVA',
-            'NYITOTT' => 'NYITOTT', 'FIZETETT' => 'FIZETETT', 'UTALVA' => 'UTALVA', 'MANUAL' => 'manuális', 'HATARERTEK' => 'határértékes'][$s] ?? $s;
+            'NYITOTT' => 'NYITOTT', 'FIZETETT' => 'FIZETETT', 'UTALVA' => 'UTALVA', 'MANUAL' => 'manuális', 'HATARERTEK' => 'határértékes',
+            'FIZETETLEN' => 'FIZETETLEN', 'MEG_NEM_LETEZETT' => 'MÉG NEM LÉTEZETT'][$s] ?? $s;
 }
 
 function ny_en(string $s): string
@@ -167,6 +170,102 @@ function ny_osszevetes(PdfIro $pdf, array $d): void
         ['c' => 'Fizetve', 'en' => 'Paid on', 'w' => 14, 'a' => 'C'], ['c' => 'Státusz', 'en' => 'Status', 'w' => 16, 'a' => 'C'], ['c' => 'Banki azonosító', 'en' => 'Bank reference', 'w' => 24, 'a' => 'L'],
         ['c' => 'Összeg', 'en' => 'Amount', 'w' => 22, 'a' => 'R'],
     ], $sorok, ['pt' => 7.0]);
+}
+
+/** Hosszabb kétnyelvű megjegyzés a lap szélességére tördelve (a magyar sorok, alattuk halványabban az angolok); utána $utana mm hely */
+function ny_megjegyzes(PdfIro $pdf, string $hu, string $en, float $utana = 3): void
+{
+    $w = $pdf->szelesseg();
+    $hs = $pdf->tordel($hu, 'regular', 7, $w);
+    $es = $pdf->tordel($en, 'regular', 6.2, $w);
+    $pdf->helyBiztosit(count($hs) * 3.5 + count($es) * 3.2 + 4);
+    $y = $pdf->y + 2.5;
+    foreach ($hs as $i => $sor) {
+        $y += $i ? 3.5 : 0;
+        $pdf->szoveg($pdf->margoBal, $y, $sor, 'regular', 7, [115, 115, 115]);
+    }
+    foreach ($es as $sor) {
+        $y += 3.2;
+        $pdf->szoveg($pdf->margoBal, $y, $sor, 'regular', 6.2, $pdf->enSzin);
+    }
+    $pdf->y = $y + $utana;
+}
+
+/**
+ * ÁLLAPOT VIZSGÁLAT (1.19) – ugyanaz, mint az oldalon: a kelt szerint az időszakba eső számlák a vizsgált napi állapotukkal,
+ * felül az egyenleg a vizsgált napon (pénznemenként), alatta a számlák a részteljesítésekkel (csak a vizsgált napig érkezettek).
+ * $d: allapot_vizsgalat_adat() eredménye.
+ */
+function ny_allapot(PdfIro $pdf, array $d): void
+{
+    $zold = [1, 127, 1];
+    $narancs = [217, 108, 0];
+    $piros = [214, 69, 65];
+    $szurke = [150, 150, 150];
+    $bejovo = $d['irany'] === 'BEJOVO';
+    $nap = ny_datum($d['nap']);
+    $idoszak = ny_datum($d['tol']) . ' – ' . ny_datum($d['ig']);
+    $db = ['FIZETETLEN' => 0, 'rendezett' => 0, 'MEG_NEM_LETEZETT' => 0];
+    foreach ($d['szamlak'] as $s) {
+        $db[in_array($s['allapot'], ['FIZETETLEN', 'MEG_NEM_LETEZETT'], true) ? $s['allapot'] : 'rendezett']++;
+    }
+    $kotes = $d['kotes'] ? ' · kötés ' . $d['kotes']['kod'] : '';
+    $pdf->szakasz("Állapot $nap – " . $d['ceg']['nev'], ($bejovo ? 'bejövő' : 'kimenő') . " számlák · kelt $idoszak$kotes", [254, 131, 2],
+        "Status on $nap – " . $d['ceg']['nev'], ($bejovo ? 'incoming' : 'outgoing') . " invoices · issued $idoszak" . ($d['kotes'] ? ' · contract ' . $d['kotes']['kod'] : ''));
+
+    // 1) egyenleg a vizsgált napon, pénznemenként
+    $esorok = [];
+    foreach ($d['egyenleg'] as $pn => $e) {
+        $esorok[] = ['cellak' => [$pn, (string)($e['db'] - $e['nem_letezett_db']), ny_osszeg($e['teljes'], $pn), ny_osszeg($e['fizetett'], $pn), $e['reszt'] > 0 ? ny_osszeg($e['reszt'], $pn) : '–', ny_osszeg($e['nyitott'], $pn)],
+                     'stilus' => 'osszes', 'szinek' => [3 => $zold, 5 => $narancs]];
+    }
+    if (!$esorok) {
+        $esorok[] = ['cellak' => ['Nincs számla ebben az időszakban.'], 'en' => [0 => 'No invoices in this period.'], 'span' => [0 => 6]];
+    }
+    $pdf->tablazat([
+        ['c' => 'Pénznem', 'en' => 'Currency', 'w' => 20, 'a' => 'L'], ['c' => 'Számlák', 'en' => 'Invoices', 'w' => 18, 'a' => 'C'],
+        ['c' => 'Összes pénzforgalom', 'en' => 'Total turnover', 'w' => 38, 'a' => 'R'], ['c' => 'Fizetett / beszámított', 'en' => 'Paid / offset', 'w' => 38, 'a' => 'R'],
+        ['c' => 'ebből részteljesítés', 'en' => 'of which partial payments', 'w' => 38, 'a' => 'R'], ['c' => "NYITOTT $nap", 'en' => "OPEN on $nap", 'w' => 38, 'a' => 'R'],
+    ], $esorok, ['pt' => 8.5]);
+    ny_megjegyzes($pdf,
+        "A vizsgált nap ($nap) állapota: {$db['FIZETETLEN']} fizetetlen · {$db['rendezett']} fizetett / beszámított · {$db['MEG_NEM_LETEZETT']} még nem létezett számla. "
+        . 'FIZETETLEN = azon a napon még nem volt kifizetve (a hátralékban csak az addig érkezett részteljesítések számítanak); '
+        . 'MÉG NEM LÉTEZETT = a kelte a vizsgált nap utáni, az egyenlegbe nem számít bele.',
+        "Status on the examined day ($nap): {$db['FIZETETLEN']} unpaid · {$db['rendezett']} paid / offset · {$db['MEG_NEM_LETEZETT']} not yet issued. "
+        . 'UNPAID = not yet paid on that day (only partial payments received by then reduce the balance); NOT YET ISSUED = issued after the examined day, not part of the balance.');
+
+    // 2) a számlák a vizsgált napi állapotukkal
+    $sorok = [];
+    foreach ($d['szamlak'] as $s) {
+        $pn = $s['penznem'];
+        $allapot = $s['allapot'];
+        $nincs = $allapot === 'MEG_NEM_LETEZETT';
+        $fizetetlen = $allapot === 'FIZETETLEN';
+        $szin = $nincs ? $szurke : ($fizetetlen ? $narancs : $zold);
+        $fizetve = $s['fizetve_datum'] ? ($s['fizetve_becsult'] ? '~' : '') . ny_datum($s['fizetve_datum']) : '';
+        $sorok[] = ['cellak' => [$s['kod'], $s['szamlaszam'], ny_datum($s['kelt']), ny_datum($s['teljesites_datum']), ny_datum($s['fizetesi_hatarido']),
+                                 $fizetve, ny_statusz($allapot), ny_osszeg($s['osszeg'], $pn), $nincs ? '–' : ny_osszeg($s['hatralek_napon'], $pn)],
+                    'en' => [6 => ny_en($allapot)] + ($s['fizetve_becsult'] ? [5 => '(≈ due date)'] : []),
+                    'szinek' => [6 => $szin, 5 => $s['fizetve_datum'] && $s['fizetve_datum'] <= $d['nap'] ? $zold : $szurke,
+                                 7 => $nincs ? $szurke : ((float)$s['osszeg'] < 0 ? $piros : [23, 23, 23]), 8 => $fizetetlen ? $narancs : $szurke]];
+        $sorok = array_merge($sorok, ny_reszt_sorok(['reszteljesitesek' => $s['resztek_napon'], 'reszt' => $s['reszt_napon'], 'hatralek' => $s['hatralek_napon'], 'penznem' => $pn],
+            $fizetetlen, 9, 5, 7));
+    }
+    $t = [];
+    foreach ($d['egyenleg'] as $pn => $e) {
+        $t[$pn] = ['osszes' => $e['teljes'], 'fizetett' => $e['fizetett'], 'nyitott' => $e['nyitott'], 'reszt' => $e['reszt']];
+    }
+    $sorok = $sorok ? array_merge($sorok, ny_szamla_osszesito($t, 9, 7))
+        : [['cellak' => ['Nincs számla ebben az időszakban.'], 'en' => [0 => 'No invoices in this period.'], 'span' => [0 => 9]]];
+    $pdf->tablazat([
+        ['c' => 'Számla ID', 'en' => 'Invoice ID', 'w' => 30, 'a' => 'L'], ['c' => 'Számlaszám', 'en' => 'Invoice no.', 'w' => 26, 'a' => 'L'],
+        ['c' => 'Kelt', 'en' => 'Issued', 'w' => 15, 'a' => 'C'], ['c' => 'Teljesítés', 'en' => 'Completion', 'w' => 15, 'a' => 'C'], ['c' => 'Határidő', 'en' => 'Due date', 'w' => 15, 'a' => 'C'],
+        ['c' => $bejovo ? 'Utalva' : 'Fizetve', 'en' => $bejovo ? 'Transferred' : 'Paid on', 'w' => 15, 'a' => 'C'], ['c' => "Állapot $nap", 'en' => "Status on $nap", 'w' => 25, 'a' => 'C'],
+        ['c' => 'Összeg', 'en' => 'Amount', 'w' => 24, 'a' => 'R'], ['c' => "Hátralék $nap", 'en' => "Balance due on $nap", 'w' => 25, 'a' => 'R'],
+    ], $sorok, ['pt' => 7.0]);
+    ny_megjegyzes($pdf,
+        'A számlák a mai adatokból, a vizsgált napi állapotukkal. Az Utalva / Fizetve oszlop a tényleges fizetési napot mutatja (szürke: a vizsgált nap utáni; ~ : a régi importált számlánál a határidő).',
+        'Invoices from current data, with their status on the examined day. The paid-on column shows the actual payment date (grey: after the examined day; ~ : due date for old imported invoices).', 4);
 }
 
 /** „Kelt 2026.01.01. – 2026.09.29.” → „Issued 2026.01.01. – 2026.09.29.” (az időszak-címke angol változata) */
@@ -299,9 +398,14 @@ function pdf_lista(array $tetelek, array $felhasznalo): string
     $ids = array_fill_keys(NY_TIPUSOK, []);
     $egyenlegIds = [];   // kimenő számla id => időszak-címke (a MIND fülről „egyenleg készítés”-sel a kosárba tett számlák)
     $osszevetesek = [];  // az Összevetés oldal lekérdezései: ['ceg', 'pn', 'tol', 'ig']
+    $allapotok = [];     // állapot vizsgálatok: ['i', 'ceg', 'kotes', 'tol', 'ig', 'nap']
     foreach ($tetelek as $t) {
         if ($t['t'] === 'osszevetes') {
             $osszevetesek[] = $t['q'];
+            continue;
+        }
+        if ($t['t'] === 'allapot') {
+            $allapotok[] = $t['q'];
             continue;
         }
         $ids[$t['t']][] = (int)$t['id'];
@@ -323,6 +427,17 @@ function pdf_lista(array $tetelek, array $felhasznalo): string
         }
         $vanValami = true;
         ny_osszevetes($pdf, $d);
+    }
+
+    // ------------------------------------------------------------- ÁLLAPOT VIZSGÁLATOK (összefoglaló – az összevetések után)
+    foreach ($allapotok as $q) {
+        try {
+            $d = allapot_vizsgalat_adat($q['i'], (int)$q['ceg'], $q['kotes'] > 0 ? (int)$q['kotes'] : null, $q['tol'], $q['ig'], $q['nap']);
+        } catch (ApiError $e) {
+            continue;   // a cég / kötés azóta törlődött
+        }
+        $vanValami = true;
+        ny_allapot($pdf, $d);
     }
 
     // ------------------------------------------------------------- CÉGEK

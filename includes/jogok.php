@@ -74,7 +74,7 @@ const MUVELET_JOGOK = [
     'szamlaszam_ellenoriz' => 'nez', 'regi_kod_ellenoriz' => 'nez', 'bank_azonosito_ellenoriz' => 'nez',
     'kimeno_szamlak' => 'nez', 'kimeno_szamla' => 'nez', 'kimeno_szamlak_lista' => 'nez', 'bank_kivonatok' => 'nez', 'bank_kivonat' => 'nez',
     'utalasok' => 'nez', 'utalas' => 'nez', 'utalas_nyitottak' => 'nez', 'utalas_hatarertek_elonezet' => 'nez',
-    'hataridok' => 'nez', 'osszefoglalo' => 'nez', 'arfolyam' => 'nez', 'osszevetes_egyenleg' => 'nez', 'osszevetes_reszletek' => 'nez',
+    'hataridok' => 'nez', 'osszefoglalo' => 'nez', 'arfolyam' => 'nez', 'osszevetes_egyenleg' => 'nez', 'osszevetes_reszletek' => 'nez', 'allapot_vizsgalat' => 'nez',
     'kereses' => 'nez', 'kereses_ugras' => 'nez', 'naplo_rekord' => 'nez', 'reszteljesitesek' => 'nez', 'import_allapot' => 'nez',
     // --- módosítás megjegyzés-/BESZÁM-szabállyal (Üzletkötő is hívhatja, a művelet korlátozza a mezőket)
     'ceg_modosit' => 'megj', 'kotes_modosit' => 'megj', 'bejovo_szamla_modosit' => 'megj', 'kimeno_modosit' => 'megj', 'utalas_modosit' => 'megj',

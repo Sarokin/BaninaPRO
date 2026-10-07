@@ -5,6 +5,7 @@
  * Hívás: POST /pdf.php  (űrlap)
  *   tetelek = JSON tömb: [{"t":"bejovo","id":12}, {"t":"kotes","id":3}, ...]
  *             összevetés: {"t":"osszevetes","id":…,"q":{"ceg":5,"pn":"EUR","tol":"2026-01-01","ig":"2026-10-04"}}
+ *             állapot vizsgálat: {"t":"allapot","id":…,"q":{"i":"KIMENO","ceg":5,"kotes":0,"tol":"2026-01-01","ig":"2026-01-31","nap":"2026-01-14"}}
  *   csrf    = a munkamenet CSRF-tokenje
  *
  * Csak bejelentkezett felhasználónak. A PDF mindig az adatbázis friss
@@ -104,6 +105,26 @@ try {
             if (!isset($latott[$kulcs])) {
                 $latott[$kulcs] = true;
                 $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig]];
+            }
+            continue;
+        }
+        if ($tip === 'allapot') {
+            // állapot vizsgálat (1.19): irány + cég (+ kötés) + kelt szerinti időszak + vizsgált nap (a 'q' mezőben)
+            $q = is_array($t['q'] ?? null) ? $t['q'] : [];
+            $irany = (string)($q['i'] ?? '');
+            $ceg = filter_var($q['ceg'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $kotes = filter_var($q['kotes'] ?? 0, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+            $tol = (string)($q['tol'] ?? '');
+            $ig = (string)($q['ig'] ?? '');
+            $nap = (string)($q['nap'] ?? '');
+            if (!in_array($irany, ['BEJOVO', 'KIMENO'], true) || $ceg === false || $kotes === false || !ny_datum_ok($tol) || !ny_datum_ok($ig) || !ny_datum_ok($nap) || $tol > $ig) {
+                continue;
+            }
+            $kotes = $irany === 'BEJOVO' ? (int)$kotes : 0;
+            $kulcs = "allapot:$irany:$ceg:$kotes:$tol:$ig:$nap";
+            if (!isset($latott[$kulcs])) {
+                $latott[$kulcs] = true;
+                $tetelek[] = ['t' => 'allapot', 'id' => (int)$ceg, 'q' => ['i' => $irany, 'ceg' => (int)$ceg, 'kotes' => $kotes, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap]];
             }
             continue;
         }

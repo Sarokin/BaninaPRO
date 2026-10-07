@@ -466,11 +466,13 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 
 /* jelvények (státuszok) */
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 800; letter-spacing: .4px; white-space: nowrap; line-height: 1.2; vertical-align: middle; text-transform: uppercase; }
-.badge.FIZETENDO::before, .badge.NYITOTT::before, .badge.UTALASHOZ_ADVA::before, .badge.FIZETVE::before, .badge.FIZETETT::before, .badge.UTALVA::before, .badge.BESZAMITVA::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
-.badge.FIZETENDO, .badge.NYITOTT { background: var(--narancs-tint); color: var(--narancs-2); border: 1px solid rgba(254,131,2,.35); }
+.badge.FIZETENDO::before, .badge.NYITOTT::before, .badge.UTALASHOZ_ADVA::before, .badge.FIZETVE::before, .badge.FIZETETT::before, .badge.UTALVA::before, .badge.BESZAMITVA::before, .badge.FIZETETLEN::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.badge.FIZETENDO, .badge.NYITOTT, .badge.FIZETETLEN { background: var(--narancs-tint); color: var(--narancs-2); border: 1px solid rgba(254,131,2,.35); }
 .badge.UTALASHOZ_ADVA { background: var(--sarga-tint); color: var(--sarga-szoveg); border: 1px solid rgba(242,197,0,.55); cursor: help; }
 .badge.FIZETVE, .badge.FIZETETT, .badge.UTALVA { background: var(--zold-tint); color: var(--zold); border: 1px solid rgba(1,127,1,.3); }
 .badge.BESZAMITVA { background: var(--felulet); color: var(--zold); border: 1.5px dashed var(--zold); }
+/* 1.19 állapot vizsgálat: a vizsgált napon még nem létező (később kelt) számla */
+.badge.MEG_NEM_LETEZETT { background: var(--felulet); color: var(--halvany); border: 1.5px dashed var(--vonal); }
 .badge.HUF { background: var(--gr-sotet); color: var(--sarga); border: 1px solid var(--sotet-szegely); }
 .badge.EUR { background: var(--gr-sotet); color: var(--feher); border: 1px solid var(--sotet-szegely); }
 .badge.BE { background: var(--gr-narancs); color: var(--feher); }
@@ -709,7 +711,13 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .idoszak-sav .eredmeny { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13.5px; }
 .idoszak-sav .eredmeny:not(:empty) { margin-top: 10px; }
 .idoszak-sav .idoszak-lista { width: 100%; max-height: 50vh; overflow: auto; }
-@media (min-width: 640px) { .idoszak-sav .mezok { grid-template-columns: 150px 1fr 1fr auto; } }
+@media (min-width: 640px) { .idoszak-sav .mezok { grid-template-columns: 150px 1fr 1fr auto; } .idoszak-sav .mezok.allapot { grid-template-columns: 150px 1fr 1fr 1fr auto; } }
+/* 1.19 állapot vizsgálat: magyarázat, a sorokban a tényleges fizetési nap, a még nem létezett számla halványan */
+.idoszak-sav .allapot-sugo { margin-top: 8px; font-size: 12.5px; line-height: 1.45; color: var(--szoveg-2); }
+.idoszak-lista .fiz-nap { font-size: 12px; font-weight: 700; color: var(--halvany); }
+.idoszak-lista .fiz-nap.korabban { color: var(--zold); }
+.reszletes .szamla-sor.nem-letezett .szsz, .reszletes .szamla-sor.nem-letezett .o { color: var(--halvany); }
+.ceg-egyenleg.allapot { border-color: rgba(254,131,2,.45); }
 .idoszak-sav.aktiv { border-color: rgba(1,127,1,.45); box-shadow: 0 0 0 3px rgba(1,127,1,.10), var(--arnyek-1); }
 /* kötéskártya: a fül szerinti számlák az időszakban (aktív időszak-szűrésnél) */
 .idoszak-talalat { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 10px; border-radius: 10px; background: var(--zold-tint); border: 1px solid rgba(1,127,1,.25); font-size: 13.5px; color: var(--tinta); }
