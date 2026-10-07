@@ -127,6 +127,27 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   * Alapból mindkét helyen a **NYITOTT** fül aktív (mint a kimenő oldalon); a választás a munkameneten belül
     megmarad. Ha egy linkről vagy a keresőből egy konkrét számlához ugrasz, a fül magától átvált arra, ahol a számla
     látszik. Az időszak-szűrő és a „Mind a kosárba” a fül szerint látható számlákon dolgozik.
+* **A cég oldala: egyenleg a lap tetején és teljes szűrés fül + időszak szerint (1.18):**
+  * A lap **legtetején** a **cég egyenlege** pénznemenként, a kiválasztott fül szerint:
+    * **NYITOTT** fülön a nyitott tételek összege (*Nyitott összesen*, alatta a számlák száma és az utalás alatti rész);
+    * **FIZETETT** fülön a fizetett / beszámított összeg (*Fizetett összesen*, a nyitott számlák részteljesítéseivel együtt);
+    * **MIND** fülön mindhárom összeg: **teljes forgalom · nyitott · fizetett** (a teljes forgalom = nyitott + fizetett).
+
+    Szűrés nélkül a cég összes számlájából számol (*teljes időszak*). Aktív időszak-szűrésnél csak az időszak számláiból,
+    és a doboz fejlécében a dátummező és a -tól–ig is látszik (pl. *Kelt szerint: 2026.09.01. – 2026.09.30.*).
+  * A **NYITOTT · FIZETETT · MIND** fülek az időszak-szűrő **felett** vannak, és a szűrő **teljes**. A *Szűrés* után a
+    fülnek megfelelő, időszakba eső számlák számítanak: NYITOTT = FIZETENDŐ + UTALÁSHOZ ADVA, FIZETETT = FIZETVE +
+    BESZÁMÍTVA, MIND = mind. Ugyanebből a körből készül:
+    * a sáv listája és a **„Mind a kosárba”** (a nyomtatáshoz);
+    * a **kötéslista**: csak azok a kötések maradnak, amelyekben van ilyen számla. A kártyán zöld sáv mutatja, mennyi esik
+      az időszakba (*Az időszakban: 2 nyitott számla · összeg*);
+    * a fülek darabszáma és a lap tetején az egyenleg.
+
+    FIZETETT fülön így az a még nyitott kötés is megjelenik, amelynek van az időszakban fizetett számlája. Így minden
+    fizetett számla bekerülhet a nyomtatásba.
+  * A szűrés **fülváltáskor megmarad**: az új fül szerint szűr, a mezőkbe közben beírt dátumokkal. Akkor is megmarad,
+    ha megnyitsz egy kötést, majd visszalépsz. A *Szűrés törlése* után újra a kötés státusza dönt (a dátumok a
+    mezőkben maradnak). Szűrés nélkül a fülek a kötés státusza szerint válogatnak, mint eddig.
 * **UTALÁSHOZ gomb** a kötés sorában (minden FIZETENDŐ számláját hozzáadja) és a számla sorában.
   Hozzáadáskor felugró ablak: *UTALÁSHOZ ADVA! UTALÁS ÖSSZEGE EDDIG: …*
 * **Utalás dátuma:** FIZETVE / BESZÁMÍTVA számlánál a kártyán zölddel látszik *Utalva: 2026.09.25.* (az utalás
@@ -291,6 +312,9 @@ kattintással odaugrik.
 * A főoldalon kívül **minden oldalon** a jobb alsó sarokban, a fő gomb (gyár / kötél / plusz) **felett** ül egy ugyanolyan
   kerek **nyomtató gomb**. Üres kosárnál szürke (inaktív), gyűjtött sorokkal sötét, és a sarkán **piros körben fehér
   szám** mutatja, hány sor van a kosárban (mint a Facebook értesítés-jelzője).
+* **Kosár ürítése egy koppintással (1.18):** ha van valami a kosárban, a nyomtató gomb **bal alsó részén** egy
+  **piros körben fehér X** is megjelenik. Rákoppintva a kosár azonnal kiürül, minden sor kikerül belőle. Ha véletlen
+  volt, a felugró üzenet **Visszavonás** linkje visszateszi a sorokat.
 * A nyomtató gombra nyomva a rendszer **A4-es, helytakarékos PDF-et** készít a kosár tartalmából, típusonként csoportosítva
   (Összevetések – a lista elején, Cégek, Kötések, Bejövő számlák, Utalások – a számláikkal, Kimenő számlák, Banki
   kivonatok – a fedezett számlákkal),
@@ -298,7 +322,8 @@ kattintással odaugrik.
   onnan nyomtatható vagy menthető (iPhone-on a Megosztás gombbal).
 * A kosár a **böngészőben** marad meg (felhasználónként külön), tehát oldalváltás vagy újratöltés után is megvan;
   a PDF viszont mindig az **adatbázis friss adataiból** készül. Kezelés: menü → *Nyomtatási kosár* (tételek kivétele,
-  ürítés, PDF), vagy a PDF utáni üzenet *Kosár ürítése* linkje. Egy kosárba legfeljebb 500 sor kerülhet.
+  ürítés, PDF), a PDF utáni üzenet *Kosár ürítése* linkje vagy a nyomtató gomb piros X-e. Az ürítés mindig
+  visszavonható az üzenet *Visszavonás* linkjével. Egy kosárba legfeljebb 500 sor kerülhet.
 * A PDF-készítés is naplózódik (`PDF_NYOMTATAS`). A PDF-hez nem kell külső könyvtár vagy szerverbeállítás
   (saját PDF-író, beágyazott betűk – az ő/ű is jó).
 * **Fizetés dátuma a PDF-ben:** a bejövő táblázatban a Határidő mellett **Utalva** oszlop (FIZETVE / BESZÁMÍTVA
@@ -324,7 +349,9 @@ kattintással odaugrik.
   * **kötés oldala** (egy kötés számlái),
   * **cég oldala** (a kötések listája felett): **„A cég számlái időszak szerint (minden kötésből)”** – a cég
     *összes* kötésének számláit gyűjti ki az adatbázisból az időszakra (pl. 2026.03.15 – 2026.09.20), listázza
-    őket (ugrás a számlához, egyenkénti nyomtató gomb is), és egy gombbal a kosárba teszi,
+    őket (ugrás a számlához, egyenkénti nyomtató gomb is), és egy gombbal a kosárba teszi. 1.18-tól a fölötte lévő
+    fül szerint szűr (NYITOTT fülön csak a nyitott, FIZETETT fülön csak a fizetett / beszámított számlák), és a
+    kötéslistát is szűri – lásd a *Bejövő számlák* részt,
   * **kimenő számlák** listája.
   Utána a jobb alsó nyomtató gombbal jön a PDF, mint eddig.
 
@@ -476,6 +503,10 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.17.0-ról 1.18.0-ra (a cég oldalán teljes szűrés fül + időszak szerint, a cég egyenlege, kosár
+ürítése X-szel):** adatbázis-módosítás nincs. Töltsd fel a frissített `includes/api_bejovo.php`, `includes/helpers.php`,
+`includes/config.php` (csak a verziószám), `assets/app.js`, `assets/app.css` és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.16.0-ról 1.17.0-ra (az UTALVA státusz ideje látszik):** adatbázis-módosítás nincs (az időpontot a
 rendszer eddig is rögzítette). Töltsd fel a frissített `assets/app.js`, `includes/config.php` (csak a verziószám) és
@@ -727,8 +758,8 @@ már használtad egy másik kötésnél, mentéskor felugró ablak sorolja fel, 
 **Mégse** (mindig aktív) és **Igen** (csak 5 másodperc után aktív) gombokkal. Ugyanez a mező az „Új kötés” /
 „Kötés szerkesztése” űrlapon is elérhető.
 
-Napló: `EXCEL_ELEMZES`, `EXCEL_IMPORT` (adagonként), `ARCHIV_ATHELYEZ`, `BEJOVO_IDOSZAK` (időszak-lekérdezés a cég
-oldalán), `RESZTELJESITES` / `RESZTELJESITES_TOROL` (részteljesítés felvezetése / törlése – összeg, dátum, bank,
+Napló: `EXCEL_ELEMZES`, `EXCEL_IMPORT` (adagonként), `ARCHIV_ATHELYEZ`, `BEJOVO_IDOSZAK` (időszak-szűrés a cég
+oldalán – dátummező, -tól–ig, fül), `RESZTELJESITES` / `RESZTELJESITES_TOROL` (részteljesítés felvezetése / törlése – összeg, dátum, bank,
 hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 
 ## 10. Ha valami nem megy
@@ -781,7 +812,10 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | „Unknown column 'lezarva'” | a frissites_1.13.sql nem futott le – futtasd le phpMyAdmin-ban |
 | „A QR-kódos belépést az admin kikapcsolta” | szándékos (1.15): Admin → Belépés kapcsoló KI – lépj be felhasználónévvel és jelszóval |
 | A belépő képernyő nem kér QR-kódot, csak jelszót | a QR-kódos belépés ki van kapcsolva (Admin → Belépés); visszakapcsolás után újra QR-kód |
+| A cég oldalán kevesebb kötés látszik, mint vártam | aktív időszak-szűrés (zöld keretes sáv): csak a fül szerinti, az időszakba eső számlát tartalmazó kötések látszanak – *Szűrés törlése* (1.18) |
+| FIZETETT fülön NYITOTT kötés is látszik | aktív időszak-szűrésnél szándékos (1.18): a kötésnek van az időszakban fizetett számlája; a kártya zöld sávja mutatja, mennyi |
+| Véletlenül kiürült a nyomtatási kosár (piros X) | a felugró üzenet *Visszavonás* linkje visszateszi a sorokat (amíg az üzenet látszik) |
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.17.0 (2026-10-04)
+Verzió: 1.18.0 (2026-10-07)

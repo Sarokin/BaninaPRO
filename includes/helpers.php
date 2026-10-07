@@ -162,6 +162,19 @@ function be_bool(array $in, string $kulcs): bool
     return $v === true || $v === 1 || $v === '1' || $v === 'true' || $v === 'on';
 }
 
+/** Felsorolt érték (pl. szűrő): a megengedettek egyike; hiányzó → alapérték, ismeretlen → hiba */
+function be_valaszt(array $in, string $kulcs, array $lehetseges, string $alap, ?string $cimke = null): string
+{
+    $v = trim((string)($in[$kulcs] ?? ''));
+    if ($v === '') {
+        return $alap;
+    }
+    if (!in_array($v, $lehetseges, true)) {
+        hiba('Érvénytelen érték: ' . ($cimke ?? $kulcs));
+    }
+    return $v;
+}
+
 /** Egész számok listája */
 function be_int_lista(array $in, string $kulcs, string $cimke = null): array
 {

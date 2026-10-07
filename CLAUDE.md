@@ -109,7 +109,13 @@ The server is the source of truth. The client only hides UI using `App.user` / `
 - Clicks use **event delegation**: elements carry `data-act="name"`, and the handler is looked up in the `ACT` object. To add a button, add a `data-act` attribute plus an `ACT` entry; do not attach inline listeners.
 - Client-side "baskets" persist per browser: `Kosar` (print basket → `pdf.php`), `UtalasKosar` (current transfer collector), `BankKosar` (outgoing invoices awaiting a bank ID). The floating FAB buttons appear when these baskets are non-empty.
 - Session heartbeat: the page pings `ping` every `ULES_JELENLET_MP` seconds and sends `lap_zaras` (with keepalive) when the tab closes. The server expires sessions per the `ULES_*` constants (`includes/auth.php`). Heartbeats don't count as user activity.
+- The bejövő kötések page (`viewKotesek`, 1.18) is a full filter: tab (NYITOTT/FIZETETT/MIND) + period.
+  - The period lives in `App.kotesIdoszak`. The server applies it in `bejovo_szamlak_idoszak`, with the tab as `statusz`.
+  - With a period, tabs work at invoice level: NYITOTT = FIZETENDO + UTALASHOZ_ADVA, FIZETETT = FIZETVE + BESZAMITVA. Without one, they use the kötés status.
+  - Tab switches and filtering re-render in place via `kotesekFrissit()`: no skeleton flash, and the scroll position is kept.
+  - The company balance at the top uses `BEJOVO_OSSZESITO_MEZOK`, with the same definitions as the kötés card: nyitott = balance of open invoices; fizetett = paid invoices + partial payments of open ones; teljes = nyitott + fizetett.
 - Design tokens are CSS variables at the top of `assets/app.css`. Animate only `transform`/`opacity`, and respect `prefers-reduced-motion`.
+  - An animation with fill mode `both` keeps its last keyframe and overrides later `transform`/`opacity` rules (`:hover`, `:active`, state classes). Use `backwards` when the element must react afterwards (see `.fab-urit`).
 
 ### No external libraries: self-written components
 - `includes/pdf.php`: PDF writer with embedded TTF fonts from `assets/fonts/`.
@@ -291,8 +297,10 @@ Workflow:
 - **Never discard uncommitted work without a backup.** Save a patch and copies of untracked files to the scratchpad first. Once, 1.15 was discarded on request and had to be restored the next day.
 
 Verification:
-- **Frontend tests.** `tests/e2e/futtat.sh` must stay green (17 tests × 2 browser projects).
+- **Frontend tests.** `tests/e2e/futtat.sh` must stay green (21 tests × 2 browser projects).
   - The print FAB builds the PDF directly. The basket sheet opens via Menü → Nyomtatási kosár.
+  - The red X on the print FAB (`.fab-urit`, 1.18) empties the basket, and the toast offers undo.
+  - Keep accessible names unique. `osszevetes.spec.ts` clicks `getByRole('button', { name: /^Nyomtatási kosár/ })` (the menu item), so the X is named „Kosár ürítése”.
   - New UI features get a spec in `tests/e2e/tests/`. Tests are local only (gitignored).
 - **PDF layout.** Save a PDF to a file: either `testInfo.outputPath(...)` in a test, or `page.request.post('/pdf.php', { form: { csrf, tetelek } })`. Render it with `pdftoppm -png` (poppler-utils in an ubuntu container) and look at the image.
 - **Syntax checks.**

@@ -48,7 +48,50 @@ const KOTES_SQL = 'SELECT k.*, c.nev AS ceg_nev, fl.felhasznalonev AS letrehozta
    LEFT JOIN felhasznalok fm ON fm.id = k.modositotta
    LEFT JOIN bejovo_szamlak b ON b.kotes_id = k.id' . RESZT_BEJOVO_JOIN;
 
-/** Egy cég kötései összesítésekkel és státusszal */
+/*
+ * Számla-összesítő (cég-egyenleg, időszakos kötés-találatok) – ugyanazok a fogalmak, mint a kötés-összesítőben:
+ *   nyitott_db / fizetett_db = nyitott (FIZETENDŐ, UTALÁSHOZ ADVA) / rendezett (FIZETVE, BESZÁMÍTVA) számlák
+ *   nyitott          = a nyitott számlák hátraléka (ebből fizetendo és utalas_alatt)
+ *   fizetett         = a rendezett számlák összege + a nyitott számlák részteljesítései (ebből reszt)
+ *   fizetett_szamlak = csak a rendezett számlák összege (a FIZETETT fül listájának összege)
+ *   teljes           = minden számla eredeti összege (= nyitott + fizetett)
+ */
+const BEJOVO_OSSZESITO_MEZOK = ' COUNT(b.id) AS db,
+        SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN 1 ELSE 0 END) AS nyitott_db,
+        SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN 1 ELSE 0 END) AS fizetett_db,
+        COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS nyitott,
+        COALESCE(SUM(CASE WHEN b.statusz = "FIZETENDO" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS fizetendo,
+        COALESCE(SUM(CASE WHEN b.statusz = "UTALASHOZ_ADVA" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS utalas_alatt,
+        COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN b.osszeg ELSE COALESCE(rb.reszt, 0) END), 0) AS fizetett,
+        COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN b.osszeg END), 0) AS fizetett_szamlak,
+        COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN rb.reszt END), 0) AS reszt,
+        COALESCE(SUM(b.osszeg), 0) AS teljes ';
+
+function bejovo_osszesito_szamok(array $r): array
+{
+    $o = [];
+    foreach (['db', 'nyitott_db', 'fizetett_db'] as $m) {
+        $o[$m] = (int)$r[$m];
+    }
+    foreach (['nyitott', 'fizetendo', 'utalas_alatt', 'fizetett', 'fizetett_szamlak', 'reszt', 'teljes'] as $m) {
+        $o[$m] = (float)$r[$m];
+    }
+    return $o;
+}
+
+/** Egy cég bejövő számláinak egyenlege pénznemenként (EUR elöl); $szukites: további SQL-feltétel (pl. időszak) a paramétereivel */
+function bejovo_egyenleg(int $cegId, string $szukites = '', array $param = []): array
+{
+    $e = [];
+    $sorok = db_all('SELECT k.penznem,' . BEJOVO_OSSZESITO_MEZOK . 'FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN
+        . 'WHERE k.ceg_id = ?' . $szukites . ' GROUP BY k.penznem ORDER BY k.penznem = "EUR" DESC, k.penznem', array_merge([$cegId], $param));
+    foreach ($sorok as $r) {
+        $e[$r['penznem']] = bejovo_osszesito_szamok($r);
+    }
+    return $e;
+}
+
+/** Egy cég kötései összesítésekkel és státusszal + a cég egyenlege (a kötések oldal teteje) */
 function act_kotesek(array $be): array
 {
     csak_bejelentkezve();
@@ -60,7 +103,7 @@ function act_kotesek(array $be): array
     $sorok = db_all(KOTES_SQL . 'WHERE k.ceg_id = ? GROUP BY k.id ORDER BY k.id DESC', [$cegId]);
     $sorok = array_map('kotes_sor_feldolgoz', $sorok);
     naplo('KOTESEK', "cég #{$cegId} ({$ceg['nev']}) kötései megtekintve");
-    return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'kotesek' => $sorok];
+    return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'kotesek' => $sorok, 'egyenleg' => bejovo_egyenleg($cegId)];
 }
 
 /** Egy kötés adatai */
@@ -208,13 +251,25 @@ function act_bejovo_szamlak(array $be): array
     return ['kotes' => kotes_sor_feldolgoz($k), 'szamlak' => reszt_csatol(array_map('bejovo_sor_feldolgoz', $sorok), 'BEJOVO')];
 }
 
-/** Egy cég bejövő számlái időszak szerint (minden kötésből) – nyomtatási kosárhoz, szűréshez */
+const BEJOVO_IDOSZAK_OSZLOP = ['kelt' => 'b.kelt', 'teljesites' => 'b.teljesites_datum', 'hatarido' => 'b.fizetesi_hatarido'];
+/** A kötések oldal státusz-füle → számla-státuszok (MIND: nincs szűrés) */
+const KOTES_FUL_STATUSZOK = ['NYITOTT' => ['FIZETENDO', 'UTALASHOZ_ADVA'], 'FIZETETT' => ['FIZETVE', 'BESZAMITVA'], 'MIND' => []];
+const BEJOVO_IDOSZAK_MAX = 3000;
+
+/**
+ * Egy cég bejövő számlái időszak szerint (minden kötésből) – a kötések oldal teljes szűrője:
+ *   statusz  = a kötések oldal füle: NYITOTT (fizetendő + utalás alatt) · FIZETETT (fizetve + beszámítva) · MIND
+ *   szamlak  = a fülnek megfelelő számlák az időszakban (a nyomtatási kosárhoz; csonka = több volt a korlátnál)
+ *   kotesek  = kötésenkénti összesítő az időszak összes számlájáról (a kötéslista szűrése és a fülek darabszámai)
+ *   egyenleg = a cég egyenlege az időszakban, pénznemenként; osszegek = a fül listájának összege pénznemenként
+ */
 function act_bejovo_szamlak_idoszak(array $be): array
 {
     csak_bejelentkezve();
     $cegId = be_int($be, 'ceg_id');
-    $mezo = (string)($be['mezo'] ?? 'kelt');
-    $oszlop = ['kelt' => 'b.kelt', 'teljesites' => 'b.teljesites_datum', 'hatarido' => 'b.fizetesi_hatarido'][$mezo] ?? 'b.kelt';
+    $mezo = be_valaszt($be, 'mezo', array_keys(BEJOVO_IDOSZAK_OSZLOP), 'kelt', 'dátummező');
+    $oszlop = BEJOVO_IDOSZAK_OSZLOP[$mezo];
+    $statusz = be_valaszt($be, 'statusz', array_keys(KOTES_FUL_STATUSZOK), 'MIND', 'státusz');
     $tol = be_datum($be, 'tol', true, 'kezdő dátum');
     $ig = be_datum($be, 'ig', true, 'záró dátum');
     if ($tol > $ig) {
@@ -224,16 +279,28 @@ function act_bejovo_szamlak_idoszak(array $be): array
     if (!$ceg) {
         hiba('A cég nem található.');
     }
-    $sorok = db_all(BEJOVO_SQL . "WHERE k.ceg_id = ? AND $oszlop BETWEEN ? AND ? ORDER BY $oszlop, b.kod LIMIT 3000", [$cegId, $tol, $ig]);
-    $ossz = [];
-    foreach ($sorok as &$s) {
-        $s = bejovo_sor_feldolgoz($s);
-        $ossz[$s['penznem']] = ($ossz[$s['penznem']] ?? 0) + $s['osszeg'];
+    $idoszak = " AND $oszlop BETWEEN ? AND ?";
+    $statuszok = KOTES_FUL_STATUSZOK[$statusz];
+    $statuszSql = $statuszok ? ' AND b.statusz IN (' . implode(',', array_fill(0, count($statuszok), '?')) . ')' : '';
+    $sorok = db_all(BEJOVO_SQL . "WHERE k.ceg_id = ?$idoszak$statuszSql ORDER BY $oszlop, b.kod LIMIT " . (BEJOVO_IDOSZAK_MAX + 1), array_merge([$cegId, $tol, $ig], $statuszok));
+    $csonka = count($sorok) > BEJOVO_IDOSZAK_MAX;
+    $sorok = reszt_csatol(array_map('bejovo_sor_feldolgoz', array_slice($sorok, 0, BEJOVO_IDOSZAK_MAX)), 'BEJOVO');
+    $kotesek = [];
+    foreach (db_all('SELECT b.kotes_id,' . BEJOVO_OSSZESITO_MEZOK . 'FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN
+        . "WHERE k.ceg_id = ?$idoszak GROUP BY b.kotes_id", [$cegId, $tol, $ig]) as $r) {
+        $kotesek[(int)$r['kotes_id']] = bejovo_osszesito_szamok($r);
     }
-    unset($s);
-    $sorok = reszt_csatol($sorok, 'BEJOVO');
-    naplo('BEJOVO_IDOSZAK', "cég #{$cegId} ({$ceg['nev']}) számlái $mezo szerint $tol – $ig: " . count($sorok) . ' db');
-    return ['ceg' => $ceg, 'szamlak' => $sorok, 'osszegek' => $ossz, 'mezo' => $mezo, 'tol' => $tol, 'ig' => $ig];
+    $egyenleg = bejovo_egyenleg($cegId, $idoszak, [$tol, $ig]);
+    $osszegek = [];
+    foreach ($egyenleg as $pn => $e) {
+        [$db, $osszeg] = ['NYITOTT' => [$e['nyitott_db'], $e['nyitott']], 'FIZETETT' => [$e['fizetett_db'], $e['fizetett_szamlak']], 'MIND' => [$e['db'], $e['teljes']]][$statusz];
+        if ($db > 0) {
+            $osszegek[$pn] = $osszeg;
+        }
+    }
+    naplo('BEJOVO_IDOSZAK', "cég #{$cegId} ({$ceg['nev']}) számlái $mezo szerint $tol – $ig, $statusz: " . count($sorok) . ' db' . ($csonka ? ' (csonka lista)' : ''));
+    return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'szamlak' => $sorok, 'csonka' => $csonka, 'osszegek' => $osszegek,
+            'kotesek' => $kotesek, 'egyenleg' => $egyenleg, 'mezo' => $mezo, 'statusz' => $statusz, 'tol' => $tol, 'ig' => $ig];
 }
 
 /** Egy bejövő számla */
