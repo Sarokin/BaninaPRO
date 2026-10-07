@@ -351,8 +351,9 @@ kattintással odaugrik.
   (csíkozás, fejléc, összesítő sorok) elmaradnak, így a fekete-fehér nyomtató nem szürke raszterrel nyomtat.
   Egy koppintás vált; a beállítást a böngésző felhasználónként megjegyzi, és minden PDF ezzel készül (a nyomtató
   gomb, a kosár ablak *PDF készítése* gombja és az összevetés PDF-je is).
-* **Jól olvasható tételsorok (1.20):** a PDF táblázataiban a tételsorok **12-es** betűvel készülnek (eddig 7-essel),
-  **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes. Az angol fordítás alattuk **9-es**,
+* **Jól olvasható tételsorok (1.20):** a PDF táblázataiban a tételsorok **10-es** betűvel készülnek (1.20.1-től; az
+  1.20.0-ban 12-essel, előtte 7-essel), **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes.
+  Az angol fordítás alattuk **7-es** (az 1.20.0-ban 9-es),
   a magyarral azonos színnel (fekete-fehérben ez is fekete). A lap **álló A4** marad: ami nem fér ki egy sorba (pl.
   a számla-azonosító, a dátum, a cégnév), az a cellában tördelődik – az azonosító a kötőjelnél, a dátum a pontnál
   (`2026.` / `01.01.`), nem betű közepén. Az oszlopfejlécek 9-esek, szükség esetén szintén két sorba törnek.
@@ -573,6 +574,10 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.20.0-ról 1.20.1-re (a PDF tételsorai 10-es, az angol fordításuk 7-es betűvel):** adatbázis-módosítás
+nincs. Az angol sor alatt 0,5 mm-rel több a hely, hogy ne érjen a következő sor vonalához; más nem változott. Töltsd
+fel a frissített `includes/pdf.php`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.19.1-ről 1.20.0-ra (vizsgált időpont az összevetésben, színes / fekete-fehér PDF, 12-es tételsorok):**
 adatbázis-módosítás **nincs**. Töltsd fel a frissített `pdf.php`, `includes/pdf.php`, `includes/nyomtatas.php`,
@@ -917,4 +922,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.20.0 (2026-10-07)
+Verzió: 1.20.1 (2026-10-07)

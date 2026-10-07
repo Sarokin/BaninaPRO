@@ -195,9 +195,9 @@ final class PdfIro
      * háttérkitöltések elmaradnak, a sötét / telített kitöltések (pl. a szakasz-csík) feketék.
      */
     public bool $ff = false;
-    /** Táblázatok tételsorai (1.20): a magyar szöveg 12 pt, alatta az angol fordítás 9 pt; az oszlopfejléc 9 pt */
-    public float $sorPt = 12.0;
-    public float $sorEnPt = 9.0;
+    /** Táblázatok tételsorai (1.20.1): a magyar szöveg 10 pt, alatta az angol fordítás 7 pt; az oszlopfejléc 9 pt */
+    public float $sorPt = 10.0;
+    public float $sorEnPt = 7.0;
     public float $fejPt = 9.0;
 
     public function betuHozzaad(string $kulcs, string $fajl): void
@@ -406,7 +406,7 @@ final class PdfIro
      *            'st': státusz-oszlop (színes PDF-ben ez az egyetlen színes cella a tételsorokban)
      * $sorok:    [ ['cellák' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|al|osszes|csoport', 'span' => [k => n], 'szinek' => [k => rgb]], ... ]
      *            ('csoport': félkövér csoportfejléc halvány háttérrel, pl. a kötés sora a számlái felett)
-     * Tételsorok (1.20): 12 pt tiszta fekete szöveg (#000000), alatta az angol 9 pt ugyanazzal a színnel; színes csak a
+     * Tételsorok (1.20.1): 10 pt tiszta fekete szöveg (#000000), alatta az angol 7 pt ugyanazzal a színnel; színes csak a
      * státusz-oszlop ('st'). Az összesítő sorok ('osszes') megtartják a megadott színeiket. Ami nem fér ki, tördelődik –
      * a fejléc is. Fekete-fehér módban ($ff) minden fekete. Automatikus oldaltörés, minden oldalon ismétlődő fejléc.
      */
@@ -461,8 +461,8 @@ final class PdfIro
             $al = $stilus === 'al';
             $osszes = $stilus === 'osszes';
             $csoport = $stilus === 'csoport';
-            $spt = $pt;                    // 1.20: minden tételsor (az alsorok is) 12 pt
-            $ept = $this->sorEnPt;         // angol sor: 9 pt
+            $spt = $pt;                    // 1.20.1: minden tételsor (az alsorok is) 10 pt
+            $ept = $this->sorEnPt;         // angol sor: 7 pt
             $kulcs = $osszes || $csoport ? 'bold' : 'regular';
             // cella-összevonás: 'span' => [oszlop => hány oszlopra terjed ki] (pl. összesítő címkéknek)
             $szel = [];
@@ -490,7 +490,8 @@ final class PdfIro
                 $cellak[$k] = $sorokC;
                 $e = isset($kihagy[$k]) ? '' : (string)($sor['en'][$k] ?? '');
                 $enCellak[$k] = $e === '' ? [] : $this->tordel($e, 'regular', $ept, $szel[$k] - 2 * $pad);
-                $hC = count($sorokC) * ($spt * 0.42 + $sorKoz) + count($enCellak[$k]) * ($ept * 0.42 + $sorKoz * 0.6);
+                // az angol sor alatt +0,5 mm, hogy a 10 pt-os sor alatti 7 pt-os angol ne érjen a következő sor vonalához (1.20.1)
+                $hC = count($sorokC) * ($spt * 0.42 + $sorKoz) + count($enCellak[$k]) * ($ept * 0.42 + $sorKoz * 0.6) + ($enCellak[$k] ? 0.5 : 0);
                 $maxH = max($maxH, $hC);
             }
             $h = $maxH + 2 * $pad - 0.2;
@@ -542,7 +543,7 @@ final class PdfIro
     {
         $ketnyelvu = $cimEn !== '' || $jobbEn !== '';
         $h = $ketnyelvu ? 11.2 : 7.2;
-        // a szakasz-fejléc ne maradjon árván a lap alján: alatta elférjen a táblázat fejléce + az első 12 pt-os tételsor
+        // a szakasz-fejléc ne maradjon árván a lap alján: alatta elférjen a táblázat fejléce + az első tételsor
         $this->helyBiztosit($h + 46);
         $this->y += 2.5;
         $this->teglalap($this->margoBal, $this->y, $this->szelesseg(), $h, [233, 244, 233]);

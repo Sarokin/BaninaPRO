@@ -322,10 +322,10 @@ Verification:
 - **Destructive commands get blocked.** The auto-mode permission check blocks commands such as `DROP DATABASE`, even on a throwaway database. Verify non-destructively instead: diffs, or a separate throwaway container.
 
 PDF output (1.20, `includes/pdf.php` + `includes/nyomtatas.php`):
-- Table body rows are 12 pt pure black (#000000) with 9 pt English below, on portrait A4 only (the user's decision: no landscape); whatever does not fit wraps. `tordel()` breaks long words after `-`, `.`, `/` and `_` before it falls back to single characters. Headers are 9 pt and wrap as well.
+- Table body rows are 10 pt pure black (#000000) with 7 pt English below (the user's choice in 1.20.1; 1.20.0 had 12 / 9 pt), on portrait A4 only (the user's decision: no landscape); whatever does not fit wraps. `tordel()` breaks long words after `-`, `.`, `/` and `_` before it falls back to single characters. Headers are 9 pt and wrap as well.
 - In color mode only the status column is colored: mark it with `'st' => true` in the column definition. Summary rows (`osszes`) keep their colors. The English line takes the color of its Hungarian cell.
 - Black-and-white mode (`PdfIro::$ff`, from the `szin=ff` form field) forces every text and line to black, drops light fills and turns dark fills black. It is toggled by `.fab-szin`, a two-state button at the bottom right of the print FAB, mirroring the red X. The state is per user in `localStorage` (`PdfSzin`), and `pdfKuldes()` sends it.
-- Column widths are tuned from measured 12 pt text widths: a date takes 20.4 mm on one line and needs 15 mm columns to wrap cleanly as `2026.` / `01.01.`; BESZÁMÍTVA takes 22.3 mm.
+- Column widths were tuned for 12 pt and kept unchanged at 10 pt (the user asked for no other change). Measured 12 pt text widths: a date takes 20.4 mm on one line and needs 15 mm columns to wrap cleanly as `2026.` / `01.01.`; BESZÁMÍTVA takes 22.3 mm.
 
 Pattern: adding a print-basket item type (1.16 `osszevetes`, 1.19 `allapot`):
 - **JS.** Add the type to `KOSAR_TIPUS` (its order is the basket order). Any extra fields, such as `q`, must survive `Kosar.lista()`, `Kosar.hozzaad()` and `pdfKuldes()`. A `q`-carrying type also needs a cleaner in `KOSAR_Q`, and its id comes from `lekerdezesId()` over the query.
