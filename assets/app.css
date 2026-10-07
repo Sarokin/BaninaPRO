@@ -336,6 +336,15 @@ main svg, .menu svg, .modal svg, .toast svg { width: 20px; height: 20px; flex: n
 .fab-urit.felett, .fab-urit.emelt { bottom: calc(96px + var(--safe-b)); }
 .fab-urit.felett.emelt { bottom: calc(172px + var(--safe-b)); }
 @media (hover: hover) { .fab-urit:hover { transform: scale(1.12); } }
+/* 1.20 PDF színmód-kapcsoló a nyomtató gomb jobb alsó részén (a piros X tükörképe): színkör = színes, fél fekete / fél fehér = fekete-fehér */
+.fab-szin { position: fixed; right: 14px; bottom: calc(20px + var(--safe-b)); z-index: 41; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: var(--felulet); display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 3px 8px rgba(23,23,23,.35), 0 0 0 2.5px var(--hatter); animation: pop .45s .18s var(--ease) backwards; transition: transform var(--gyors) var(--ease), bottom var(--kozepes) var(--ease); }
+.fab-szin::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; }   /* nagyobb érintési felület */
+.fab-szin .szin-kor { width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(#F4473E, #FE8302, #FDE20D, #3BB54A, #1E88E5, #8E44AD, #F4473E); }
+.fab-szin.ff .szin-kor { background: linear-gradient(90deg, #000 50%, #fff 50%); box-shadow: inset 0 0 0 1.5px #000; }
+.fab-szin:active { transform: scale(.88); }
+.fab-szin.felett, .fab-szin.emelt { bottom: calc(96px + var(--safe-b)); }
+.fab-szin.felett.emelt { bottom: calc(172px + var(--safe-b)); }
+@media (hover: hover) { .fab-szin:hover { transform: scale(1.12); } }
 /* utalási „kosár” FAB (bankkártya): narancs, a nyomtató és a + gomb felett; szint = hány gomb van alatta */
 .fab-utalas { background: var(--gr-narancs); color: var(--feher); animation-delay: .12s; box-shadow: 0 0 0 4px rgba(253,226,13,.6), 0 14px 30px rgba(254,131,2,.35), inset 0 1px 0 rgba(255,255,255,.25); }
 .fab-utalas.sz0 { bottom: calc(24px + var(--safe-b)); }
@@ -641,6 +650,11 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 /* -------------------------------------------------------------- összevetés */
 .egyenleg-fej { position: relative; overflow: hidden; text-align: center; padding: 18px 14px 12px; border-radius: var(--radius-xl); background: linear-gradient(160deg, var(--felulet) 0%, var(--sarga-tint) 55%, var(--zold-tint) 100%); border: 1px solid var(--vonal); box-shadow: var(--arnyek-1); animation: belep .4s var(--ease) both; }
 .egyenleg-fej .cegnev { font-size: 23px; font-weight: 900; letter-spacing: -.4px; }
+/* 1.20 vizsgált időpont: a cég egyenlege erre a napra szól */
+.egyenleg-fej .allapot-nap { font-size: 12.5px; font-weight: 700; color: var(--szoveg-2); margin-top: 2px; }
+.egyenleg-fej.allapot { border-color: rgba(254,131,2,.45); }
+.ov-datumok > .mezo:nth-child(3) { grid-column: 1 / -1; }
+@media (min-width: 640px) { .mezo-sor.ov-datumok { grid-template-columns: 1fr 1fr 1fr; } .ov-datumok > .mezo:nth-child(3) { grid-column: auto; } }
 .egyenleg-fej .osszegek { display: flex; justify-content: center; gap: 14px 30px; flex-wrap: wrap; margin: 10px 0 6px; }
 .egyenleg-fej .osszegek div { font-size: 26px; font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 .egyenleg-fej .osszegek div small { display: block; font-size: 11.5px; font-weight: 700; color: var(--szoveg-2); letter-spacing: 0; margin-top: 2px; }
@@ -714,8 +728,8 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 @media (min-width: 640px) { .idoszak-sav .mezok { grid-template-columns: 150px 1fr 1fr auto; } .idoszak-sav .mezok.allapot { grid-template-columns: 150px 1fr 1fr 1fr auto; } }
 /* 1.19 állapot vizsgálat: magyarázat, a sorokban a tényleges fizetési nap, a még nem létezett számla halványan */
 .idoszak-sav .allapot-sugo { margin-top: 8px; font-size: 12.5px; line-height: 1.45; color: var(--szoveg-2); }
-.idoszak-lista .fiz-nap { font-size: 12px; font-weight: 700; color: var(--halvany); }
-.idoszak-lista .fiz-nap.korabban { color: var(--zold); }
+.fiz-nap { font-size: 12px; font-weight: 700; color: var(--halvany); }
+.fiz-nap.korabban { color: var(--zold); }
 .reszletes .szamla-sor.nem-letezett .szsz, .reszletes .szamla-sor.nem-letezett .o { color: var(--halvany); }
 .ceg-egyenleg.allapot { border-color: rgba(254,131,2,.45); }
 .idoszak-sav.aktiv { border-color: rgba(1,127,1,.45); box-shadow: 0 0 0 3px rgba(1,127,1,.10), var(--arnyek-1); }
@@ -808,7 +822,7 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .lista-fej .darab { font-size: 12.5px; color: var(--halvany); font-weight: 700; background: var(--vonal-2); padding: 3px 10px; border-radius: 999px; }
 .szamla-lista .kartya { padding: 12px 14px; }
 @media print {
-  .topbar, .fab, .fab-urit, .also-sav, .menu, .menu-hatter, .toast, .gomb-sor, .muveletek { display: none !important; }
+  .topbar, .fab, .fab-urit, .fab-szin, .also-sav, .menu, .menu-hatter, .toast, .gomb-sor, .muveletek { display: none !important; }
   body::before { display: none; }
   .nezet { padding: 0; }
 }

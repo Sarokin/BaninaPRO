@@ -15,7 +15,7 @@ define('DB_PASS', 'baninapro_helyi');    // csak a helyi Docker adatbázishoz
 
 // ---- Alkalmazás ----------------------------------------------------------
 define('APP_NAME', 'BaninaPRO');
-define('APP_VERSION', '1.19.1');
+define('APP_VERSION', '1.20.0');
 define('APP_TIMEZONE', 'Europe/Budapest');
 
 // Naplófájlok mappája (naponta új fájl, éjjel 3-kor váltva: ÉÉÉÉHHNN.txt)

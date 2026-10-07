@@ -190,6 +190,15 @@ final class PdfIro
     public $fejlecRajzolo = null;
     /** @var callable|null */
     public $lablecRajzolo = null;
+    /**
+     * Fekete-fehér, nyomtatóra optimalizált mód (1.20): minden szöveg és vonal tiszta fekete (#000000), a világos
+     * háttérkitöltések elmaradnak, a sötét / telített kitöltések (pl. a szakasz-csík) feketék.
+     */
+    public bool $ff = false;
+    /** Táblázatok tételsorai (1.20): a magyar szöveg 12 pt, alatta az angol fordítás 9 pt; az oszlopfejléc 9 pt */
+    public float $sorPt = 12.0;
+    public float $sorEnPt = 9.0;
+    public float $fejPt = 9.0;
 
     public function betuHozzaad(string $kulcs, string $fajl): void
     {
@@ -251,6 +260,18 @@ final class PdfIro
 
     public function teglalap(float $x, float $y, float $w, float $h, ?array $kitoltes, ?array $korvonal = null, float $vonal = 0.2): void
     {
+        if ($this->ff) {
+            // fekete-fehér: világos háttér nincs (a nyomtató raszterezné), a sötét / telített kitöltés fekete
+            if ($kitoltes && (0.299 * $kitoltes[0] + 0.587 * $kitoltes[1] + 0.114 * $kitoltes[2]) / 255 > 0.75) {
+                $kitoltes = null;
+            } elseif ($kitoltes) {
+                $kitoltes = [0, 0, 0];
+            }
+            $korvonal = $korvonal ? [0, 0, 0] : null;
+            if (!$kitoltes && !$korvonal) {
+                return;
+            }
+        }
         $s = '';
         if ($kitoltes) {
             $s .= self::szin($kitoltes) . " rg\n";
@@ -265,6 +286,9 @@ final class PdfIro
 
     public function vonal(float $x1, float $y1, float $x2, float $y2, array $rgb, float $vastag = 0.2): void
     {
+        if ($this->ff) {
+            $rgb = [0, 0, 0];
+        }
         $this->tartalom .= sprintf("%s RG %s w %s %s m %s %s l S\n", self::szin($rgb), self::f($vastag * self::PT),
             self::f($this->px($x1)), self::f($this->py($y1)), self::f($this->px($x2)), self::f($this->py($y2)));
     }
@@ -291,6 +315,9 @@ final class PdfIro
     {
         if ($szoveg === '') {
             return;
+        }
+        if ($this->ff) {
+            $rgb = [0, 0, 0];
         }
         $w = $this->szovegSzelesseg($szoveg, $kulcs, $pt);
         if ($igazit === 'R') {
@@ -339,15 +366,26 @@ final class PdfIro
                     $sorok[] = $akt;
                     $akt = '';
                 }
-                // a szó önmagában is túl hosszú → karakterenként
+                // a szó önmagában is túl hosszú → a - . / _ jelek után törik (azonosító, dátum: 2026-EUR- | 000001-K0001,
+                // 2026. | 01.01.), és csak a még így is túl hosszú darab karakterenként
                 if ($this->szovegSzelesseg($sz, $kulcs, $pt) > $maxMm) {
                     $darab = '';
-                    foreach (mb_str_split($sz, 1, 'UTF-8') as $c) {
-                        if ($this->szovegSzelesseg($darab . $c, $kulcs, $pt) > $maxMm && $darab !== '') {
+                    foreach (preg_split('/(?<=[-.\/_])/u', $sz, -1, PREG_SPLIT_NO_EMPTY) as $resz) {
+                        if ($darab !== '' && $this->szovegSzelesseg($darab . $resz, $kulcs, $pt) > $maxMm) {
                             $sorok[] = $darab;
                             $darab = '';
                         }
-                        $darab .= $c;
+                        if ($this->szovegSzelesseg($darab . $resz, $kulcs, $pt) <= $maxMm) {
+                            $darab .= $resz;
+                            continue;
+                        }
+                        foreach (mb_str_split($resz, 1, 'UTF-8') as $c) {
+                            if ($this->szovegSzelesseg($darab . $c, $kulcs, $pt) > $maxMm && $darab !== '') {
+                                $sorok[] = $darab;
+                                $darab = '';
+                            }
+                            $darab .= $c;
+                        }
                     }
                     $akt = $darab;
                 } else {
@@ -364,14 +402,18 @@ final class PdfIro
     public array $enSzin = [128, 128, 124];
 
     /**
-     * $oszlopok: [['c' => 'Fejléc', 'en' => 'Header', 'w' => mm, 'a' => 'L|R|C'], ...]  – 'en': angol felirat a magyar alatt
+     * $oszlopok: [['c' => 'Fejléc', 'en' => 'Header', 'w' => mm, 'a' => 'L|R|C', 'st' => true], ...]  – 'en': angol felirat a magyar alatt,
+     *            'st': státusz-oszlop (színes PDF-ben ez az egyetlen színes cella a tételsorokban)
      * $sorok:    [ ['cellák' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|al|osszes|csoport', 'span' => [k => n], 'szinek' => [k => rgb]], ... ]
      *            ('csoport': félkövér csoportfejléc halvány háttérrel, pl. a kötés sora a számlái felett)
-     * Automatikus oldaltörés, minden oldalon ismétlődő (kétnyelvű) fejléc.
+     * Tételsorok (1.20): 12 pt tiszta fekete szöveg (#000000), alatta az angol 9 pt ugyanazzal a színnel; színes csak a
+     * státusz-oszlop ('st'). Az összesítő sorok ('osszes') megtartják a megadott színeiket. Ami nem fér ki, tördelődik –
+     * a fejléc is. Fekete-fehér módban ($ff) minden fekete. Automatikus oldaltörés, minden oldalon ismétlődő fejléc.
      */
     public function tablazat(array $oszlopok, array $sorok, array $o = []): void
     {
-        $pt = $o['pt'] ?? 7.2;
+        $pt = $this->sorPt;
+        $fejPt = $this->fejPt;
         $sorKoz = 0.75;            // sorok közti extra (mm)
         $pad = 1.0;
         $x0 = $this->margoBal;
@@ -381,25 +423,37 @@ final class PdfIro
             $c['w'] *= $skala;
         }
         unset($c);
-        $vanEnFej = count(array_filter($oszlopok, fn($c) => !empty($c['en']))) > 0;
-        $enPt = max(4.8, $pt - 1.3);
-        $fejlec = function () use ($oszlopok, $x0, $pt, $pad, $vanEnFej, $enPt) {
-            $h = $pt * 0.42 + 2 * $pad + 0.6 + ($vanEnFej ? $enPt * 0.42 + 0.5 : 0);
+        $enPt = max(4.8, $fejPt - 1.5);
+        // a fejléc is tördelődik (keskeny oszlopnál két sorba): oszloponként a magyar és az angol sorai
+        $fejSorok = [];
+        $fejH = 0.0;
+        foreach ($oszlopok as $k => $c) {
+            $hu = $this->tordel((string)$c['c'], 'bold', $fejPt, $c['w'] - 2 * $pad);
+            $en = !empty($c['en']) ? $this->tordel((string)$c['en'], 'regular', $enPt, $c['w'] - 2 * $pad) : [];
+            $fejSorok[$k] = [$hu, $en];
+            $fejH = max($fejH, count($hu) * ($fejPt * 0.42 + 0.5) + count($en) * ($enPt * 0.42 + 0.45));
+        }
+        $fejlec = function () use ($oszlopok, $x0, $fejPt, $pad, $enPt, $fejSorok, $fejH) {
+            $h = $fejH + 2 * $pad + 0.4;
             $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [242, 242, 239]);
             $x = $x0;
-            foreach ($oszlopok as $c) {
+            foreach ($oszlopok as $k => $c) {
                 $tx = $c['a'] === 'R' ? $x + $c['w'] - $pad : ($c['a'] === 'C' ? $x + $c['w'] / 2 : $x + $pad);
-                $y1 = $this->y + $pad + ($pt - 0.6) * 0.36 + 0.5;
-                $this->szoveg($tx, $y1, $this->rovidit($c['c'], 'bold', $pt - 0.6, $c['w'] - 2 * $pad), 'bold', $pt - 0.6, [82, 82, 82], $c['a']);
-                if ($vanEnFej && !empty($c['en'])) {
-                    $this->szoveg($tx, $y1 + $enPt * 0.42 + 0.55, $this->rovidit($c['en'], 'regular', $enPt, $c['w'] - 2 * $pad), 'regular', $enPt, $this->enSzin, $c['a']);
+                $ty = $this->y + $pad + $fejPt * 0.36 + 0.3;
+                foreach ($fejSorok[$k][0] as $sorSz) {
+                    $this->szoveg($tx, $ty, $sorSz, 'bold', $fejPt, [0, 0, 0], $c['a']);
+                    $ty += $fejPt * 0.42 + 0.5;
+                }
+                foreach ($fejSorok[$k][1] as $sorSz) {
+                    $this->szoveg($tx, $ty - 0.1, $sorSz, 'regular', $enPt, $this->enSzin, $c['a']);
+                    $ty += $enPt * 0.42 + 0.45;
                 }
                 $x += $c['w'];
             }
             $this->vonal($x0, $this->y + $h, $x0 + $this->szelesseg(), $this->y + $h, [1, 127, 1], 0.4);
             $this->y += $h;
         };
-        $this->helyBiztosit($pt * 0.42 * 3 + 12);
+        $this->helyBiztosit($fejH + $pt * 0.42 * 3 + 12);
         $fejlec();
         $i = 0;
         foreach ($sorok as $sor) {
@@ -407,8 +461,8 @@ final class PdfIro
             $al = $stilus === 'al';
             $osszes = $stilus === 'osszes';
             $csoport = $stilus === 'csoport';
-            $spt = $al ? $pt - 0.8 : $pt;
-            $ept = max(4.6, $spt - 0.9);   // angol sor
+            $spt = $pt;                    // 1.20: minden tételsor (az alsorok is) 12 pt
+            $ept = $this->sorEnPt;         // angol sor: 9 pt
             $kulcs = $osszes || $csoport ? 'bold' : 'regular';
             // cella-összevonás: 'span' => [oszlop => hány oszlopra terjed ki] (pl. összesítő címkéknek)
             $szel = [];
@@ -456,18 +510,20 @@ final class PdfIro
                 $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [247, 247, 244]);
             }
             $x = $x0;
-            $szin = $al ? [82, 82, 82] : [23, 23, 23];
+            $fekete = [0, 0, 0];
             foreach ($oszlopok as $k => $c) {
                 $ty = $this->y + $pad + $spt * 0.36 + 0.45;
                 $cw = $szel[$k] > 0 ? $szel[$k] : $c['w'];
                 $tx = $c['a'] === 'R' ? $x + $cw - $pad : ($c['a'] === 'C' ? $x + $cw / 2 : $x + $pad + ($al && $k === 0 ? 2.5 : 0));
-                $cSzin = $sor['szinek'][$k] ?? $szin;
+                // tételsor: tiszta fekete, csak a státusz színes; összesítő sor: a megadott színek, az angol halványan
+                $cSzin = $osszes || !empty($c['st']) ? ($sor['szinek'][$k] ?? $fekete) : $fekete;
+                $eSzin = $osszes ? $this->enSzin : $cSzin;
                 foreach ($cellak[$k] as $sorSz) {
                     $this->szoveg($tx, $ty, $sorSz, $kulcs, $spt, $cSzin, $c['a']);
                     $ty += $spt * 0.42 + $sorKoz;
                 }
                 foreach ($enCellak[$k] as $sorSz) {
-                    $this->szoveg($tx, $ty - 0.25, $sorSz, 'regular', $ept, $this->enSzin, $c['a']);
+                    $this->szoveg($tx, $ty - 0.25, $sorSz, 'regular', $ept, $eSzin, $c['a']);
                     $ty += $ept * 0.42 + $sorKoz * 0.6;
                 }
                 $x += $c['w'];
@@ -486,7 +542,8 @@ final class PdfIro
     {
         $ketnyelvu = $cimEn !== '' || $jobbEn !== '';
         $h = $ketnyelvu ? 11.2 : 7.2;
-        $this->helyBiztosit($h + 16);
+        // a szakasz-fejléc ne maradjon árván a lap alján: alatta elférjen a táblázat fejléce + az első 12 pt-os tételsor
+        $this->helyBiztosit($h + 46);
         $this->y += 2.5;
         $this->teglalap($this->margoBal, $this->y, $this->szelesseg(), $h, [233, 244, 233]);
         $this->teglalap($this->margoBal, $this->y, 1.6, $h, $szin);

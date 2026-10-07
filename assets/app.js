@@ -392,12 +392,12 @@
   // ======================================================= nyomtatási kosár
   // A kosár csak azt jegyzi meg, MELY sorokat kérted ({t, id, cimke}); a PDF a
   // szerveren, mindig friss adatokból készül. Felhasználónként külön kosár, felső korlát nélkül.
-  // osszevetes: az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak a 'q' mezőben)
+  // osszevetes: az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak + vizsgált nap a 'q' mezőben)
   // allapot: állapot vizsgálat (1.19) – irány + cég (+ kötés) + teljesítés szerinti időszak + vizsgált nap a 'q' mezőben
   const KOSAR_TIPUS = { osszevetes: 'Összevetés', allapot: 'Állapot vizsgálat', ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
   /** A lekérdezést hordozó kosártételek 'q' mezője (típusonként tisztítva) */
   const KOSAR_Q = {
-    osszevetes: (q) => ({ ceg: Number(q.ceg), pn: String(q.pn), tol: String(q.tol), ig: String(q.ig) }),
+    osszevetes: (q) => Object.assign({ ceg: Number(q.ceg), pn: String(q.pn), tol: String(q.tol), ig: String(q.ig) }, q.nap ? { nap: String(q.nap) } : {}),
     allapot: (q) => ({ i: String(q.i), ceg: Number(q.ceg), kotes: Number(q.kotes) || 0, tol: String(q.tol), ig: String(q.ig), nap: String(q.nap) }),
   };
   const Kosar = {
@@ -460,8 +460,35 @@
       const j = $('.jelveny', f);
       if (j) { j.textContent = n ? String(n) : ''; if (anim && n) { j.classList.remove('pop'); void j.offsetWidth; j.classList.add('pop'); } }
     });
-    $$('.fab-urit').forEach((b) => b.classList.toggle('rejtett', n === 0));
+    $$('.fab-urit, .fab-szin').forEach((b) => b.classList.toggle('rejtett', n === 0));
     $$('[data-kosar-db]').forEach((el) => { el.textContent = n ? String(n) : ''; });
+  }
+  /**
+   * A PDF színe (1.20): színes (alap) vagy fekete-fehér, nyomtatóra optimalizált. A nyomtató gomb jobb alsó részén lévő
+   * kapcsoló állítja; felhasználónként a böngésző jegyzi meg (privát módban csak a lap bezárásáig).
+   */
+  const PdfSzin = {
+    _mem: null,
+    kulcs() { return 'banina_pdf_szin_' + (App.user ? App.user.felhasznalonev : 'vendeg'); },
+    ff() {
+      if (this._mem && this._mem.k === this.kulcs()) return this._mem.ff;
+      let ff = false;
+      try { ff = localStorage.getItem(this.kulcs()) === 'ff'; } catch (e) { /* privát mód */ }
+      this._mem = { k: this.kulcs(), ff };
+      return ff;
+    },
+    valt() {
+      const ff = !this.ff();
+      this._mem = { k: this.kulcs(), ff };
+      try { if (ff) localStorage.setItem(this.kulcs(), 'ff'); else localStorage.removeItem(this.kulcs()); } catch (e) { /* marad memóriában */ }
+      return ff;
+    },
+    cim(ff) { return ff ? 'PDF: fekete-fehér (nyomtatóra optimalizált) – váltás színesre' : 'PDF: színes – váltás fekete-fehérre (nyomtatóra optimalizált)'; },
+  };
+  /** A színmód-kapcsoló(k) állapota a felületen */
+  function frissitSzinKapcsolo() {
+    const ff = PdfSzin.ff();
+    $$('.fab-szin').forEach((b) => { b.classList.toggle('ff', ff); b.setAttribute('aria-pressed', ff ? 'true' : 'false'); b.title = PdfSzin.cim(ff); b.setAttribute('aria-label', ff ? 'PDF fekete-fehér' : 'PDF színes'); });
   }
   /** PDF kérés: rejtett űrlap új lapra (a böngésző PDF-nézője nyitja meg) */
   function pdfKuldes(lista) {
@@ -469,7 +496,8 @@
     f.method = 'post'; f.action = 'pdf.php'; f.target = '_blank'; f.style.display = 'none';
     const csrf = document.createElement('input'); csrf.type = 'hidden'; csrf.name = 'csrf'; csrf.value = App.csrf || '';
     const t = document.createElement('input'); t.type = 'hidden'; t.name = 'tetelek'; t.value = JSON.stringify(lista.map((x) => Object.assign({ t: x.t, id: x.id }, typeof x.e === 'string' ? { e: x.e } : {}, x.q ? { q: x.q } : {})));
-    f.appendChild(csrf); f.appendChild(t);
+    const szin = document.createElement('input'); szin.type = 'hidden'; szin.name = 'szin'; szin.value = PdfSzin.ff() ? 'ff' : 'szines';
+    f.appendChild(csrf); f.appendChild(t); f.appendChild(szin);
     document.body.appendChild(f);
     f.submit();
     setTimeout(() => { if (f.parentNode) f.parentNode.removeChild(f); }, 1500);
@@ -482,7 +510,7 @@
     return (h >>> 1) || 1;
   }
   function osszevetesTetel(q, cegNev) {
-    return { t: 'osszevetes', id: lekerdezesId(`${q.ceg}|${q.pn}|${q.tol}|${q.ig}`), cimke: `${cegNev} · ${q.pn} · teljesítés ${fmtDatum(q.tol)} – ${fmtDatum(q.ig)}`, q };
+    return { t: 'osszevetes', id: lekerdezesId(`${q.ceg}|${q.pn}|${q.tol}|${q.ig}|${q.nap}`), cimke: `${cegNev} · ${q.pn} · teljesítés ${fmtDatum(q.tol)} – ${fmtDatum(q.ig)} · ${fmtDatum(q.nap)} napi állapot`, q };
   }
   /** Az állapot vizsgálat kosár-tételként (1.19): a PDF-ben saját szakasz – a vizsgált napi egyenleg és a számlák az akkori állapotukkal */
   function allapotTetel(q, cimke) {
@@ -845,6 +873,9 @@
     const nyomtatFab = o.vissza ? `<button class="fab fab-nyomtat${n ? '' : ' inaktiv'}${o.fab ? ' felett' : ''}${o.fabEmelt ? ' emelt' : ''}" type="button" data-act="nyomtat-pdf" aria-label="${n ? n + ' sor nyomtatása PDF-be' : 'Nyomtatási kosár üres – jelölj ki sorokat a nyomtató gombbal'}" title="${n ? n + ' sor nyomtatása PDF-be' : 'Nyomtatási kosár üres – jelölj ki sorokat a nyomtató gombbal'}">${I.print}<span class="jelveny" aria-hidden="true">${n || ''}</span></button>` : '';
     // piros X a nyomtató gomb bal alsó részén (külön gomb – gombba gomb nem ágyazható): a kosár azonnali ürítése
     const nyomtatUrit = nyomtatFab ? `<button class="fab-urit${n ? '' : ' rejtett'}${o.fab ? ' felett' : ''}${o.fabEmelt ? ' emelt' : ''}" type="button" data-act="nyomtat-urit" aria-label="Kosár ürítése" title="A nyomtatási kosár ürítése – minden sor kikerül">${I.x}</button>` : '';
+    // 1.20: a jobb alsó részen kétállású kapcsoló – színkör: színes PDF, fél fekete / fél fehér kör: fekete-fehér PDF
+    const ff = PdfSzin.ff();
+    const nyomtatSzin = nyomtatFab ? `<button class="fab-szin${ff ? ' ff' : ''}${n ? '' : ' rejtett'}${o.fab ? ' felett' : ''}${o.fabEmelt ? ' emelt' : ''}" type="button" data-act="pdf-szin" aria-pressed="${ff ? 'true' : 'false'}" aria-label="${ff ? 'PDF fekete-fehér' : 'PDF színes'}" title="${esc(PdfSzin.cim(ff))}"><span class="szin-kor" aria-hidden="true"></span></button>` : '';
     // gyűjtő gombok a nyomtató és a + gomb felett: utalási kosár (bankkártya), banki megfeleltetés (bank-épület)
     const utalasFab = UtalasKosar.html();
     const bankFab = BankKosar.html();
@@ -860,6 +891,7 @@
       ${fab}
       ${nyomtatFab}
       ${nyomtatUrit}
+      ${nyomtatSzin}
       ${utalasFab}
       ${bankFab}
       ${o.alsoSav || ''}`;
@@ -1745,9 +1777,10 @@
       const cegek = await cegekBetolt();
       const tab = query.tab === 'bank' ? 'bank' : 'egyenleg';
       const ev = App.ma.slice(0, 4);
-      const q = { ceg: query.ceg || '', penznem: query.penznem || 'EUR', tol: query.tol || `${ev}-01-01`, ig: query.ig || App.ma };
+      // nap: a VIZSGÁLT IDŐPONT (1.20) – alapból mindig a mai nap; a számlák állapota és az egyenleg erre a napra szól
+      const q = { ceg: query.ceg || '', penznem: query.penznem || 'EUR', tol: query.tol || `${ev}-01-01`, ig: query.ig || App.ma, nap: query.nap || App.ma };
       main.innerHTML = `<h1>Összevetés / Összesítő</h1>
-        <div class="fulek" style="--n:2;--i:${tab === 'bank' ? 1 : 0}"><button type="button" class="${tab === 'egyenleg' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes${qs({ ceg: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig })}">Cég egyenlege</button><button type="button" class="${tab === 'bank' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes?tab=bank">Banki kivonatok</button></div>
+        <div class="fulek" style="--n:2;--i:${tab === 'bank' ? 1 : 0}"><button type="button" class="${tab === 'egyenleg' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes${qs({ ceg: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: query.nap })}">Cég egyenlege</button><button type="button" class="${tab === 'bank' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes?tab=bank">Banki kivonatok</button></div>
         <div data-tartalom></div>`;
       const box = $('[data-tartalom]', main);
       if (tab === 'bank') return rajzolBankKivonatok(box, query);
@@ -1755,22 +1788,24 @@
         <div data-egyenleg></div>
         <div data-urlap class="${q.ceg ? '' : 'rejtett'}">
           <div class="mezo"><label>Pénznem</label><div class="valaszto">${['HUF', 'EUR'].map((p) => `<label><input type="radio" name="ov-penznem" value="${p}" ${q.penznem === p ? 'checked' : ''}><span>${p}</span></label>`).join('')}</div></div>
-          <div class="mezo-sor"><div class="mezo"><label>Teljesítés dátuma -tól</label><input type="date" data-ov="tol" value="${esc(q.tol)}" required></div><div class="mezo"><label>-ig</label><input type="date" data-ov="ig" value="${esc(q.ig)}" required></div></div>
+          <div class="mezo-sor ov-datumok"><div class="mezo"><label>Teljesítés dátuma -tól</label><input type="date" data-ov="tol" value="${esc(q.tol)}" required></div><div class="mezo"><label>-ig</label><input type="date" data-ov="ig" value="${esc(q.ig)}" required></div><div class="mezo"><label>Vizsgált időpont</label><input type="date" data-ov="nap" value="${esc(q.nap)}" required title="A számlák állapota és az egyenleg erre a napra szól (alapból a mai nap)"></div></div>
           <button class="btn btn-blokk" type="button" data-act="ov-lekerdez">${I.scale} Lekérdezés</button>
           <div data-reszletek></div>
         </div>`;
       if (q.ceg) {
-        rajzolEgyenleg($('[data-egyenleg]', box), q.ceg);
+        rajzolEgyenleg($('[data-egyenleg]', box), q.ceg, q.nap);
         if (query.ceg && query.tol && query.ig && query.penznem) rajzolReszletek($('[data-reszletek]', box), q);
       }
     } catch (e) { main.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`; }
   }
-  async function rajzolEgyenleg(box, cegId) {
+  /** A cég egyenlege (minden időszak) a VIZSGÁLT NAPON – alapból ma (1.20) */
+  async function rajzolEgyenleg(box, cegId, nap) {
     box.innerHTML = '<div class="toltes"></div>';
     try {
-      const d = await api('osszevetes_egyenleg', { ceg_id: cegId });
+      const d = await api('osszevetes_egyenleg', { ceg_id: cegId, nap });
       const p = d.penznemek;
-      const magyaraz = (v, pn) => (v > 0 ? `${fmtOsszeg(v, pn)} – ennyivel tartozom neki` : v < 0 ? `${fmtOsszeg(-v, pn)} – ennyivel tartozik nekem` : `0 ${pn} – rendezve`);
+      const ma = d.nap === App.ma;
+      const magyaraz = (v, pn) => (v > 0 ? `${fmtOsszeg(v, pn)} – ennyivel ${ma ? 'tartozom' : 'tartoztam'} neki` : v < 0 ? `${fmtOsszeg(-v, pn)} – ennyivel ${ma ? 'tartozik' : 'tartozott'} nekem` : `0 ${pn} – rendezve`);
       let arf = '';
       if (d.arfolyam && d.osszesen) {
         const a = d.arfolyam;
@@ -1778,8 +1813,9 @@
       } else {
         arf = 'Árfolyam jelenleg nem elérhető (MNB/ECB lekérés sikertelen és nincs kézi árfolyam beállítva).';
       }
-      box.innerHTML = `<div class="egyenleg-fej kartya">
+      box.innerHTML = `<div class="egyenleg-fej kartya${ma ? '' : ' allapot'}">
         <div class="cegnev">${esc(d.ceg.nev)}</div>
+        <div class="allapot-nap" data-ov-allapot>${ma ? 'mai állapot' : `<b>${fmtDatum(d.nap)}</b> napi állapot`}</div>
         <div class="osszegek">
           <div class="${p.EUR.egyenleg > 0 ? 'pozitiv' : p.EUR.egyenleg < 0 ? 'negativ' : ''}"><span data-countup="${p.EUR.egyenleg}" data-penznem="EUR">${fmtOsszeg(p.EUR.egyenleg, 'EUR')}</span><small>${esc(magyaraz(p.EUR.egyenleg, 'EUR'))}</small></div>
           <div class="${p.HUF.egyenleg > 0 ? 'pozitiv' : p.HUF.egyenleg < 0 ? 'negativ' : ''}"><span data-countup="${p.HUF.egyenleg}" data-penznem="HUF">${fmtOsszeg(p.HUF.egyenleg, 'HUF')}</span><small>${esc(magyaraz(p.HUF.egyenleg, 'HUF'))}</small></div>
@@ -1796,34 +1832,39 @@
   async function rajzolReszletek(box, q) {
     box.innerHTML = '<div class="toltes"></div>';
     try {
-      const d = await api('osszevetes_reszletek', { ceg_id: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig });
+      const d = await api('osszevetes_reszletek', { ceg_id: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: q.nap });
       const pn = d.penznem;
       const b = d.bejovo, k = d.kimeno;
+      // a számlák a vizsgált napi állapotukkal (1.20): összeg = fizetetlennél a vizsgált napi hátralék, különben az összeg
+      const ertek = (s) => (s.allapot === 'FIZETETLEN' ? s.hatralek_napon : s.osszeg);
+      const fizNap = (s, cimke) => (s.fizetve_datum ? `<span class="fiz-nap${s.fizetve_datum <= d.nap ? ' korabban' : ''}">${s.fizetve_becsult ? 'határidő ~' : cimke} ${fmtDatum(s.fizetve_datum)}</span>` : '');
+      const reszt = (s) => (s.allapot === 'FIZETETLEN' && s.reszt_napon > 0 ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, pn)} · részt. −${fmtOsszeg(s.reszt_napon, pn)}</span>` : '');
+      const nemLet = (o) => (o.nem_letezett_db ? ` · ${o.nem_letezett_db} még nem létezett` : '');
       box.innerHTML = `
-        <div class="info-doboz" style="margin-top:14px"><b>${esc(d.ceg.nev)}</b> · ${pn} · teljesítés ${fmtDatum(d.tol)} – ${fmtDatum(d.ig)}<br>
+        <div class="info-doboz" style="margin-top:14px"><b>${esc(d.ceg.nev)}</b> · ${pn} · teljesítés ${fmtDatum(d.tol)} – ${fmtDatum(d.ig)} · <b data-ov-nap>${fmtDatum(d.nap)}</b> napi állapot<br>
           NYITOTT egyenleg: <b class="${negOszt(d.egyenleg_nyitott)}">${fmtOsszeg(d.egyenleg_nyitott, pn)}</b> · FIZETVE egyenleg: <b class="${negOszt(d.egyenleg_fizetve)}">${fmtOsszeg(d.egyenleg_fizetve, pn)}</b>
           <span class="kicsi szurke">(bejövő − kimenő; pozitív: én tartozom, negatív: ő tartozik)</span></div>
-        <button class="btn btn-sarga btn-blokk" type="button" style="margin-top:10px" data-act="ov-kosarba-pdf" data-ceg="${d.ceg.id}" data-ceg-nev="${esc(d.ceg.nev)}" data-pn="${esc(pn)}" data-tol="${esc(d.tol)}" data-ig="${esc(d.ig)}" title="A teljes összevetés (egyenleg, bejövő és kimenő számlák) a nyomtatási kosárba, és PDF új lapon">${I.print} Teljes összevetés a kosárba + PDF</button>
+        <button class="btn btn-sarga btn-blokk" type="button" style="margin-top:10px" data-act="ov-kosarba-pdf" data-ceg="${d.ceg.id}" data-ceg-nev="${esc(d.ceg.nev)}" data-pn="${esc(pn)}" data-tol="${esc(d.tol)}" data-ig="${esc(d.ig)}" data-nap="${esc(d.nap)}" title="A teljes összevetés (egyenleg, bejövő és kimenő számlák) a nyomtatási kosárba, és PDF új lapon">${I.print} Teljes összevetés a kosárba + PDF</button>
         <div class="ketoszlop">
           <div>
             <div class="oszlop-fej be"><span>Bejövő számlák egyenleg összesen</span><span class="o">${fmtOsszeg(b.osszesites.osszes, pn)}</span></div>
             <div class="oszlop-test">
-              <div class="reszossz"><span>Nyitott (fizetendő + utalás alatt)</span><b>${fmtOsszeg(b.osszesites.nyitott, pn)}</b></div>
-              <div class="reszossz"><span>Fizetve / beszámítva</span><b>${fmtOsszeg(b.osszesites.fizetve, pn)}</b></div>
+              <div class="reszossz"><span>Fizetetlen a vizsgált napon</span><b>${fmtOsszeg(b.osszesites.nyitott, pn)}</b></div>
+              <div class="reszossz"><span>Fizetve / beszámítva${nemLet(b.osszesites)}</span><b>${fmtOsszeg(b.osszesites.fizetve, pn)}</b></div>
               <div class="reszletes">${b.kotesek.length ? b.kotesek.map((kt) => `
                 <div class="kotes-sor"><a class="kod" href="#/bejovo/ceg/${d.ceg.id}/kotes/${kt.kotes_pk}">${esc(kt.kotes_kod)}${kt.kotes_megnevezes ? `<small>${esc(kt.kotes_megnevezes)}</small>` : ''}</a><span class="jobb"><span class="${negOszt(kt.osszeg)}">${fmtOsszeg(kt.osszeg, pn)}</span>${nyomtatGomb('kotes', kt.kotes_pk, kt.kotes_kod + (kt.kotes_megnevezes ? ' · ' + kt.kotes_megnevezes : ''))}</span></div>
-                ${kt.szamlak.map((s) => `<div class="szamla-sor"><div class="bal"><a class="k" href="#/bejovo/ceg/${d.ceg.id}/kotes/${kt.kotes_pk}?szamla=${s.id}">${esc(s.k)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.statusz)}${s.utalas_uid ? `<span class="mono kicsi">${esc(s.utalas_uid)}</span>` : ''}${fizetveSzoveg(s, 'utalva')}${Number(s.reszt) > 0 && nyitottSzamla(s) ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, pn)} · részt. −${fmtOsszeg(s.reszt, pn)}</span>` : ''}</div><span class="o${negOszt(foErtek(s))}">${fmtOsszeg(foErtek(s), pn)}</span>${nyomtatGomb('bejovo', s.id, `${kt.kotes_kod}-${s.k} · „${s.szamlaszam}”`)}</div>`).join('')}
+                ${kt.szamlak.map((s) => `<div class="szamla-sor${s.allapot === 'MEG_NEM_LETEZETT' ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><a class="k" href="#/bejovo/ceg/${d.ceg.id}/kotes/${kt.kotes_pk}?szamla=${s.id}">${esc(s.k)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}${s.utalas_uid ? `<span class="mono kicsi">${esc(s.utalas_uid)}</span>` : ''}<span class="kicsi szurke">telj. ${fmtDatum(s.teljesites_datum)}</span>${fizNap(s, 'utalva')}${reszt(s)}</div><span class="o${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span>${nyomtatGomb('bejovo', s.id, `${kt.kotes_kod}-${s.k} · „${s.szamlaszam}”`)}</div>`).join('')}
               `).join('') : '<div class="ures">Nincs bejövő számla az időszakban.</div>'}</div>
             </div>
           </div>
           <div>
             <div class="oszlop-fej ki"><span>Kimenő számlák egyenleg összesen</span><span class="o">${fmtOsszeg(k.osszesites.osszes, pn)}</span></div>
             <div class="oszlop-test">
-              <div class="reszossz"><span>Nyitott</span><b>${fmtOsszeg(k.osszesites.nyitott, pn)}</b></div>
-              <div class="reszossz"><span>Fizetve</span><b>${fmtOsszeg(k.osszesites.fizetve, pn)}</b></div>
+              <div class="reszossz"><span>Fizetetlen a vizsgált napon</span><b>${fmtOsszeg(k.osszesites.nyitott, pn)}</b></div>
+              <div class="reszossz"><span>Fizetve${nemLet(k.osszesites)}</span><b>${fmtOsszeg(k.osszesites.fizetve, pn)}</b></div>
               <div class="reszletes">${k.szamlak.length ? k.szamlak.map((s) => `
-                <div class="kotes-sor"><a class="kod" href="#/kimeno/ceg/${d.ceg.id}?szamla=${s.id}">${esc(s.kod)}</a><span class="jobb"><span class="${negOszt(foErtek(s))}">${fmtOsszeg(foErtek(s), pn)}</span>${nyomtatGomb('kimeno', s.id, `${s.kod} · „${s.szamlaszam}”`)}</span></div>
-                <div class="szamla-sor"><div class="bal"><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.statusz)}${fizetveSzoveg(s, 'fizetve')}${s.banki_azonosito ? `<span class="kicsi">bank: ${esc(s.banki_azonosito)}</span>` : ''}${Number(s.reszt) > 0 && nyitottSzamla(s) ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, pn)} · részt. −${fmtOsszeg(s.reszt, pn)}</span>` : ''}</div><span class="o${negOszt(foErtek(s))}">${fmtOsszeg(foErtek(s), pn)}</span></div>
+                <div class="kotes-sor"><a class="kod" href="#/kimeno/ceg/${d.ceg.id}?szamla=${s.id}">${esc(s.kod)}</a><span class="jobb"><span class="${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span>${nyomtatGomb('kimeno', s.id, `${s.kod} · „${s.szamlaszam}”`)}</span></div>
+                <div class="szamla-sor${s.allapot === 'MEG_NEM_LETEZETT' ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}<span class="kicsi szurke">telj. ${fmtDatum(s.teljesites_datum)}</span>${fizNap(s, 'fizetve')}${s.banki_azonosito ? `<span class="kicsi">bank: ${esc(s.banki_azonosito)}</span>` : ''}${reszt(s)}</div><span class="o${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span></div>
               `).join('') : '<div class="ures">Nincs kimenő számla az időszakban.</div>'}</div>
             </div>
           </div>
@@ -2938,6 +2979,11 @@
       if (kosarLap) kosarLap.bezar();
       toast(`${I.print} PDF készül ${l.length} sorból – új lapon nyílik meg.<br><small><a href="#" data-act="nyomtat-urit">Kosár ürítése</a> · <a href="#" data-act="nyomtat-kosar">Kosár megtekintése</a></small>`, 'siker', 8000);
     },
+    'pdf-szin': () => {
+      const ff = PdfSzin.valt();
+      frissitSzinKapcsolo();
+      toast(ff ? `${I.print} A PDF <b>fekete-fehér</b> lesz – nyomtatóra optimalizálva, minden tiszta fekete` : `${I.print} A PDF <b>színes</b> lesz`, '', 2600);
+    },
     'nyomtat-urit': () => { Kosar.urit(); frissitNyomtatGombok(); kosarLapFrissit(); toast('A nyomtatási kosár kiürítve', '', 2200); },
     'nyomtat-kosar': () => { $('#toast-root').innerHTML = ''; nyomtatKosarLap(); },
     'kosar-ki': (el) => { Kosar.torol(el.dataset.t, Number(el.dataset.id)); frissitNyomtatGombok(); kosarLapFrissit(); },
@@ -3029,7 +3075,7 @@
     },
     'idoszak-ceg-torol': async () => { App.kotesIdoszak = null; await kotesekFrissit(); },
     'ov-kosarba-pdf': (el) => {
-      const tetel = osszevetesTetel({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig }, el.dataset.cegNev || '');
+      const tetel = osszevetesTetel({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig, nap: el.dataset.nap }, el.dataset.cegNev || '');
       const r = Kosar.hozzaad([tetel]);
       pdfKuldes([tetel]);   // a PDF csak ezt az összevetést tartalmazza; a kosárban marad, más tételekkel együtt is nyomtatható
       kosarLapFrissit();
@@ -3066,12 +3112,13 @@
       const r = route();
       const ceg = $('[data-act=ov-ceg]').value;
       const pn = ($('input[name=ov-penznem]:checked') || {}).value || 'EUR';
-      const tol = $('[data-ov=tol]').value, ig = $('[data-ov=ig]').value;
+      const tol = $('[data-ov=tol]').value, ig = $('[data-ov=ig]').value, nap = $('[data-ov=nap]').value;
       if (!ceg) return toast('Előbb válassz céget!', 'hiba');
       if (!tol || !ig) return toast('A tól–ig dátum megadása kötelező!', 'hiba');
       if (tol > ig) return toast('A kezdő dátum nem lehet későbbi a záró dátumnál!', 'hiba');
-      const uj = '#/osszevetes' + qs({ ceg, penznem: pn, tol, ig });
-      if (('#' + r.path.join('/')) && location.hash === uj) rajzolReszletek($('[data-reszletek]'), { ceg, penznem: pn, tol, ig }); else nav(uj);
+      if (!nap) return toast('Add meg a vizsgált időpontot!', 'hiba');
+      const uj = '#/osszevetes' + qs({ ceg, penznem: pn, tol, ig, nap });
+      if (('#' + r.path.join('/')) && location.hash === uj) rajzolReszletek($('[data-reszletek]'), { ceg, penznem: pn, tol, ig, nap }); else nav(uj);
     },
     'jelszo-szem': (el) => {
       const be = el.parentElement.querySelector('[data-jelszo]'); if (!be) return;
@@ -3150,7 +3197,7 @@
       BankKosar.frissit();
     } else if (el.matches('[data-act=ov-ceg]')) {
       const r = route();
-      nav('#/osszevetes' + qs({ ceg: el.value, penznem: r.query.penznem || 'EUR', tol: r.query.tol || '', ig: r.query.ig || '' }));
+      nav('#/osszevetes' + qs({ ceg: el.value, penznem: r.query.penznem || 'EUR', tol: r.query.tol || '', ig: r.query.ig || '', nap: r.query.nap || '' }));
     } else if (el.matches('[data-act=idoszak-mezo]')) {
       idoszakMezoValt(el);
     } else if (el.matches('[data-act=mu-ceg]')) {

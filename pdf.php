@@ -4,9 +4,11 @@
  *
  * Hívás: POST /pdf.php  (űrlap)
  *   tetelek = JSON tömb: [{"t":"bejovo","id":12}, {"t":"kotes","id":3}, ...]
- *             összevetés: {"t":"osszevetes","id":…,"q":{"ceg":5,"pn":"EUR","tol":"2026-01-01","ig":"2026-10-04"}}
+ *             összevetés: {"t":"osszevetes","id":…,"q":{"ceg":5,"pn":"EUR","tol":"2026-01-01","ig":"2026-10-04","nap":"2026-10-04"}}
+ *             (nap: a vizsgált időpont – 1.20, hiányában a mai nap)
  *             állapot vizsgálat: {"t":"allapot","id":…,"q":{"i":"KIMENO","ceg":5,"kotes":0,"tol":"2026-01-01","ig":"2026-01-31","nap":"2026-01-14"}}
  *   csrf    = a munkamenet CSRF-tokenje
+ *   szin    = 'ff' → fekete-fehér nyomtatóra optimalizált PDF (1.20), minden más → színes
  *
  * Csak bejelentkezett felhasználónak. A PDF mindig az adatbázis friss
  * adataiból készül – a böngésző csak azt jegyzi meg, MELY sorokat kérted.
@@ -92,19 +94,21 @@ try {
             continue;
         }
         if ($tip === 'osszevetes') {
-            // az Összevetés oldal teljes lekérdezése: cég + pénznem + teljesítési időszak (a 'q' mezőben)
+            // az Összevetés oldal teljes lekérdezése: cég + pénznem + teljesítési időszak + vizsgált nap (a 'q' mezőben)
             $q = is_array($t['q'] ?? null) ? $t['q'] : [];
             $ceg = filter_var($q['ceg'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             $pn = (string)($q['pn'] ?? '');
             $tol = (string)($q['tol'] ?? '');
             $ig = (string)($q['ig'] ?? '');
+            $nap = (string)($q['nap'] ?? '');
+            $nap = ny_datum_ok($nap) ? $nap : date('Y-m-d');   // 1.20 előtti kosártétel: a mai állapot
             if ($ceg === false || !in_array($pn, ['HUF', 'EUR'], true) || !ny_datum_ok($tol) || !ny_datum_ok($ig) || $tol > $ig) {
                 continue;
             }
-            $kulcs = "osszevetes:$ceg:$pn:$tol:$ig";
+            $kulcs = "osszevetes:$ceg:$pn:$tol:$ig:$nap";
             if (!isset($latott[$kulcs])) {
                 $latott[$kulcs] = true;
-                $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig]];
+                $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap]];
             }
             continue;
         }
@@ -150,7 +154,8 @@ try {
         @ini_set('memory_limit', '1024M');
     }
     @set_time_limit(300);
-    $pdfAdat = pdf_lista($tetelek, $u);
+    $ff = ($_POST['szin'] ?? '') === 'ff';   // fekete-fehér nyomtatóra optimalizált változat (a kosár gombjának kapcsolója)
+    $pdfAdat = pdf_lista($tetelek, $u, $ff);
 
     $szamlalo = [];
     foreach ($tetelek as $t) {
@@ -160,7 +165,7 @@ try {
     foreach ($szamlalo as $tip => $n) {
         $reszlet[] = "$tip: $n";
     }
-    naplo('PDF_NYOMTATAS', count($tetelek) . ' tétel (' . implode(', ', $reszlet) . '), ' . strlen($pdfAdat) . ' bájt');
+    naplo('PDF_NYOMTATAS', count($tetelek) . ' tétel (' . implode(', ', $reszlet) . '), ' . ($ff ? 'fekete-fehér' : 'színes') . ', ' . strlen($pdfAdat) . ' bájt');
 
     $fajlnev = 'BaninaPRO_lista_' . date('Y-m-d_Hi') . '.pdf';
     header('Content-Type: application/pdf');

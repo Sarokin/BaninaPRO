@@ -327,6 +327,17 @@ kattintással odaugrik.
   számlák kötésenként, a kimenő számlák – részteljesítés-alsorokkal és bontott összesítővel, kétnyelvűen, mint a többi
   PDF. A tétel a kosárban marad, így később más tételekkel együtt is nyomtatható; ugyanaz az összevetés kétszer nem
   kerül bele, más időszak külön tétel.
+* **Vizsgált időpont – „időutazás” az összevetésben is (1.20):** a *Teljesítés dátuma -tól / -ig* mellett (asztali
+  nézetben egy sorban, telefonon alattuk) a **Vizsgált időpont** mező. Alapból **mindig a mai nap**, ugyanúgy
+  átállítható, mint a -tól / -ig. A logika ugyanaz, mint az állapot vizsgálatnál (*Bejövő számlák* rész):
+  * a számlák a vizsgált napi állapotukkal látszanak: **FIZETETLEN** · **FIZETVE / BESZÁMÍTVA** · **MÉG NEM LÉTEZETT**
+    (a teljesítése a vizsgált nap utáni). A sorokban a teljesítés dátuma és a tényleges fizetési nap is látszik;
+  * minden összeg a vizsgált napra szól: a fizetetlen számla hátralékát csak az addig érkezett részteljesítések
+    csökkentik, a még nem létezett számlák a listában szerepelnek, de egyik összegbe sem számítanak bele;
+  * a lap tetején a **cég egyenlege** (minden időszak) is a vizsgált napon érvényes egyenleg („ennyivel tartozott
+    nekem” / „ennyivel tartoztam neki”), a fejlécében: *mai állapot* vagy *2026.01.14. napi állapot*;
+  * a vizsgált nap a címsorba is bekerül, így a lekérdezés újratöltés után is megmarad, és a „Teljes összevetés a
+    kosárba + PDF” is ezzel a nappal készül (a PDF szakaszcímében: *állapot 2026.01.14.*).
 * *Banki kivonatok* fül: keresés banki azonosítóra, egy kattintásra látszik, mely kimenő számlákat fedi le.
   Az összegek egy oszlopban, jobbra igazítva állnak (1.18.2); telefonon az azonosító és a cégek alatt (ugyanígy az utalások listájában).
 * Árfolyam: **MNB hivatalos** (SOAP webszolgáltatás) → ha nem elérhető: ECB (frankfurter.app) → open.er-api.com →
@@ -334,6 +345,17 @@ kattintással odaugrik.
   (Ha a tárhely nem enged kimenő HTTP-hívást, állítsd be a kézi árfolyamot az Admin oldalon.)
 
 ### Nyomtatás – PDF a listákból
+* **Színes vagy fekete-fehér PDF (1.20):** a nyomtató gomb **jobb alsó részén** (a piros X-szel szemben) egy kis
+  kerek kapcsoló van, ha a kosárban van valami. **Színkör** = színes PDF (mint eddig), **fél fekete / fél fehér kör** =
+  **fekete-fehér, nyomtatóra optimalizált PDF**: minden szöveg és vonal tiszta fekete (#000000), a halvány háttérszínek
+  (csíkozás, fejléc, összesítő sorok) elmaradnak, így a fekete-fehér nyomtató nem szürke raszterrel nyomtat.
+  Egy koppintás vált; a beállítást a böngésző felhasználónként megjegyzi, és minden PDF ezzel készül (a nyomtató
+  gomb, a kosár ablak *PDF készítése* gombja és az összevetés PDF-je is).
+* **Jól olvasható tételsorok (1.20):** a PDF táblázataiban a tételsorok **12-es** betűvel készülnek (eddig 7-essel),
+  **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes. Az angol fordítás alattuk **9-es**,
+  a magyarral azonos színnel (fekete-fehérben ez is fekete). A lap **álló A4** marad: ami nem fér ki egy sorba (pl.
+  a számla-azonosító, a dátum, a cégnév), az a cellában tördelődik – az azonosító a kötőjelnél, a dátum a pontnál
+  (`2026.` / `01.01.`), nem betű közepén. Az oszlopfejlécek 9-esek, szükség esetén szintén két sorba törnek.
 * **Kétnyelvű PDF (1.9-től):** minden magyar felirat alatt halványabb, kisebb betűvel az angol megfelelője –
   oszlopfejlécek (Számla ID / Invoice ID, Határidő / Due date, Utalva / Transferred…), szakaszcímek (Bejövő
   számlák / Incoming invoices), státuszok (FIZETVE / PAID, FIZETENDŐ / PAYABLE, UTALÁSHOZ ADVA / IN TRANSFER,
@@ -551,6 +573,11 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.19.1-ről 1.20.0-ra (vizsgált időpont az összevetésben, színes / fekete-fehér PDF, 12-es tételsorok):**
+adatbázis-módosítás **nincs**. Töltsd fel a frissített `pdf.php`, `includes/pdf.php`, `includes/nyomtatas.php`,
+`includes/api_riport.php`, `includes/config.php` (csak a verziószám), `assets/app.js`, `assets/app.css` és
+`TELEPITES.md` fájlokat.
 
 **Frissítés 1.19.0-ról 1.19.1-re (az állapot vizsgálat a teljesítés dátuma szerint):** adatbázis-módosítás
 nincs. Az állapot vizsgálat időszaka a számla teljesítési dátuma szerint szűr (eddig a kelte szerint), és a
@@ -890,4 +917,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.19.1 (2026-10-07)
+Verzió: 1.20.0 (2026-10-07)

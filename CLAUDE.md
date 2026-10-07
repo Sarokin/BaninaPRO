@@ -121,6 +121,7 @@ The server is the source of truth. The client only hides UI using `App.user` / `
 - **Állapot vizsgálat (1.19)**: the 4th option (`allapot`) of the period filter's date select on the bejövő company page, the kötés page and the kimenő page. It adds a `nap` (examined day) field.
   - One data source: `allapot_vizsgalat_adat()` in `includes/api_riport.php` (action `allapot_vizsgalat`, and the `allapot` print-basket type). It filters by **teljesítés dátuma** in tol–ig (the user's choice, 1.19.1) and derives each invoice's state on `nap` from existing dates, with no schema change: teljesites_datum > nap → `MEG_NEM_LETEZETT`; paid with payment date ≤ nap → `FIZETVE`/`BESZAMITVA`; otherwise `FIZETETLEN`, with the balance reduced only by partial payments dated ≤ nap. The payment date is `COALESCE(b.fizetve_datum, u.utalva_datum)` for bejövő and `fizetve_datum` for kimenő. Old imported paid bejövő invoices have none, so the due date stands in (`fizetve_becsult`).
   - The summaries (`egyenleg` per currency, `kotesek` per kötés) use the same field names as `bejovo_osszesito_szamok()` plus `nem_letezett_db`, so `cegEgyenlegDoboz` and `KOTES_FUL_SZAMLA` work unchanged.
+  - The per-invoice rule lives in `allapot_napon()` and the row loader in `allapot_sorok()`. The Összevetés page (1.20) uses both too: `osszevetes_reszletek_adat()` and `act_osszevetes_egyenleg()` take a `nap` (default today), so the comparison, its PDF and the company balance at the top all show the state on that day. With today's date the result equals the current state, except for invoices whose teljesítés is in the future.
   - Applying it switches the tab to MIND. After that the tabs filter by the state on the examined day (`ALLAPOT_FUL`). On the company page it lives in `App.kotesIdoszak` (`mezo: 'allapot'`); on the kötés and kimenő pages it lives in `App.allapotSzuro`, those views fetch it alongside their data, and they replace the card list with the state list. A `?szamla=` jump leaves the mode.
 - Design tokens are CSS variables at the top of `assets/app.css`. Animate only `transform`/`opacity`, and respect `prefers-reduced-motion`.
   - An animation with fill mode `both` keeps its last keyframe and overrides later `transform`/`opacity` rules (`:hover`, `:active`, state classes). Use `backwards` when the element must react afterwards (see `.fab-urit`).
@@ -305,7 +306,7 @@ Workflow:
 - **Never discard uncommitted work without a backup.** Save a patch and copies of untracked files to the scratchpad first. Once, 1.15 was discarded on request and had to be restored the next day.
 
 Verification:
-- **Frontend tests.** `tests/e2e/futtat.sh` must stay green: 26 tests, run in 2 browser projects. The 600-row basket test runs on desktop only, so a full run reports 51 passed and 1 skipped.
+- **Frontend tests.** `tests/e2e/futtat.sh` must stay green: 30 tests, run in 2 browser projects. The 600-row basket test runs on desktop only, so a full run reports 59 passed and 1 skipped.
   - The print FAB builds the PDF directly. The basket sheet opens via Menü → Nyomtatási kosár.
   - The red X on the print FAB (`.fab-urit`, 1.18) empties the basket at once. The user asked for no undo.
   - Keep accessible names unique. `osszevetes.spec.ts` clicks `getByRole('button', { name: /^Nyomtatási kosár/ })` (the menu item), so the X is named „Kosár ürítése”.
@@ -319,6 +320,12 @@ Verification:
   - Run `bash -n` and `shellcheck -S warning -e SC1111` (the `koalaman/shellcheck` image) on the script and on its generated helper scripts.
   - Then run a full end-to-end test from the server's real broken state (see the installer section).
 - **Destructive commands get blocked.** The auto-mode permission check blocks commands such as `DROP DATABASE`, even on a throwaway database. Verify non-destructively instead: diffs, or a separate throwaway container.
+
+PDF output (1.20, `includes/pdf.php` + `includes/nyomtatas.php`):
+- Table body rows are 12 pt pure black (#000000) with 9 pt English below, on portrait A4 only (the user's decision: no landscape); whatever does not fit wraps. `tordel()` breaks long words after `-`, `.`, `/` and `_` before it falls back to single characters. Headers are 9 pt and wrap as well.
+- In color mode only the status column is colored: mark it with `'st' => true` in the column definition. Summary rows (`osszes`) keep their colors. The English line takes the color of its Hungarian cell.
+- Black-and-white mode (`PdfIro::$ff`, from the `szin=ff` form field) forces every text and line to black, drops light fills and turns dark fills black. It is toggled by `.fab-szin`, a two-state button at the bottom right of the print FAB, mirroring the red X. The state is per user in `localStorage` (`PdfSzin`), and `pdfKuldes()` sends it.
+- Column widths are tuned from measured 12 pt text widths: a date takes 20.4 mm on one line and needs 15 mm columns to wrap cleanly as `2026.` / `01.01.`; BESZÁMÍTVA takes 22.3 mm.
 
 Pattern: adding a print-basket item type (1.16 `osszevetes`, 1.19 `allapot`):
 - **JS.** Add the type to `KOSAR_TIPUS` (its order is the basket order). Any extra fields, such as `q`, must survive `Kosar.lista()`, `Kosar.hozzaad()` and `pdfKuldes()`. A `q`-carrying type also needs a cleaner in `KOSAR_Q`, and its id comes from `lekerdezesId()` over the query.
