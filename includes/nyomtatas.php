@@ -14,7 +14,6 @@ require_once __DIR__ . '/api_riport.php';
 
 // 'osszevetes': az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak – a tétel 'q' mezőjében)
 const NY_TIPUSOK = ['osszevetes', 'ceg', 'kotes', 'bejovo', 'utalas', 'kimeno', 'kivonat'];
-const NY_MAX_TETEL = 500;
 
 /** Angol megfelelők (státusz, mód) */
 const NY_EN_STATUSZ = [

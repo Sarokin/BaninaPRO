@@ -259,7 +259,8 @@ const BEJOVO_IDOSZAK_MAX = 3000;
 /**
  * Egy cég bejövő számlái időszak szerint (minden kötésből) – a kötések oldal teljes szűrője:
  *   statusz  = a kötések oldal füle: NYITOTT (fizetendő + utalás alatt) · FIZETETT (fizetve + beszámítva) · MIND
- *   szamlak  = a fülnek megfelelő számlák az időszakban (a nyomtatási kosárhoz; csonka = több volt a korlátnál)
+ *   szamlak  = a fülnek megfelelő számlák az időszakban – megjelenítéshez legfeljebb BEJOVO_IDOSZAK_MAX sor (csonka = több volt);
+ *              csonka listánál az osszes mezőben mind (id, kod, szamlaszam): a „Mind a kosárba” így is mindet beteszi
  *   kotesek  = kötésenkénti összesítő az időszak összes számlájáról (a kötéslista szűrése és a fülek darabszámai)
  *   egyenleg = a cég egyenlege az időszakban, pénznemenként; osszegek = a fül listájának összege pénznemenként
  */
@@ -285,6 +286,13 @@ function act_bejovo_szamlak_idoszak(array $be): array
     $sorok = db_all(BEJOVO_SQL . "WHERE k.ceg_id = ?$idoszak$statuszSql ORDER BY $oszlop, b.kod LIMIT " . (BEJOVO_IDOSZAK_MAX + 1), array_merge([$cegId, $tol, $ig], $statuszok));
     $csonka = count($sorok) > BEJOVO_IDOSZAK_MAX;
     $sorok = reszt_csatol(array_map('bejovo_sor_feldolgoz', array_slice($sorok, 0, BEJOVO_IDOSZAK_MAX)), 'BEJOVO');
+    $osszes = null;
+    if ($csonka) {
+        $osszes = array_map(fn (array $r): array => ['id' => (int)$r['id'], 'kod' => $r['kod'], 'szamlaszam' => $r['szamlaszam']], db_all(
+            "SELECT b.id, b.kod, b.szamlaszam FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id WHERE k.ceg_id = ?$idoszak$statuszSql ORDER BY $oszlop, b.kod",
+            array_merge([$cegId, $tol, $ig], $statuszok)
+        ));
+    }
     $kotesek = [];
     foreach (db_all('SELECT b.kotes_id,' . BEJOVO_OSSZESITO_MEZOK . 'FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN
         . "WHERE k.ceg_id = ?$idoszak GROUP BY b.kotes_id", [$cegId, $tol, $ig]) as $r) {
@@ -299,7 +307,7 @@ function act_bejovo_szamlak_idoszak(array $be): array
         }
     }
     naplo('BEJOVO_IDOSZAK', "cég #{$cegId} ({$ceg['nev']}) számlái $mezo szerint $tol – $ig, $statusz: " . count($sorok) . ' db' . ($csonka ? ' (csonka lista)' : ''));
-    return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'szamlak' => $sorok, 'csonka' => $csonka, 'osszegek' => $osszegek,
+    return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'szamlak' => $sorok, 'csonka' => $csonka, 'osszes' => $osszes, 'osszegek' => $osszegek,
             'kotesek' => $kotesek, 'egyenleg' => $egyenleg, 'mezo' => $mezo, 'statusz' => $statusz, 'tol' => $tol, 'ig' => $ig];
 }
 

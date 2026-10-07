@@ -46,7 +46,7 @@ function act_kimeno_szamlak(array $be): array
         $w .= 'AND s.statusz = ? ';
         $p[] = $be['statusz'];
     }
-    $sorok = reszt_csatol(array_map('kimeno_sor_feldolgoz', db_all(KIMENO_SQL . $w . 'ORDER BY (s.statusz = "NYITOTT") DESC, s.fizetesi_hatarido ASC, s.id DESC LIMIT 2000', $p)), 'KIMENO');
+    $sorok = reszt_csatol(array_map('kimeno_sor_feldolgoz', db_all(KIMENO_SQL . $w . 'ORDER BY (s.statusz = "NYITOTT") DESC, s.fizetesi_hatarido ASC, s.id DESC', $p)), 'KIMENO');
     // tartozás: nyitott = a NYITOTT számlák hátraléka; fizetve = FIZETVE számlák + a nyitottak részteljesítései
     $ossz = db_all(
         'SELECT s.penznem,

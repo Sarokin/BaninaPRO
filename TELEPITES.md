@@ -313,8 +313,8 @@ kattintással odaugrik.
   kerek **nyomtató gomb**. Üres kosárnál szürke (inaktív), gyűjtött sorokkal sötét, és a sarkán **piros körben fehér
   szám** mutatja, hány sor van a kosárban (mint a Facebook értesítés-jelzője).
 * **Kosár ürítése egy koppintással (1.18):** ha van valami a kosárban, a nyomtató gomb **bal alsó részén** egy
-  **piros körben fehér X** is megjelenik. Rákoppintva a kosár azonnal kiürül, minden sor kikerül belőle. Ha véletlen
-  volt, a felugró üzenet **Visszavonás** linkje visszateszi a sorokat.
+  **piros körben fehér X** is megjelenik. Rákoppintva a kosár azonnal kiürül, minden sor kikerül belőle
+  (visszavonás nincs – 1.18.1).
 * A nyomtató gombra nyomva a rendszer **A4-es, helytakarékos PDF-et** készít a kosár tartalmából, típusonként csoportosítva
   (Összevetések – a lista elején, Cégek, Kötések, Bejövő számlák, Utalások – a számláikkal, Kimenő számlák, Banki
   kivonatok – a fedezett számlákkal),
@@ -322,8 +322,11 @@ kattintással odaugrik.
   onnan nyomtatható vagy menthető (iPhone-on a Megosztás gombbal).
 * A kosár a **böngészőben** marad meg (felhasználónként külön), tehát oldalváltás vagy újratöltés után is megvan;
   a PDF viszont mindig az **adatbázis friss adataiból** készül. Kezelés: menü → *Nyomtatási kosár* (tételek kivétele,
-  ürítés, PDF), a PDF utáni üzenet *Kosár ürítése* linkje vagy a nyomtató gomb piros X-e. Az ürítés mindig
-  visszavonható az üzenet *Visszavonás* linkjével. Egy kosárba legfeljebb 500 sor kerülhet.
+  ürítés, PDF), a PDF utáni üzenet *Kosár ürítése* linkje vagy a nyomtató gomb piros X-e.
+* **A kosárnak nincs felső korlátja (1.18.1):** korábban legfeljebb 500 sor fért bele, és a PDF is legfeljebb 500
+  sort fogadott el. Most a „Mind a kosárba” gombok mindig minden találatot beteszik, és a PDF is mindet kinyomtatja.
+  Egy 5000 soros PDF kb. 1–2 másodperc alatt készül el, és kb. 60 MB memóriát kér. A pdf.php ezért a tárhely
+  PHP-memóriakorlátját szükség esetén 1 GB-ra emeli (csak emel, csökkenteni soha).
 * A PDF-készítés is naplózódik (`PDF_NYOMTATAS`). A PDF-hez nem kell külső könyvtár vagy szerverbeállítás
   (saját PDF-író, beágyazott betűk – az ő/ű is jó).
 * **Fizetés dátuma a PDF-ben:** a bejövő táblázatban a Határidő mellett **Utalva** oszlop (FIZETVE / BESZÁMÍTVA
@@ -345,7 +348,8 @@ kattintással odaugrik.
   kosárba”** sáv van: választasz dátummezőt (**Kelt / Teljesítés / Határidő**), megadod a **-tól / -ig** dátumot
   (alapból az idei év eleje → ma), majd **Szűrés**. A lista csak a találatokat mutatja, a sáv kiírja a darabszámot és
   pénznemenként az összeget, és a sárga **„Mind a kosárba (N)”** gomb egyszerre teszi az összes találatot a
-  nyomtatási kosárba (ami már benne volt, nem duplázódik). *Szűrés törlése* visszaadja a teljes listát. Három helyen:
+  nyomtatási kosárba (ami már benne volt, nem duplázódik). A cég oldalán a lenti lista legfeljebb 3000 számlát
+  mutat, de a gomb ennél több találatnál is mindet beteszi. *Szűrés törlése* visszaadja a teljes listát. Három helyen:
   * **kötés oldala** (egy kötés számlái),
   * **cég oldala** (a kötések listája felett): **„A cég számlái időszak szerint (minden kötésből)”** – a cég
     *összes* kötésének számláit gyűjti ki az adatbázisból az időszakra (pl. 2026.03.15 – 2026.09.20), listázza
@@ -503,6 +507,12 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.18.0-ról 1.18.1-re (a nyomtatási kosárnak nincs felső korlátja, a piros X visszavonás nélkül ürít):**
+adatbázis-módosítás nincs. Az 500-as kosár- és PDF-korlát megszűnt, a cég oldalán a „Mind a kosárba” 3000 találat
+felett is mindet beteszi, a kimenő számlák oldala pedig a cég összes számláját betölti (eddig legfeljebb 2000-et).
+Töltsd fel a frissített `pdf.php`, `includes/nyomtatas.php`, `includes/api_bejovo.php`, `includes/api_kimeno.php`,
+`includes/config.php` (csak a verziószám), `assets/app.js` és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.17.0-ról 1.18.0-ra (a cég oldalán teljes szűrés fül + időszak szerint, a cég egyenlege, kosár
 ürítése X-szel):** adatbázis-módosítás nincs. Töltsd fel a frissített `includes/api_bejovo.php`, `includes/helpers.php`,
@@ -814,8 +824,9 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | A belépő képernyő nem kér QR-kódot, csak jelszót | a QR-kódos belépés ki van kapcsolva (Admin → Belépés); visszakapcsolás után újra QR-kód |
 | A cég oldalán kevesebb kötés látszik, mint vártam | aktív időszak-szűrés (zöld keretes sáv): csak a fül szerinti, az időszakba eső számlát tartalmazó kötések látszanak – *Szűrés törlése* (1.18) |
 | FIZETETT fülön NYITOTT kötés is látszik | aktív időszak-szűrésnél szándékos (1.18): a kötésnek van az időszakban fizetett számlája; a kártya zöld sávja mutatja, mennyi |
-| Véletlenül kiürült a nyomtatási kosár (piros X) | a felugró üzenet *Visszavonás* linkje visszateszi a sorokat (amíg az üzenet látszik) |
+| Véletlenül kiürült a nyomtatási kosár (piros X) | a piros X azonnal, visszavonás nélkül üríti – a sorokat újra kell gyűjteni (pl. az időszak-szűrő „Mind a kosárba” gombjával) |
+| „Allowed memory size … exhausted” egy nagyon nagy PDF-nél | a tárhely nem engedi a memóriakorlát emelését – cPanelben (*MultiPHP INI Editor*) állítsd a `memory_limit`-et legalább 512M-ra; kb. 11 MB kell 1000 sorhoz |
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.18.0 (2026-10-07)
+Verzió: 1.18.1 (2026-10-07)

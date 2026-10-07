@@ -47,6 +47,16 @@ function pdf_hiba(string $uzenet, int $http = 400): void
     exit;
 }
 
+/** php.ini méret (pl. 128M, 1G, -1 = korlátlan) → bájt */
+function ini_bajt(string $v): int
+{
+    $v = trim($v);
+    if ($v === '' || $v === '-1') {
+        return PHP_INT_MAX;
+    }
+    return (int)$v * match (strtoupper(substr($v, -1))) { 'G' => 1073741824, 'M' => 1048576, 'K' => 1024, default => 1 };
+}
+
 try {
     session_inditas();
 
@@ -66,9 +76,6 @@ try {
     $lista = json_decode($nyers ?: '[]', true);
     if (!is_array($lista)) {
         pdf_hiba('Érvénytelen nyomtatási lista.');
-    }
-    if (count($lista) > NY_MAX_TETEL) {
-        pdf_hiba('Egyszerre legfeljebb ' . NY_MAX_TETEL . ' sor nyomtatható – szűkítsd a nyomtatási kosarat.');
     }
 
     // tisztítás: csak ismert típus + pozitív egész azonosító, duplikátumok nélkül, sorrend megtartva
@@ -116,6 +123,12 @@ try {
         pdf_hiba('A nyomtatási kosár üres – előbb jelöld ki a nyomtatni kívánt sorokat a listákban.');
     }
 
+    // a kosárnak nincs felső korlátja: a PDF kb. 11 MB memóriát kér 1000 soronként – a tárhely alapkorlátja
+    // (gyakran 128 MB ≈ 11 000 sor) ne állítsa meg; csak emelünk, csökkenteni soha
+    if (ini_bajt((string)ini_get('memory_limit')) < 1073741824) {
+        @ini_set('memory_limit', '1024M');
+    }
+    @set_time_limit(300);
     $pdfAdat = pdf_lista($tetelek, $u);
 
     $szamlalo = [];

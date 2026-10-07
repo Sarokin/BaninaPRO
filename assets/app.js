@@ -385,12 +385,11 @@
 
   // ======================================================= nyomtatási kosár
   // A kosár csak azt jegyzi meg, MELY sorokat kérted ({t, id, cimke}); a PDF a
-  // szerveren, mindig friss adatokból készül. Felhasználónként külön kosár.
-  const KOSAR_MAX = 500;
+  // szerveren, mindig friss adatokból készül. Felhasználónként külön kosár, felső korlát nélkül.
   // osszevetes: az Összevetés oldal teljes lekérdezése (cég + pénznem + teljesítési időszak a 'q' mezőben)
   const KOSAR_TIPUS = { osszevetes: 'Összevetés', ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
   const Kosar = {
-    _mem: null, _kulcs: null,
+    _mem: null, _kulcs: null, _halmaz: null, _halmazLista: null,
     kulcs() { return 'banina_nyomtat_' + (App.user ? App.user.felhasznalonev : 'vendeg'); },
     lista() {
       const k = this.kulcs();
@@ -402,26 +401,31 @@
     },
     ment(l) { this._mem = l; this._kulcs = this.kulcs(); try { if (l.length) localStorage.setItem(this._kulcs, JSON.stringify(l)); else localStorage.removeItem(this._kulcs); } catch (e) { /* marad memóriában */ } frissitJelveny(true); },
     db() { return this.lista().length; },
-    van(t, id) { return this.lista().some((x) => x.t === t && x.id === Number(id)); },
+    van(t, id) {
+      const l = this.lista();
+      if (this._halmazLista !== l) { this._halmaz = new Set(l.map((x) => `${x.t}:${x.id}`)); this._halmazLista = l; }
+      return this._halmaz.has(`${t}:${Number(id)}`);
+    },
     valt(t, id, cimke) {
       const l = this.lista().slice();
       const i = l.findIndex((x) => x.t === t && x.id === Number(id));
       if (i >= 0) { l.splice(i, 1); this.ment(l); return false; }
-      if (l.length >= KOSAR_MAX) throw new Error(`A nyomtatási kosárba legfeljebb ${KOSAR_MAX} sor kerülhet.`);
       l.push({ t, id: Number(id), cimke: String(cimke || '') }); this.ment(l); return true;
     },
     torol(t, id) { this.ment(this.lista().filter((x) => !(x.t === t && x.id === Number(id)))); },
     hozzaad(tetelek) {
       const l = this.lista().slice();
+      const index = new Map(l.map((y) => [`${y.t}:${y.id}`, y]));   // sok ezer sornál is gyors keresés
       let uj = 0, mar = 0;
       tetelek.forEach((x) => {
-        const megl = l.find((y) => y.t === x.t && y.id === Number(x.id));
+        const kulcs = `${x.t}:${Number(x.id)}`;
+        const megl = index.get(kulcs);
         if (megl) { mar++; if (typeof x.e === 'string') megl.e = x.e; return; }   // már benne van – az egyenleg-jelölést átveszi
-        if (l.length >= KOSAR_MAX) return;
-        l.push(Object.assign({ t: x.t, id: Number(x.id), cimke: String(x.cimke || '') }, typeof x.e === 'string' ? { e: x.e } : {}, x.q ? { q: x.q } : {})); uj++;
+        const t = Object.assign({ t: x.t, id: Number(x.id), cimke: String(x.cimke || '') }, typeof x.e === 'string' ? { e: x.e } : {}, x.q ? { q: x.q } : {});
+        l.push(t); index.set(kulcs, t); uj++;
       });
       this.ment(l);
-      return { uj, mar, tul: tetelek.length - uj - mar };
+      return { uj, mar };
     },
     urit() { this.ment([]); },
   };
@@ -495,7 +499,7 @@
     const r = Kosar.hozzaad(tetelek);
     frissitNyomtatGombok();
     const egyenleg = tetelek.some((t) => t.e !== undefined);
-    toast(`${I.print} ${r.uj} számla a nyomtatási kosárba került${r.mar ? ` (${r.mar} már benne volt)` : ''}${r.tul ? ` – ${r.tul} nem fért be (max. ${KOSAR_MAX})` : ''}${cimke ? `<br><small>${esc(cimke)}</small>` : ''}${egyenleg ? '<br><small><b>EGYENLEG</b> készül a PDF-ben (összes forgalom · fizetett · nyitott)</small>' : ''}<br><small>${Kosar.db()} sor a kosárban – a jobb alsó nyomtató gombbal készíthetsz PDF-et</small>`, 'siker', 5000);
+    toast(`${I.print} ${r.uj} számla a nyomtatási kosárba került${r.mar ? ` (${r.mar} már benne volt)` : ''}${cimke ? `<br><small>${esc(cimke)}</small>` : ''}${egyenleg ? '<br><small><b>EGYENLEG</b> készül a PDF-ben (összes forgalom · fizetett · nyitott)</small>' : ''}<br><small>${Kosar.db()} sor a kosárban – a jobb alsó nyomtató gombbal készíthetsz PDF-et</small>`, 'siker', 5000);
   }
   /** Kötés / kimenő lista: kliensoldali szűrés a betöltött számlákon */
   function idoszakSzuresLista(sav, szamlak, tipus) {
@@ -531,22 +535,6 @@
     kosarLap = modal({ cim: 'Nyomtatási kosár', osztaly: 'kosar', html: kosarLapTartalom(), onBezar: () => { kosarLap = null; } });
   }
   function kosarLapFrissit() { if (kosarLap) kosarLap.tartalom.innerHTML = kosarLapTartalom(); }
-  /** A kosár ürítése (lap, toast-link, a nyomtató gomb piros X-e) – a toastból visszavonható */
-  let kosarElozo = null;
-  function kosarUrit() {
-    const l = Kosar.lista().slice();
-    if (!l.length) return;
-    kosarElozo = l;
-    Kosar.urit(); frissitNyomtatGombok(); kosarLapFrissit();
-    toast(`${I.trash} A nyomtatási kosár kiürítve – ${l.length} sor kikerült.<br><small><a href="#" data-act="nyomtat-vissza">Visszavonás</a></small>`, '', 6000);
-  }
-  function kosarVissza() {
-    if (!kosarElozo) return;
-    const r = Kosar.hozzaad(kosarElozo);
-    kosarElozo = null;
-    frissitNyomtatGombok(); kosarLapFrissit();
-    toast(`${I.print} Visszaállítva – ${Kosar.db()} sor a nyomtatási kosárban${r.tul ? ` (${r.tul} nem fért vissza)` : ''}`, 'siker', 3000);
-  }
 
   // ======================================================= utalási „kosár”
   // Az utoljára használt NYITOTT utalás (amihez számlát adtál): bankkártya-gomb a jobb alsó sarokban,
@@ -1248,10 +1236,11 @@
   function kotesIdoszakEredmeny(sz, ful, cegId, kotesDb) {
     const db = Object.keys(sz.egyenleg).reduce((a, p) => a + KOTES_FUL_SZAMLA[ful](sz.egyenleg[p]).db, 0);
     const ossz = Object.keys(sz.osszegek).map((p) => fmtOsszeg(sz.osszegek[p], p)).join(' · ');
+    const kosarba = (sz.osszes || sz.szamlak).length;
     return `<span><b>${db}</b> ${KOTES_FUL_NEV[ful]}számla · ${kotesDb} kötésben${ossz ? ' · ' + ossz : ''}</span>
-      <button class="btn btn-sarga btn-sm" type="button" data-act="idoszak-kosarba" ${sz.szamlak.length ? '' : 'disabled'}>${I.print} Mind a kosárba (${sz.szamlak.length})</button>
+      <button class="btn btn-sarga btn-sm" type="button" data-act="idoszak-kosarba" ${kosarba ? '' : 'disabled'}>${I.print} Mind a kosárba (${kosarba})</button>
       <button class="btn btn-outline btn-sm" type="button" data-act="idoszak-ceg-torol">${I.x} Szűrés törlése</button>
-      ${sz.csonka ? `<div class="kicsi szurke">A lista csak az első ${sz.szamlak.length} számlát mutatja – szűkítsd az időszakot.</div>` : ''}
+      ${sz.csonka ? `<div class="kicsi szurke">A lenti lista az első ${sz.szamlak.length} számlát mutatja, a „Mind a kosárba” mind a(z) ${kosarba} számlát beteszi.</div>` : ''}
       ${sz.szamlak.length ? `<div class="reszletes idoszak-lista">${sz.szamlak.map((s) => `<div class="szamla-sor"><div class="bal"><a class="k" href="#/bejovo/ceg/${cegId}/kotes/${s.kotes_pk}?szamla=${s.id}" title="Ugrás a számlához">${esc(s.kod)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.statusz)}<span class="kicsi szurke">${fmtDatum(idoszakDatum(s, sz.mezo))}</span></div><span class="o${negOszt(foErtek(s))}">${fmtOsszeg(foErtek(s), s.penznem)}</span>${nyomtatGomb('bejovo', s.id, `${s.kod} · „${s.szamlaszam}”`)}</div>`).join('')}</div>` : ''}`;
   }
   /**
@@ -1325,7 +1314,7 @@
       main.classList.remove('frissul');
       const sav = $('.idoszak-sav', main);
       if (sav && sz) {
-        sav.dataset.talalat = JSON.stringify(sz.szamlak.map((s) => ({ t: 'bejovo', id: s.id, cimke: `${s.kod} · „${s.szamlaszam}”` })));
+        sav.dataset.talalat = JSON.stringify((sz.osszes || sz.szamlak).map((s) => ({ t: 'bejovo', id: s.id, cimke: `${s.kod} · „${s.szamlaszam}”` })));
         sav.dataset.cimke = `${k.ceg.nev} · ${KOTES_FUL_NEV[ful]}számlák · ${IDOSZAK_MEZOK[sz.mezo]} ${fmtDatum(sz.tol)} – ${fmtDatum(sz.ig)}`;
       }
     } catch (e) {
@@ -2831,8 +2820,7 @@
       if (kosarLap) kosarLap.bezar();
       toast(`${I.print} PDF készül ${l.length} sorból – új lapon nyílik meg.<br><small><a href="#" data-act="nyomtat-urit">Kosár ürítése</a> · <a href="#" data-act="nyomtat-kosar">Kosár megtekintése</a></small>`, 'siker', 8000);
     },
-    'nyomtat-urit': () => kosarUrit(),
-    'nyomtat-vissza': () => kosarVissza(),
+    'nyomtat-urit': () => { Kosar.urit(); frissitNyomtatGombok(); kosarLapFrissit(); toast('A nyomtatási kosár kiürítve', '', 2200); },
     'nyomtat-kosar': () => { $('#toast-root').innerHTML = ''; nyomtatKosarLap(); },
     'kosar-ki': (el) => { Kosar.torol(el.dataset.t, Number(el.dataset.id)); frissitNyomtatGombok(); kosarLapFrissit(); },
     nav: (el) => nav(el.dataset.href),
@@ -2894,7 +2882,6 @@
     'ov-kosarba-pdf': (el) => {
       const tetel = osszevetesTetel({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig }, el.dataset.cegNev || '');
       const r = Kosar.hozzaad([tetel]);
-      if (r.tul) return toast(`A nyomtatási kosár megtelt (legfeljebb ${KOSAR_MAX} sor) – üríts belőle, és próbáld újra.`, 'hiba');
       pdfKuldes([tetel]);   // a PDF csak ezt az összevetést tartalmazza; a kosárban marad, más tételekkel együtt is nyomtatható
       kosarLapFrissit();
       toast(`${I.print} Az összevetés ${r.mar ? 'már benne volt a' : 'bekerült a'} nyomtatási kosárba – a PDF új lapon nyílik.<br><small>${esc(tetel.cimke)}</small><br><small>${Kosar.db()} sor a kosárban – a jobb alsó nyomtató gombbal más tételekkel együtt is nyomtathatod.</small>`, 'siker', 6000);
