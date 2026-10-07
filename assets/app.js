@@ -1421,7 +1421,7 @@
     const aktualis = !!(akt && akt.id === u.id);
     const gyujtheto = u.statusz === 'NYITOTT' && !u.lezarva && jog('ir');
     return `<div class="kartya kattinthato${aktualis ? ' aktualis-utalas' : ''}" data-act="nav" data-href="#/utalas/${u.id}">
-      <div class="fejsor"><div style="min-width:0"><div class="cim"><span class="kod">${esc(u.uid)}</span>${lakatBadge(u)}${aktualis ? `<span class="badge aktualis" title="A bankkártyás gomb ehhez az utaláshoz gyűjt">${I.card} AKTUÁLIS GYŰJTŐ</span>` : ''}</div>
+      <div class="fejsor osszeg-alul"><div class="info" style="min-width:0"><div class="cim"><span class="kod">${esc(u.uid)}</span>${lakatBadge(u)}${aktualis ? `<span class="badge aktualis" title="A bankkártyás gomb ehhez az utaláshoz gyűjt">${I.card} AKTUÁLIS GYŰJTŐ</span>` : ''}</div>
         <div class="alsor">${badge(u.statusz)} ${badge(u.utalas_mod)} ${mutatCeg ? `<span>${esc(u.ceg_nev)}</span>` : ''}<span>${u.db} számla</span>${u.hatarertek != null ? `<span>limit: ${fmtOsszeg(u.hatarertek, u.penznem)}</span>` : ''}${u.utalva_datum ? `<span>utalva: ${fmtDatum(u.utalva_datum)}</span>` : ''}${u.utalva_at ? `<span title="Ekkor került UTALVA státuszba (${esc(u.utalta_nev || '?')})">UTALVA státusz: ${fmtIdo(u.utalva_at)}</span>` : ''}</div></div>
         <div class="osszeg${negOszt(u.osszeg)}">${fmtOsszeg(u.osszeg, u.penznem)}</div>${nyomtatGomb('utalas', u.id, u.uid)}<span class="nyil">${I.chev}</span></div>
       ${gyujtheto || aktualis ? `<div class="muveletek"><span class="tolt"></span>${aktualis ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalas-kosar" title="Az aktuális gyűjtő tartalma">${I.card} Gyűjtő megnyitása</button>` : `<button class="btn btn-outline narancs btn-sm" type="button" data-act="utalas-kosar-valaszt" data-utalas="${u.id}" title="A bankkártyás gomb mostantól ehhez az utaláshoz gyűjti a számlákat">${I.card} Ehhez gyűjtök</button>`}</div>` : ''}</div>`;
@@ -1719,7 +1719,7 @@
     try {
       const d = await api('bank_kivonatok', { q });
       lista.innerHTML = d.kivonatok.length ? d.kivonatok.map((k) => `<div class="kartya kattinthato" data-act="bank-reszlet" data-id="${k.id}">
-          <div class="fejsor"><div><div class="cim">${I.bank} ${esc(k.azonosito)}</div><div class="alsor"><span>${fmtDatum(k.datum)}</span><span>${k.db} számla</span>${k.cegek ? `<span>${esc(k.cegek)}</span>` : ''}</div></div>
+          <div class="fejsor osszeg-alul"><div class="info" style="min-width:0"><div class="cim">${I.bank} ${esc(k.azonosito)}</div><div class="alsor"><span>${fmtDatum(k.datum)}</span><span>${k.db} számla</span>${k.cegek ? `<span>${esc(k.cegek)}</span>` : ''}</div></div>
             <div class="osszeg">${k.osszeg_EUR ? `<div>${fmtOsszeg(k.osszeg_EUR, 'EUR')}</div>` : ''}${k.osszeg_HUF ? `<div>${fmtOsszeg(k.osszeg_HUF, 'HUF')}</div>` : ''}</div>${nyomtatGomb('kivonat', k.id, k.azonosito)}<span class="nyil">${I.chev}</span></div>
           <div data-bank-szamlak class="rejtett"></div></div>`).join('') : `<div class="ures">${URES}Nincs ${q ? 'a keresésnek megfelelő ' : ''}banki kivonat. Kimenő számla FIZETVE státuszba állításakor jön létre.</div>`;
     } catch (e) { lista.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`; }

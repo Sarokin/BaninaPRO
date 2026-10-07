@@ -295,6 +295,7 @@ kattintással odaugrik.
   PDF. A tétel a kosárban marad, így később más tételekkel együtt is nyomtatható; ugyanaz az összevetés kétszer nem
   kerül bele, más időszak külön tétel.
 * *Banki kivonatok* fül: keresés banki azonosítóra, egy kattintásra látszik, mely kimenő számlákat fedi le.
+  Az összegek egy oszlopban, jobbra igazítva állnak (1.18.2); telefonon az azonosító és a cégek alatt (ugyanígy az utalások listájában).
 * Árfolyam: **MNB hivatalos** (SOAP webszolgáltatás) → ha nem elérhető: ECB (frankfurter.app) → open.er-api.com →
   admin által beállított kézi árfolyam. 6 óránként frissül, az admin kézzel is frissítheti.
   (Ha a tárhely nem enged kimenő HTTP-hívást, állítsd be a kézi árfolyamot az Admin oldalon.)
@@ -507,6 +508,11 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.18.1-ről 1.18.2-re (a banki kivonatok listájában az összegek egy oszlopban állnak):** adatbázis-módosítás
+nincs. Az összeg, a nyomtatás-gomb és a nyíl mindig a kártya jobb szélén áll (eddig a cégnevek hossza eltolta),
+telefonon a banki kivonat, illetve az utalás adatai alatt. Töltsd fel a frissített `assets/app.css`, `assets/app.js`,
+`includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.18.0-ról 1.18.1-re (a nyomtatási kosárnak nincs felső korlátja, a piros X visszavonás nélkül ürít):**
 adatbázis-módosítás nincs. Az 500-as kosár- és PDF-korlát megszűnt, a cég oldalán a „Mind a kosárba” 3000 találat
@@ -829,4 +835,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.18.1 (2026-10-07)
+Verzió: 1.18.2 (2026-10-07)

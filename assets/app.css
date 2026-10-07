@@ -443,6 +443,10 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .kartya .alsor .szurke, .kartya .alsor .kicsi { color: var(--szoveg-2); }
 .megj-szoveg { white-space: pre-line; overflow-wrap: anywhere; }
 .kartya .osszeg { font-weight: 900; font-size: 18px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; letter-spacing: -.3px; line-height: 1.25; }
+/* az összeg (és utána a nyomtatás-gomb, a nyíl) mindig a jobb szélen, egy oszlopban – a bal oldali szöveg hossza nem tolja el */
+.kartya .fejsor > .osszeg { margin-left: auto; }
+/* banki kivonat, utalás: keskeny kijelzőn az azonosító és az adatok teljes szélességben, alattuk jobbra az összeg */
+@media (max-width: 639px) { .kartya .fejsor.osszeg-alul { flex-wrap: wrap; row-gap: 8px; } .kartya .fejsor.osszeg-alul > .info { flex: 1 1 100%; } }
 .kartya .osszeg.negativ, .osszeg .negativ { color: var(--piros); }
 .kartya .osszeg small { font-size: 11.5px; font-weight: 700; color: var(--halvany); letter-spacing: 0; text-transform: uppercase; }
 .kartya .muveletek { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
