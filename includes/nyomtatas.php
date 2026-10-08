@@ -571,26 +571,29 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
             foreach ($ut as $u) {
                 $u = utalas_sor_feldolgoz($u);
                 $t[$u['penznem']] = ($t[$u['penznem']] ?? 0) + $u['osszeg'];
-                // az utalás a fő sor (sötét sáv, a státusza jelvényben) – alatta a számlái, a gerinc köti őket hozzá (1.21; a mód nem szerepel)
-                $sorok[] = ['cellak' => [$u['uid'], $u['ceg_nev'], ny_statusz($u['statusz']), (string)$u['db'], ny_datum($u['utalva_datum']), ny_osszeg($u['osszeg'], $u['penznem']), trim(($u['banki_hivatkozas'] ?? '') . ' ' . ($u['megjegyzes'] ?? ''))],
+                // az utalás a fő sor (sötét sáv, a státusza jelvényben) – alatta a számlái, a gerinc köti őket hozzá
+                // (a mód 1.21-től, a hivatkozás 1.21.1-től nem szerepel)
+                $sorok[] = ['cellak' => [$u['uid'], $u['ceg_nev'], ny_statusz($u['statusz']), (string)$u['db'], ny_datum($u['utalva_datum']), ny_osszeg($u['osszeg'], $u['penznem'])],
                            'en' => [2 => ny_en($u['statusz'])],
                            'stilus' => 'fo', 'vastag' => [0 => true, 5 => true], 'jelveny' => [2 => $u['statusz'] === 'UTALVA' ? [1, 127, 1] : [217, 108, 0]]];
                 $szamlak = db_all('SELECT b.kod, b.k_sorszam, b.szamlaszam, b.osszeg, b.statusz, b.fizetesi_hatarido, k.kod AS kotes_kod, COALESCE(rb.reszt, 0) AS reszt, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek
                                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = ? ORDER BY k.kod, b.k_sorszam', [$u['id']]);
                 foreach ($szamlak as $s) {
-                    $reszt = (float)$s['reszt'] > 0;
-                    $sorok[] = ['cellak' => [sprintf('K%04d · „%s”', $s['k_sorszam'], $s['szamlaszam']), $s['kotes_kod'], ny_statusz($s['statusz']), '', ny_datum($s['fizetesi_hatarido']), ny_osszeg($s['hatralek'], $u['penznem']),
-                                             $reszt ? 'eredeti ' . ny_osszeg($s['osszeg']) . ', részteljesítés ' . ny_osszeg($s['reszt']) : ''],
-                               'en' => [2 => ny_en($s['statusz'])] + ($reszt ? [6 => 'original ' . ny_osszeg($s['osszeg']) . ', partial payments ' . ny_osszeg($s['reszt'])] : []),
-                               'szinek' => [2 => ny_bejovo_szin($s['statusz'])]];
+                    $sorok[] = ['cellak' => [sprintf('K%04d · „%s”', $s['k_sorszam'], $s['szamlaszam']), $s['kotes_kod'], ny_statusz($s['statusz']), '', ny_datum($s['fizetesi_hatarido']), ny_osszeg($s['hatralek'], $u['penznem'])],
+                               'en' => [2 => ny_en($s['statusz'])], 'szinek' => [2 => ny_bejovo_szin($s['statusz'])]];
+                    // részteljesítésnél az utalásban csak a hátralék van – alatta egy alsor mutatja az eredeti összeget és a részteljesítést
+                    if ((float)$s['reszt'] > 0) {
+                        $sorok[] = ['cellak' => ['» eredeti összeg ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', részteljesítés ' . ny_osszeg($s['reszt'], $u['penznem'])],
+                                    'en' => [0 => '» original amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', partial payments ' . ny_osszeg($s['reszt'], $u['penznem'])],
+                                    'stilus' => 'al', 'span' => [0 => 5]];
+                    }
                 }
             }
-            $sorok = array_merge($sorok, ny_osszesito($t, 7, 5));
+            $sorok = array_merge($sorok, ny_osszesito($t, 6, 5));
             $pdf->tablazat([
-                ['c' => 'Utalás UID / számla', 'en' => 'Transfer ID / invoice', 'w' => 44, 'a' => 'L'], ['c' => 'Cég / kötés', 'en' => 'Company / contract', 'w' => 36, 'a' => 'L'],
-                ['c' => 'Státusz', 'en' => 'Status', 'w' => 27.5, 'a' => 'C', 'st' => true], ['c' => 'Db', 'en' => 'Qty', 'w' => 8, 'a' => 'C'],
-                ['c' => 'Utalva / határidő', 'en' => 'Transferred / due', 'w' => 18.5, 'a' => 'C', 'nt' => true], ['c' => 'Összeg', 'en' => 'Amount', 'w' => 23, 'a' => 'R', 'nt' => true],
-                ['c' => 'Hivatkozás', 'en' => 'Reference', 'w' => 33, 'a' => 'L'],
+                ['c' => 'Utalás UID / számla', 'en' => 'Transfer ID / invoice', 'w' => 50, 'a' => 'L'], ['c' => 'Cég / kötés', 'en' => 'Company / contract', 'w' => 46, 'a' => 'L'],
+                ['c' => 'Státusz', 'en' => 'Status', 'w' => 28, 'a' => 'C', 'st' => true], ['c' => 'Db', 'en' => 'Qty', 'w' => 10, 'a' => 'C'],
+                ['c' => 'Utalva / határidő', 'en' => 'Transferred / due', 'w' => 26, 'a' => 'C', 'nt' => true], ['c' => 'Összeg', 'en' => 'Amount', 'w' => 30, 'a' => 'R', 'nt' => true],
             ], $sorok);
         }
     }

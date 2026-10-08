@@ -359,8 +359,10 @@ kattintással odaugrik.
   a bal szélükön a sáv színű **függőleges vonal** köti őket a sávhoz; két utalás között térköz van. Ha egy utalás
   számlái átnyúlnak a következő lapra, ott a sáv **„(folytatás)”** jelöléssel megismétlődik. Az összesítő sorok
   egyben maradnak, és sosem kerülnek egyedül egy lapra: az utolsó tételsor velük együtt kerül át.
-* **Az utalás nézetében nincs „Mód” oszlop (1.21):** a manuális / határértékes mód (és a határérték) nem szerepel a
-  PDF-ben; a helyén a cég és a hivatkozás kapott több helyet.
+* **Az utalás nézetében nincs „Mód” (1.21) és „Hivatkozás” (1.21.1) oszlop:** a manuális / határértékes mód (és a
+  határérték), valamint az utalás banki hivatkozása és megjegyzése nem szerepel a PDF-ben; a helyükön a többi oszlop
+  kapott több helyet (a cégnév és a dátum is kényelmesen elfér). Ha egy számlán részteljesítés volt (az utalásban
+  csak a hátraléka szerepel), alatta egy kis alsor mutatja az eredeti összeget és a részteljesítést.
 * **Jól olvasható tételsorok (1.21):** a PDF táblázataiban a tételsorok **9,5-es** betűvel készülnek (1.20.1-ben
   10-essel, 1.20.0-ban 12-essel), **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes.
   Az angol fordítás alattuk **7-es**, a magyarral azonos színnel (fekete-fehérben ez is fekete). Az oszlopfejlécek
@@ -406,7 +408,8 @@ kattintással odaugrik.
   (kötés, cég, határidők, kereső, utalás, kivonat…).
 * **Részteljesítések a PDF-ben:** ha egy számlához részteljesítés tartozik, a sora alatt kis betűs alsorok mutatják
   őket (*» részteljesítés – bank: …*, dátum, −összeg), nyitott számlánál egy *» hátralék (még fizetendő)* sorral.
-  Az utalás és a banki kivonat számláinál a hátralék (az utalt összeg) szerepel, mellette az eredeti összeg.
+  Az utalás és a banki kivonat számláinál a hátralék (az utalt összeg) szerepel, és az eredeti összeg is látszik (az
+  utalásnál egy alsorban, a kivonatnál a számla mellett).
 * **Bontott összesítő:** a bejövő és a kimenő táblázat végén pénznemenként három sor: *Összesen – teljes
   pénzforgalom*, *Fizetett / beszámított* (a rendezett számlák + a részteljesítések) és *Nyitott (még fizetendő)*.
 * **EGYENLEG a partnernek (kimenő, MIND fül):** a kimenő számlák oldalán a **MIND (egyenleg készítés)** fülön
@@ -589,6 +592,11 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.21.0-ról 1.21.1-re (az utalás PDF-jéből kikerült a „Hivatkozás” oszlop):** adatbázis-módosítás nincs.
+Az utalás banki hivatkozása és megjegyzése nem szerepel a PDF-ben; a részteljesítéses számla eredeti összege és
+részteljesítése a számla alatti alsorba került. Töltsd fel a frissített `includes/nyomtatas.php`, `includes/config.php`
+(csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.20.1-ről 1.21.0-ra (a PDF új megjelenése: az utalás fő sor, nincs „Mód” oszlop, 9,5-es tételsorok):**
 adatbázis-módosítás nincs. Az utalás, a banki kivonat és az összevetésben a kötés sora sötét sáv fehér betűkkel
@@ -943,4 +951,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.21.0 (2026-10-08)
+Verzió: 1.21.1 (2026-10-08)
