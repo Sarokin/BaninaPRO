@@ -192,13 +192,20 @@ final class PdfIro
     public $lablecRajzolo = null;
     /**
      * Fekete-fehér, nyomtatóra optimalizált mód (1.20): minden szöveg és vonal tiszta fekete (#000000), a világos
-     * háttérkitöltések elmaradnak, a sötét / telített kitöltések (pl. a szakasz-csík) feketék.
+     * háttérkitöltések elmaradnak, a sötét / telített kitöltések (pl. a szakasz-csík) feketék. Kivétel (1.21): a táblázatok
+     * fő sora fekete sáv fehér betűkkel, a státusza fehér jelvényben.
      */
     public bool $ff = false;
-    /** Táblázatok tételsorai (1.20.1): a magyar szöveg 10 pt, alatta az angol fordítás 7 pt; az oszlopfejléc 9 pt */
-    public float $sorPt = 10.0;
+    /** Táblázatok tételsorai (1.21): a magyar szöveg 9,5 pt, alatta az angol fordítás 7 pt; az oszlopfejléc 8,5 pt, angolja 6,5 pt */
+    public float $sorPt = 9.5;
     public float $sorEnPt = 7.0;
-    public float $fejPt = 9.0;
+    public float $fejPt = 8.5;
+    public float $fejEnPt = 6.5;
+    /** A fő sor (1.21) sávja: színesben mélyzöld, fekete-fehérben fekete; a betűi fehérek, az angol sora halványabb */
+    public array $foSzin = [16, 70, 38];
+    public array $foEnSzin = [184, 212, 193];
+    /** A fő sor jelvényének (pl. a státusz) betűmérete */
+    public float $jelvenyPt = 7.5;
 
     public function betuHozzaad(string $kulcs, string $fajl): void
     {
@@ -284,6 +291,29 @@ final class PdfIro
         $this->tartalom .= $s;
     }
 
+    /**
+     * Lekerekített sarkú, kitöltött téglalap (jelvény). Fekete-fehérben a $ffKitoltes színével (pl. fehér jelvény a fekete
+     * sávon) – a világos kitöltés itt szándékos, nem marad el.
+     */
+    public function lekerekitett(float $x, float $y, float $w, float $h, float $r, array $kitoltes, ?array $ffKitoltes = null): void
+    {
+        if ($this->ff) {
+            $kitoltes = $ffKitoltes ?? [0, 0, 0];
+        }
+        $r = min($r, $w / 2, $h / 2);
+        $k = 0.5523 * $r;   // a negyedkör Bézier-közelítése
+        $p = fn(float $px, float $py): string => self::f($this->px($px)) . ' ' . self::f($this->py($py));
+        $this->tartalom .= self::szin($kitoltes) . " rg\n"
+            . $p($x + $r, $y) . " m\n" . $p($x + $w - $r, $y) . " l\n"
+            . $p($x + $w - $r + $k, $y) . ' ' . $p($x + $w, $y + $r - $k) . ' ' . $p($x + $w, $y + $r) . " c\n"
+            . $p($x + $w, $y + $h - $r) . " l\n"
+            . $p($x + $w, $y + $h - $r + $k) . ' ' . $p($x + $w - $r + $k, $y + $h) . ' ' . $p($x + $w - $r, $y + $h) . " c\n"
+            . $p($x + $r, $y + $h) . " l\n"
+            . $p($x + $r - $k, $y + $h) . ' ' . $p($x, $y + $h - $r + $k) . ' ' . $p($x, $y + $h - $r) . " c\n"
+            . $p($x, $y + $r) . " l\n"
+            . $p($x, $y + $r - $k) . ' ' . $p($x + $r - $k, $y) . ' ' . $p($x + $r, $y) . " c\nf\n";
+    }
+
     public function vonal(float $x1, float $y1, float $x2, float $y2, array $rgb, float $vastag = 0.2): void
     {
         if ($this->ff) {
@@ -310,14 +340,15 @@ final class PdfIro
 
     /**
      * Szöveg kiírása. $x: bal szél (L), jobb szél (R) vagy közép (C). $y: alapvonal (mm).
+     * $ffRgb: a fekete-fehér PDF színe (alapból fekete; a fő sor fekete sávján fehér).
      */
-    public function szoveg(float $x, float $y, string $szoveg, string $kulcs, float $pt, array $rgb = [23, 23, 23], string $igazit = 'L'): void
+    public function szoveg(float $x, float $y, string $szoveg, string $kulcs, float $pt, array $rgb = [23, 23, 23], string $igazit = 'L', ?array $ffRgb = null): void
     {
         if ($szoveg === '') {
             return;
         }
         if ($this->ff) {
-            $rgb = [0, 0, 0];
+            $rgb = $ffRgb ?? [0, 0, 0];
         }
         $w = $this->szovegSzelesseg($szoveg, $kulcs, $pt);
         if ($igazit === 'R') {
@@ -346,12 +377,15 @@ final class PdfIro
         return '…';
     }
 
-    /** Sortörés szavak mentén (túl hosszú szót karakterenként tör) */
+    /**
+     * Sortörés szavak mentén (túl hosszú szót karakterenként tör). Csak a sima szóköz tör: a nem törhető szóköz (U+00A0,
+     * az összegekben: 12 500,50 EUR) egyben tartja a számot és a pénznemét (1.21).
+     */
     public function tordel(string $szoveg, string $kulcs, float $pt, float $maxMm): array
     {
         $sorok = [];
         foreach (preg_split('/\r?\n/', $szoveg) as $bek) {
-            $szavak = preg_split('/\s+/u', trim($bek)) ?: [];
+            $szavak = preg_split('/[ \t]+/', trim($bek, " \t")) ?: [];
             $akt = '';
             foreach ($szavak as $sz) {
                 if ($sz === '') {
@@ -397,145 +431,259 @@ final class PdfIro
         return $sorok ?: [''];
     }
 
+    /**
+     * Egy cella sorai és betűmérete. A nem törhető cella (dátum, összeg – 'nt' oszlop) soronként egyben marad: ha nem fér ki,
+     * kisebb betűvel (legfeljebb 75 %-ig), és csak ha még így sem, akkor törik.
+     */
+    private function cellaTordel(string $t, string $kulcs, float $pt, float $maxMm, bool $nemTorheto): array
+    {
+        if ($t === '' || !$nemTorheto) {
+            return [$t === '' ? [''] : $this->tordel($t, $kulcs, $pt, $maxMm), $pt];
+        }
+        $sorok = preg_split('/\r?\n/', $t);
+        $leg = max(array_map(fn(string $s): float => $this->szovegSzelesseg($s, $kulcs, $pt), $sorok));
+        if ($leg <= $maxMm) {
+            return [$sorok, $pt];
+        }
+        $p = floor(max($pt * 0.75, $pt * $maxMm / $leg) * 10) / 10;
+        return [$leg * $p / $pt <= $maxMm ? $sorok : $this->tordel($t, $kulcs, $p, $maxMm), $p];
+    }
+
     // ------------------------------------------------------------ táblázat
     /** Az angol (második nyelvű) sorok színe és méretcsökkentése */
     public array $enSzin = [128, 128, 124];
 
     /**
-     * $oszlopok: [['c' => 'Fejléc', 'en' => 'Header', 'w' => mm, 'a' => 'L|R|C', 'st' => true], ...]  – 'en': angol felirat a magyar alatt,
-     *            'st': státusz-oszlop (színes PDF-ben ez az egyetlen színes cella a tételsorokban)
-     * $sorok:    [ ['cellák' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|al|osszes|csoport', 'span' => [k => n], 'szinek' => [k => rgb]], ... ]
-     *            ('csoport': félkövér csoportfejléc halvány háttérrel, pl. a kötés sora a számlái felett)
-     * Tételsorok (1.20.1): 10 pt tiszta fekete szöveg (#000000), alatta az angol 7 pt ugyanazzal a színnel; színes csak a
-     * státusz-oszlop ('st'). Az összesítő sorok ('osszes') megtartják a megadott színeiket. Ami nem fér ki, tördelődik –
-     * a fejléc is. Fekete-fehér módban ($ff) minden fekete. Automatikus oldaltörés, minden oldalon ismétlődő fejléc.
+     * $oszlopok: [['c' => 'Fejléc', 'en' => 'Header', 'w' => mm, 'a' => 'L|R|C', 'st' => true, 'nt' => true], ...]
+     *   'en': angol felirat a magyar alatt; 'st': státusz-oszlop (színes PDF-ben a tételsorok egyetlen színes cellája);
+     *   'nt': nem törhető (dátum, összeg) – soronként egyben marad, ha nem fér ki, kisebb betűvel (1.21)
+     * $sorok: [['cellak' => ['..', ...], 'en' => [k => 'angol'], 'stilus' => 'normal|fo|al|osszes', 'span' => [k => n],
+     *           'szinek' => [k => rgb], 'jelveny' => [k => rgb], 'igazit' => [k => 'L|R|C'], 'vastag' => [k => true]], ...]
+     *   ('igazit': a cella saját igazítása; 'vastag': a fő sor félkövér cellái – megadása nélkül a fő sor minden cellája félkövér)
+     *   'fo' (1.21): fő sor, pl. az utalás a számlái felett – sötét sáv fehér betűkkel (színesben mélyzöld, fekete-fehérben
+     *        fekete). A következő fő / összesítő sorig minden sor hozzá tartozik: a bal szélükön a sáv színű gerinc köti őket
+     *        a sávhoz, és ha a csoport átnyúlik a következő lapra, ott a sáv „(folytatás)” jelöléssel megismétlődik.
+     *        'jelveny': a fő sor cellája fehér, lekerekített jelvényben (pl. a státusz), a megadott színű betűvel.
+     *   'al': alsor (pl. részteljesítés) – beljebb kezdődik; 'osszes': összesítő sor – félkövér, a megadott színekkel.
+     * Tételsorok: 9,5 pt tiszta fekete szöveg (#000000), alatta az angol 7 pt ugyanazzal a színnel; színes csak a
+     * státusz-oszlop ('st'). Ami nem fér ki, tördelődik – a fejléc is. Fekete-fehér módban ($ff) minden fekete, csak a fő
+     * sor sávja fekete alapon fehér. Automatikus oldaltörés, minden oldalon ismétlődő fejléc.
      */
-    public function tablazat(array $oszlopok, array $sorok, array $o = []): void
+    public function tablazat(array $oszlopok, array $sorok): void
     {
         $pt = $this->sorPt;
-        $fejPt = $this->fejPt;
-        $sorKoz = 0.75;            // sorok közti extra (mm)
-        $pad = 1.0;
+        $ept = $this->sorEnPt;
+        $pad = 1.1;              // cellák belső margója oldalt (mm)
+        $fpad = 1.15;            // ... és fent / lent
+        $gerinc = 0.9;           // a fő sorhoz tartozó sorok bal szélén a gerinc szélessége
+        $behuz = 2.2;            // ... és az első cellájuk behúzása
+        $foKoz = 2.6;            // térköz a csoportok között (a fő sor előtt)
+        $huLep = fn(float $p): float => $p * 0.42 + 0.45;                    // magyar sorköz
+        $enLep = fn(float $p): float => $p * 0.42 + 0.3;                     // angol sorköz
+        $enEltol = fn(float $p): float => $p * 0.0945 + 0.45 + $ept * 0.336; // utolsó magyar alapvonal → első angol alapvonal
         $x0 = $this->margoBal;
-        $teljes = array_sum(array_column($oszlopok, 'w'));
-        $skala = $this->szelesseg() / max($teljes, 0.001);
+        $szel = $this->szelesseg();
+        $oszlopok = array_values($oszlopok);
+        $skala = $szel / max(array_sum(array_column($oszlopok, 'w')), 0.001);
         foreach ($oszlopok as &$c) {
             $c['w'] *= $skala;
         }
         unset($c);
-        $enPt = max(4.8, $fejPt - 1.5);
-        // a fejléc is tördelődik (keskeny oszlopnál két sorba): oszloponként a magyar és az angol sorai
+
+        // fejléc: oszloponként a tördelt magyar és angol sorok (keskeny oszlopnál két sorba)
+        $fejPt = $this->fejPt;
+        $fejEnPt = $this->fejEnPt;
         $fejSorok = [];
         $fejH = 0.0;
         foreach ($oszlopok as $k => $c) {
             $hu = $this->tordel((string)$c['c'], 'bold', $fejPt, $c['w'] - 2 * $pad);
-            $en = !empty($c['en']) ? $this->tordel((string)$c['en'], 'regular', $enPt, $c['w'] - 2 * $pad) : [];
+            $en = !empty($c['en']) ? $this->tordel((string)$c['en'], 'regular', $fejEnPt, $c['w'] - 2 * $pad) : [];
             $fejSorok[$k] = [$hu, $en];
-            $fejH = max($fejH, count($hu) * ($fejPt * 0.42 + 0.5) + count($en) * ($enPt * 0.42 + 0.45));
+            $fejH = max($fejH, count($hu) * ($fejPt * 0.42 + 0.35) + count($en) * ($fejEnPt * 0.42 + 0.3));
         }
-        $fejlec = function () use ($oszlopok, $x0, $fejPt, $pad, $enPt, $fejSorok, $fejH) {
-            $h = $fejH + 2 * $pad + 0.4;
-            $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [242, 242, 239]);
+        $fejlec = function () use ($oszlopok, $x0, $szel, $fejPt, $fejEnPt, $pad, $fejSorok, $fejH): void {
+            $h = $fejH + 2 * $pad + 0.3;
+            $this->teglalap($x0, $this->y, $szel, $h, [242, 242, 239]);
+            if ($this->ff) {
+                $this->vonal($x0, $this->y, $x0 + $szel, $this->y, [0, 0, 0], 0.2);   // fekete-fehérben a háttér helyett felül is vonal keretezi
+            }
             $x = $x0;
             foreach ($oszlopok as $k => $c) {
                 $tx = $c['a'] === 'R' ? $x + $c['w'] - $pad : ($c['a'] === 'C' ? $x + $c['w'] / 2 : $x + $pad);
-                $ty = $this->y + $pad + $fejPt * 0.36 + 0.3;
-                foreach ($fejSorok[$k][0] as $sorSz) {
-                    $this->szoveg($tx, $ty, $sorSz, 'bold', $fejPt, [0, 0, 0], $c['a']);
-                    $ty += $fejPt * 0.42 + 0.5;
+                $ty = $this->y + $pad + $fejPt * 0.36 + 0.25;
+                foreach ($fejSorok[$k][0] as $s) {
+                    $this->szoveg($tx, $ty, $s, 'bold', $fejPt, [0, 0, 0], $c['a']);
+                    $ty += $fejPt * 0.42 + 0.35;
                 }
-                foreach ($fejSorok[$k][1] as $sorSz) {
-                    $this->szoveg($tx, $ty - 0.1, $sorSz, 'regular', $enPt, $this->enSzin, $c['a']);
-                    $ty += $enPt * 0.42 + 0.45;
+                foreach ($fejSorok[$k][1] as $s) {
+                    $this->szoveg($tx, $ty - 0.15, $s, 'regular', $fejEnPt, $this->enSzin, $c['a']);
+                    $ty += $fejEnPt * 0.42 + 0.3;
                 }
                 $x += $c['w'];
             }
-            $this->vonal($x0, $this->y + $h, $x0 + $this->szelesseg(), $this->y + $h, [1, 127, 1], 0.4);
+            $this->vonal($x0, $this->y + $h, $x0 + $szel, $this->y + $h, [1, 127, 1], 0.4);
             $this->y += $h;
         };
-        $this->helyBiztosit($fejH + $pt * 0.42 * 3 + 12);
-        $fejlec();
-        $i = 0;
-        foreach ($sorok as $sor) {
+
+        // egy sor előkészítése: cellánként a tördelt magyar és angol sorok, és a sor magassága
+        $elokeszit = function (array $sor, bool $csoportban, string $folyt = '', string $folytEn = '')
+            use ($oszlopok, $pt, $ept, $pad, $fpad, $behuz, $huLep, $enLep, $enEltol): array {
             $stilus = $sor['stilus'] ?? 'normal';
-            $al = $stilus === 'al';
-            $osszes = $stilus === 'osszes';
-            $csoport = $stilus === 'csoport';
-            $spt = $pt;                    // 1.20.1: minden tételsor (az alsorok is) 10 pt
-            $ept = $this->sorEnPt;         // angol sor: 7 pt
-            $kulcs = $osszes || $csoport ? 'bold' : 'regular';
-            // cella-összevonás: 'span' => [oszlop => hány oszlopra terjed ki] (pl. összesítő címkéknek)
-            $szel = [];
+            $fo = $stilus === 'fo';
+            $kulcs = $fo || $stilus === 'osszes' ? 'bold' : 'regular';
+            // cella-összevonás: 'span' => [oszlop => hány oszlopra terjed ki]
+            $span = [];
             $kihagy = [];
             foreach ($oszlopok as $k => $c) {
                 if (isset($kihagy[$k])) {
-                    $szel[$k] = 0;
                     continue;
                 }
-                $n = (int)($sor['span'][$k] ?? 1);
                 $w = $c['w'];
-                for ($j = 1; $j < $n && isset($oszlopok[$k + $j]); $j++) {
+                for ($j = 1; $j < (int)($sor['span'][$k] ?? 1) && isset($oszlopok[$k + $j]); $j++) {
                     $w += $oszlopok[$k + $j]['w'];
                     $kihagy[$k + $j] = true;
                 }
-                $szel[$k] = $w;
+                $span[$k] = $w;
             }
-            // tördelés cellánként (magyar + angol sorok)
             $cellak = [];
-            $enCellak = [];
-            $maxH = $spt * 0.42 + $sorKoz;
-            foreach ($oszlopok as $k => $c) {
-                $t = isset($kihagy[$k]) ? '' : (string)($sor['cellak'][$k] ?? '');
-                $sorokC = $t === '' ? [''] : $this->tordel($t, $kulcs, $spt, $szel[$k] - 2 * $pad);
-                $cellak[$k] = $sorokC;
-                $e = isset($kihagy[$k]) ? '' : (string)($sor['en'][$k] ?? '');
-                $enCellak[$k] = $e === '' ? [] : $this->tordel($e, 'regular', $ept, $szel[$k] - 2 * $pad);
-                // az angol sor alatt +0,5 mm, hogy a 10 pt-os sor alatti 7 pt-os angol ne érjen a következő sor vonalához (1.20.1)
-                $hC = count($sorokC) * ($spt * 0.42 + $sorKoz) + count($enCellak[$k]) * ($ept * 0.42 + $sorKoz * 0.6) + ($enCellak[$k] ? 0.5 : 0);
-                $maxH = max($maxH, $hC);
-            }
-            $h = $maxH + 2 * $pad - 0.2;
-            if ($this->y + $h > $this->alsoHatar()) {
-                $this->ujOldal();
-                $fejlec();
-                $i = 0;
-            }
-            if ($osszes) {
-                $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [233, 244, 233]);
-                $this->vonal($x0, $this->y, $x0 + $this->szelesseg(), $this->y, [1, 127, 1], 0.4);
-            } elseif ($al) {
-                $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [250, 250, 248]);
-            } elseif ($csoport) {
-                $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [238, 238, 234]);
-            } elseif ($i % 2 === 1) {
-                $this->teglalap($x0, $this->y, $this->szelesseg(), $h, [247, 247, 244]);
-            }
-            $x = $x0;
-            $fekete = [0, 0, 0];
-            foreach ($oszlopok as $k => $c) {
-                $ty = $this->y + $pad + $spt * 0.36 + 0.45;
-                $cw = $szel[$k] > 0 ? $szel[$k] : $c['w'];
-                $tx = $c['a'] === 'R' ? $x + $cw - $pad : ($c['a'] === 'C' ? $x + $cw / 2 : $x + $pad + ($al && $k === 0 ? 2.5 : 0));
-                // tételsor: tiszta fekete, csak a státusz színes; összesítő sor: a megadott színek, az angol halványan
-                $cSzin = $osszes || !empty($c['st']) ? ($sor['szinek'][$k] ?? $fekete) : $fekete;
-                $eSzin = $osszes ? $this->enSzin : $cSzin;
-                foreach ($cellak[$k] as $sorSz) {
-                    $this->szoveg($tx, $ty, $sorSz, $kulcs, $spt, $cSzin, $c['a']);
-                    $ty += $spt * 0.42 + $sorKoz;
+            $h = $pt * 0.36 + $pt * 0.0945;
+            foreach ($span as $k => $w) {
+                $bal = $pad + ($k === 0 ? ($csoportban ? $behuz : 0) + ($stilus === 'al' ? 2.5 : 0) : 0);
+                $hely = $w - $bal - $pad;
+                $t = (string)($sor['cellak'][$k] ?? '');
+                $e = (string)($sor['en'][$k] ?? '');
+                if ($k === 0 && $folyt !== '') {
+                    $t .= $folyt;
+                    $e = trim("$e $folytEn");
                 }
-                foreach ($enCellak[$k] as $sorSz) {
-                    $this->szoveg($tx, $ty - 0.25, $sorSz, 'regular', $ept, $eSzin, $c['a']);
-                    $ty += $ept * 0.42 + $sorKoz * 0.6;
+                $jel = $fo && isset($sor['jelveny'][$k]) && $t !== '';
+                $ck = $fo && isset($sor['vastag']) ? (empty($sor['vastag'][$k]) ? 'regular' : 'bold') : $kulcs;
+                [$hu, $p] = $jel ? [[$t], $pt] : $this->cellaTordel($t, $ck, $pt, $hely, !empty($oszlopok[$k]['nt']));
+                $en = $e === '' ? [] : $this->tordel($e, 'regular', $ept, $hely);
+                // az első alapvonalig + a további magyar sorok + az angol sorok + az utolsó sor ereszkedője
+                $hC = $pt * 0.36 + (count($hu) - 1) * $huLep($p)
+                    + ($en ? $enEltol($p) + (count($en) - 1) * $enLep($ept) + $ept * 0.0945 : $p * 0.0945);
+                $h = max($h, $hC);
+                $cellak[$k] = ['hu' => $hu, 'en' => $en, 'pt' => $p, 'bal' => $bal, 'w' => $w, 'jel' => $jel, 'kulcs' => $ck];
+            }
+            return ['sor' => $sor, 'stilus' => $stilus, 'csoportban' => $csoportban, 'cellak' => $cellak, 'h' => $h + 2 * $fpad];
+        };
+
+        // egy előkészített sor kirajzolása a $this->y magasságban ($osszesUtan: az előző sor is összesítő volt)
+        $rajzol = function (array $r, int $zebra, bool $osszesUtan = false) use ($oszlopok, $x0, $szel, $pt, $ept, $pad, $fpad, $gerinc, $huLep, $enLep, $enEltol): void {
+            $y = $this->y;
+            $h = $r['h'];
+            $fo = $r['stilus'] === 'fo';
+            $osszes = $r['stilus'] === 'osszes';
+            if ($fo) {
+                $this->teglalap($x0, $y, $szel, $h, $this->foSzin);
+            } elseif ($osszes) {
+                // az összesítő blokk tetején erős vonal, a blokkon belül csak hajszálvonal
+                $this->teglalap($x0, $y, $szel, $h, [233, 244, 233]);
+                $this->vonal($x0, $y, $x0 + $szel, $y, $osszesUtan ? [200, 222, 200] : [1, 127, 1], $osszesUtan ? ($this->ff ? 0.1 : 0.15) : 0.4);
+            } elseif ($r['stilus'] === 'al') {
+                $this->teglalap($x0, $y, $szel, $h, [250, 250, 248]);
+            } elseif ($zebra % 2 === 1) {
+                $this->teglalap($x0, $y, $szel, $h, [247, 247, 244]);
+            }
+            if ($r['csoportban']) {
+                $this->teglalap($x0, $y, $gerinc, $h, $this->foSzin);   // a gerinc a fő sor sávjához köti a sort
+            }
+            $fekete = [0, 0, 0];
+            $feher = [255, 255, 255];
+            $x = $x0;
+            foreach ($oszlopok as $k => $c) {
+                if (isset($r['cellak'][$k])) {
+                    $cl = $r['cellak'][$k];
+                    $a = $r['sor']['igazit'][$k] ?? $c['a'];
+                    $tx = $a === 'R' ? $x + $cl['w'] - $pad : ($a === 'C' ? $x + $cl['w'] / 2 : $x + $cl['bal']);
+                    $ty = $y + $fpad + $pt * 0.36;
+                    if ($fo) {
+                        // fő sor: fehér betűk a sötét sávon (fekete-fehérben is fehér), az angol halványabban
+                        [$huSzin, $huFf, $enSzin, $enFf] = [$feher, $feher, $this->foEnSzin, $feher];
+                    } else {
+                        // tételsor: tiszta fekete, csak a státusz színes; összesítő sor: a megadott színek, az angol halványan
+                        $huSzin = $osszes || !empty($c['st']) ? ($r['sor']['szinek'][$k] ?? $fekete) : $fekete;
+                        [$huFf, $enSzin, $enFf] = [null, $osszes ? $this->enSzin : $huSzin, null];
+                    }
+                    if ($cl['jel']) {
+                        // jelvény: fehér, lekerekített; a betű a megadott színű (fekete-fehérben fekete)
+                        $jp = $this->jelvenyPt;
+                        $jw = $this->szovegSzelesseg($cl['hu'][0], 'bold', $jp) + 3.4;
+                        $jh = $jp * 0.42 + 1.35;
+                        $jx = $a === 'R' ? $tx - $jw : ($a === 'C' ? $tx - $jw / 2 : $tx);
+                        $kozep = $ty - $pt * 0.1132;
+                        $this->lekerekitett($jx, $kozep - $jh / 2, $jw, $jh, $jh / 2, $feher, $feher);
+                        $this->szoveg($jx + $jw / 2, $kozep + $jp * 0.1132, $cl['hu'][0], 'bold', $jp, $r['sor']['jelveny'][$k], 'C');
+                    } else {
+                        foreach ($cl['hu'] as $i => $s) {
+                            $this->szoveg($tx, $ty + $i * $huLep($cl['pt']), $s, $cl['kulcs'], $cl['pt'], $huSzin, $a, $huFf);
+                        }
+                    }
+                    $ty += (count($cl['hu']) - 1) * $huLep($cl['pt']) + $enEltol($cl['pt']);
+                    foreach ($cl['en'] as $i => $s) {
+                        $this->szoveg($tx, $ty + $i * $enLep($ept), $s, 'regular', $ept, $enSzin, $a, $enFf);
+                    }
                 }
                 $x += $c['w'];
             }
-            $this->y += $h;
-            if (!$osszes) {
-                $this->vonal($x0, $this->y, $x0 + $this->szelesseg(), $this->y, [232, 232, 229], 0.15);
+            if (!$fo && !$osszes) {
+                $this->vonal($x0 + ($r['csoportban'] ? $gerinc : 0), $y + $h, $x0 + $szel, $y + $h, [226, 226, 222], $this->ff ? 0.1 : 0.15);
             }
-            $i = $csoport ? 0 : $i + 1;   // a csoport alatti sorok csíkozása elölről indul
+        };
+
+        // a fő sorhoz tartozó sorok: a következő fő / összesítő sorig
+        $el = [];
+        $csoportban = false;
+        foreach ($sorok as $sor) {
+            $st = $sor['stilus'] ?? 'normal';
+            if ($st === 'fo' || $st === 'osszes') {
+                $csoportban = false;
+            }
+            $el[] = $elokeszit($sor, $csoportban);
+            if ($st === 'fo') {
+                $csoportban = true;
+            }
         }
-        $this->y += 1.5;
+        $this->helyBiztosit($fejH + 30);
+        $fejlec();
+        $zebra = 0;
+        $fo = null;       // az aktuális csoport fő sora – ha a csoport a következő lapon folytatódik, ott megismétlődik
+        $elso = true;     // a fejléc alatti első sor
+        $elozo = '';      // az előző sor stílusa
+        foreach ($el as $i => $r) {
+            $isFo = $r['stilus'] === 'fo';
+            $koz = $isFo && !$elso ? $foKoz : 0.0;
+            // a fő sor ne maradjon árván a lap alján: alatta elférjen a csoport első sora is
+            $kell = $r['h'] + ($isFo && isset($el[$i + 1]) && $el[$i + 1]['csoportban'] ? $el[$i + 1]['h'] : 0.0);
+            // az összesítő blokk (egymást követő összesítő sorok) egyben marad, és nem kerül egyedül a lapra: az előtte álló
+            // utolsó tételsor is vele megy
+            if ($r['stilus'] !== 'osszes' || $elozo !== 'osszes') {
+                for ($j = $i + 1; isset($el[$j]) && $el[$j]['stilus'] === 'osszes'; $j++) {
+                    $kell += $el[$j]['h'];
+                }
+            }
+            if ($this->y + $koz + $kell > $this->alsoHatar()) {
+                $this->ujOldal();
+                $fejlec();
+                $zebra = 0;
+                $koz = 0.0;
+                $elozo = '';
+                if ($r['csoportban'] && $fo !== null) {
+                    $folyt = $elokeszit($fo['sor'], false, ' (folytatás)', '(continued)');
+                    $rajzol($folyt, 0);
+                    $this->y += $folyt['h'];
+                }
+            }
+            $this->y += $koz;
+            $rajzol($r, $zebra, $elozo === 'osszes' && $r['stilus'] === 'osszes');
+            $this->y += $r['h'];
+            $elozo = $r['stilus'];
+            $zebra = $isFo ? 0 : $zebra + 1;   // a csoport sorainak csíkozása elölről indul
+            $fo = $isFo ? $r : ($r['csoportban'] ? $fo : null);
+            $elso = false;
+        }
+        $this->y += 2.0;
     }
 
     /** Szakasz-fejléc (színes sáv) – opcionális angol sorral a magyar alatt */

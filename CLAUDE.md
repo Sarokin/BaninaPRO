@@ -306,7 +306,7 @@ Workflow:
 - **Never discard uncommitted work without a backup.** Save a patch and copies of untracked files to the scratchpad first. Once, 1.15 was discarded on request and had to be restored the next day.
 
 Verification:
-- **Frontend tests.** `tests/e2e/futtat.sh` must stay green: 30 tests, run in 2 browser projects. The 600-row basket test runs on desktop only, so a full run reports 59 passed and 1 skipped.
+- **Frontend tests.** `tests/e2e/futtat.sh` must stay green: 32 tests, run in 2 browser projects. The 600-row basket test and the long-utalás PDF test run on desktop only, so a full run reports 62 passed and 2 skipped.
   - The print FAB builds the PDF directly. The basket sheet opens via Menü → Nyomtatási kosár.
   - The red X on the print FAB (`.fab-urit`, 1.18) empties the basket at once. The user asked for no undo.
   - Keep accessible names unique. `osszevetes.spec.ts` clicks `getByRole('button', { name: /^Nyomtatási kosár/ })` (the menu item), so the X is named „Kosár ürítése”.
@@ -321,17 +321,20 @@ Verification:
   - Then run a full end-to-end test from the server's real broken state (see the installer section).
 - **Destructive commands get blocked.** The auto-mode permission check blocks commands such as `DROP DATABASE`, even on a throwaway database. Verify non-destructively instead: diffs, or a separate throwaway container.
 
-PDF output (1.20, `includes/pdf.php` + `includes/nyomtatas.php`):
-- Table body rows are 10 pt pure black (#000000) with 7 pt English below (the user's choice in 1.20.1; 1.20.0 had 12 / 9 pt), on portrait A4 only (the user's decision: no landscape); whatever does not fit wraps. `tordel()` breaks long words after `-`, `.`, `/` and `_` before it falls back to single characters. Headers are 9 pt and wrap as well.
+PDF output (1.21, `includes/pdf.php` + `includes/nyomtatas.php`):
+- Table body rows are 9.5 pt pure black (#000000) with 7 pt English below (1.21, the user left the size to me; 1.20.1 had 10 pt, 1.20.0 12 pt), headers 8.5 pt with 6.5 pt English, on portrait A4 only (the user's decision: no landscape).
+- Dates and amounts never wrap. Mark such columns `'nt' => true`: the cell stays on one line per `\n` and shrinks (to 75 % at most) only if it cannot fit. `ny_osszeg()` uses NBSP (U+00A0) as the thousands separator and before the currency, and `tordel()` breaks only at ASCII spaces, so a number never splits. Other text wraps; `tordel()` breaks long words after `-`, `.`, `/` and `_` before it falls back to single characters.
+- Column widths are measured, not guessed (Lato, 9.5 pt, 1.1 mm padding per side): a date is 16.1 mm (column ≥ 18.5), `2026-HUF-000001-` 25.8 mm (column 28.3 → the ID breaks as `…-000001-` / `K0001`), `U-EUR-2026-000001` 27.8 mm, `UTALÁSHOZ ADVA` 25.1 mm, `12 500,50 EUR` 19.8 mm. Measure with `PdfIro::szovegSzelesseg()` before changing a width. The bejövő / kimenő lists (10 columns) stack the dates in pairs (`Kelt / Teljesítés`, `Határidő / Utalva|Fizetve`) because four date columns do not fit.
+- **Main row (`'stilus' => 'fo'`, 1.21, user request):** the utalás row (also the banki kivonat row and the kötés row in the Összevetés) is a dark band with white text: deep green `PdfIro::$foSzin` in color, black in B&W. The rows after it, up to the next `fo` or `osszes` row, belong to it: a spine in the band color on their left edge, indented first cell, a gap before the next band, and the band repeats with „(folytatás)” after a page break. Row options: `'jelveny' => [k => rgb]` (status in a white rounded pill), `'vastag' => [k => true]` (bold cells; default all bold), `'igazit' => [k => 'L|R|C']`. The utalás print has no „Mód” column (user request).
+- Page-break rules: a `fo` row never ends a page without its first child; a block of `osszes` rows stays together and takes the preceding row with it.
 - In color mode only the status column is colored: mark it with `'st' => true` in the column definition. Summary rows (`osszes`) keep their colors. The English line takes the color of its Hungarian cell.
-- Black-and-white mode (`PdfIro::$ff`, from the `szin=ff` form field) forces every text and line to black, drops light fills and turns dark fills black. It is toggled by `.fab-szin`, a two-state button at the bottom right of the print FAB, mirroring the red X. The state is per user in `localStorage` (`PdfSzin`), and `pdfKuldes()` sends it.
-- Column widths were tuned for 12 pt and kept unchanged at 10 pt (the user asked for no other change). Measured 12 pt text widths: a date takes 20.4 mm on one line and needs 15 mm columns to wrap cleanly as `2026.` / `01.01.`; BESZÁMÍTVA takes 22.3 mm.
+- Black-and-white mode (`PdfIro::$ff`, from the `szin=ff` form field) forces every text and line to black, drops light fills and turns dark fills black; the only white is the text and pill on the `fo` band (`szoveg()`'s `$ffRgb`, `lekerekitett()`'s `$ffKitoltes`). The table header gets a top rule instead of its fill. It is toggled by `.fab-szin`, a two-state button at the bottom right of the print FAB, mirroring the red X. The state is per user in `localStorage` (`PdfSzin`), and `pdfKuldes()` sends it.
 
 Pattern: adding a print-basket item type (1.16 `osszevetes`, 1.19 `allapot`):
 - **JS.** Add the type to `KOSAR_TIPUS` (its order is the basket order). Any extra fields, such as `q`, must survive `Kosar.lista()`, `Kosar.hozzaad()` and `pdfKuldes()`. A `q`-carrying type also needs a cleaner in `KOSAR_Q`, and its id comes from `lekerdezesId()` over the query.
 - **PHP.** Add the type to `NY_TIPUSOK`, add validation and a dedupe key in `pdf.php`, and add a renderer in `includes/nyomtatas.php`.
 - **One data source.** Reuse the API's data function (for example `osszevetes_reszletek_adat()`) so the page and the PDF always agree.
-- **Row styles.** `PdfIro::tablazat` supports `normal`, `al` (sub-row), `osszes` (total) and `csoport` (bold group header). Text is bilingual: Hungarian, with English below.
+- **Row styles.** `PdfIro::tablazat` supports `normal`, `fo` (main row: dark band, its rows below it), `al` (sub-row) and `osszes` (total). Text is bilingual: Hungarian, with English below.
 
 Environment quirks:
 - Ubuntu 26.04 ships uutils coreutils. `chown user:` keeps the old group there; this is cosmetic.

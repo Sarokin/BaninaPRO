@@ -348,15 +348,30 @@ kattintással odaugrik.
 * **Színes vagy fekete-fehér PDF (1.20):** a nyomtató gomb **jobb alsó részén** (a piros X-szel szemben) egy kis
   kerek kapcsoló van, ha a kosárban van valami. **Színkör** = színes PDF (mint eddig), **fél fekete / fél fehér kör** =
   **fekete-fehér, nyomtatóra optimalizált PDF**: minden szöveg és vonal tiszta fekete (#000000), a halvány háttérszínek
-  (csíkozás, fejléc, összesítő sorok) elmaradnak, így a fekete-fehér nyomtató nem szürke raszterrel nyomtat.
-  Egy koppintás vált; a beállítást a böngésző felhasználónként megjegyzi, és minden PDF ezzel készül (a nyomtató
-  gomb, a kosár ablak *PDF készítése* gombja és az összevetés PDF-je is).
-* **Jól olvasható tételsorok (1.20):** a PDF táblázataiban a tételsorok **10-es** betűvel készülnek (1.20.1-től; az
-  1.20.0-ban 12-essel, előtte 7-essel), **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes.
-  Az angol fordítás alattuk **7-es** (az 1.20.0-ban 9-es),
-  a magyarral azonos színnel (fekete-fehérben ez is fekete). A lap **álló A4** marad: ami nem fér ki egy sorba (pl.
-  a számla-azonosító, a dátum, a cégnév), az a cellában tördelődik – az azonosító a kötőjelnél, a dátum a pontnál
-  (`2026.` / `01.01.`), nem betű közepén. Az oszlopfejlécek 9-esek, szükség esetén szintén két sorba törnek.
+  (csíkozás, fejléc, összesítő sorok) elmaradnak, így a fekete-fehér nyomtató nem szürke raszterrel nyomtat; a
+  táblázat fejlécét ilyenkor felül-alul vonal keretezi. Egyetlen kivétel a **fő sor** (1.21, lásd lent): az fekete
+  sáv fehér betűkkel. Egy koppintás vált; a beállítást a böngésző felhasználónként megjegyzi, és minden PDF ezzel
+  készül (a nyomtató gomb, a kosár ablak *PDF készítése* gombja és az összevetés PDF-je is).
+* **Fő sor – mi tartozik mihez, egy pillantásra (1.21):** az **utalás** sora (és ugyanígy a **banki kivonat**, az
+  összevetésben a **kötés** sora) kiemelt fő sor: teljes szélességű **sötét sáv fehér betűkkel** – színes PDF-ben
+  mélyzöld, fekete-fehérben fekete. Az azonosító és az összeg félkövér, a státusz fehér, lekerekített **jelvényben**
+  áll (színesben zöld UTALVA / narancs NYITOTT betűvel). Alatta a hozzá tartozó számlák kicsit beljebb kezdődnek, és
+  a bal szélükön a sáv színű **függőleges vonal** köti őket a sávhoz; két utalás között térköz van. Ha egy utalás
+  számlái átnyúlnak a következő lapra, ott a sáv **„(folytatás)”** jelöléssel megismétlődik. Az összesítő sorok
+  egyben maradnak, és sosem kerülnek egyedül egy lapra: az utolsó tételsor velük együtt kerül át.
+* **Az utalás nézetében nincs „Mód” oszlop (1.21):** a manuális / határértékes mód (és a határérték) nem szerepel a
+  PDF-ben; a helyén a cég és a hivatkozás kapott több helyet.
+* **Jól olvasható tételsorok (1.21):** a PDF táblázataiban a tételsorok **9,5-es** betűvel készülnek (1.20.1-ben
+  10-essel, 1.20.0-ban 12-essel), **tiszta fekete** (#000000) betűvel – színes PDF-ben csak a **státusz** színes.
+  Az angol fordítás alattuk **7-es**, a magyarral azonos színnel (fekete-fehérben ez is fekete). Az oszlopfejlécek
+  8,5-esek, alattuk az angol 6,5-ös. A lap **álló A4** marad. **Dátum és összeg sosem törik** két sorba (az összegben
+  a szám és a pénznem egyben marad; ha egy nagyon nagy összeg nem férne ki, kicsit kisebb betűvel egy sorban marad),
+  az oszlopok szélessége úgy van kiszámolva, hogy a dátum (`2026.09.18.`) és a megszokott összegek kiférjenek. Ami
+  szöveg nem fér ki (cégnév, hivatkozás), az tördelődik, a számla-azonosító a kötőjelnél (`2026-EUR-000001-` / `K0001`).
+  A **bejövő és a kimenő számlák** listájában a dátumok párban, egymás alatt állnak: **Kelt / Teljesítés** és
+  **Határidő / Utalva** (kimenőnél *Határidő / Fizetve*) – így minden dátum egy sorban marad, és a cég, a számlaszám
+  és az utalás is elfér. Az **összevetésben** a kötés sávja alatt a számlák a rövid sorszámukkal állnak (`K0001`), a
+  kötés azonosítója a sávban van.
 * **Kétnyelvű PDF (1.9-től):** minden magyar felirat alatt halványabb, kisebb betűvel az angol megfelelője –
   oszlopfejlécek (Számla ID / Invoice ID, Határidő / Due date, Utalva / Transferred…), szakaszcímek (Bejövő
   számlák / Incoming invoices), státuszok (FIZETVE / PAID, FIZETENDŐ / PAYABLE, UTALÁSHOZ ADVA / IN TRANSFER,
@@ -386,8 +401,8 @@ kattintással odaugrik.
   PHP-memóriakorlátját szükség esetén 1 GB-ra emeli (csak emel, csökkenteni soha).
 * A PDF-készítés is naplózódik (`PDF_NYOMTATAS`). A PDF-hez nem kell külső könyvtár vagy szerverbeállítás
   (saját PDF-író, beágyazott betűk – az ő/ű is jó).
-* **Fizetés dátuma a PDF-ben:** a bejövő táblázatban a Határidő mellett **Utalva** oszlop (FIZETVE / BESZÁMÍTVA
-  számlánál az utalás dátuma), a kimenő táblázatban **Fizetve** oszlop – bárhonnan kerül a számla a kosárba
+* **Fizetés dátuma a PDF-ben:** a bejövő táblázatban a Határidő alatt az **Utalva** dátum (FIZETVE / BESZÁMÍTVA
+  számlánál az utalás dátuma), a kimenő táblázatban a **Fizetve** dátum – bárhonnan kerül a számla a kosárba
   (kötés, cég, határidők, kereső, utalás, kivonat…).
 * **Részteljesítések a PDF-ben:** ha egy számlához részteljesítés tartozik, a sora alatt kis betűs alsorok mutatják
   őket (*» részteljesítés – bank: …*, dátum, −összeg), nyitott számlánál egy *» hátralék (még fizetendő)* sorral.
@@ -574,6 +589,12 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.20.1-ről 1.21.0-ra (a PDF új megjelenése: az utalás fő sor, nincs „Mód” oszlop, 9,5-es tételsorok):**
+adatbázis-módosítás nincs. Az utalás, a banki kivonat és az összevetésben a kötés sora sötét sáv fehér betűkkel
+(fekete-fehérben fekete), alatta a hozzá tartozó sorok; az utalás nézetéből kikerült a „Mód” oszlop; a dátumok és
+összegek nem törnek két sorba. Töltsd fel a frissített `includes/pdf.php`, `includes/nyomtatas.php`,
+`includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.20.0-ról 1.20.1-re (a PDF tételsorai 10-es, az angol fordításuk 7-es betűvel):** adatbázis-módosítás
 nincs. Az angol sor alatt 0,5 mm-rel több a hely, hogy ne érjen a következő sor vonalához; más nem változott. Töltsd
@@ -922,4 +943,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.20.1 (2026-10-07)
+Verzió: 1.21.0 (2026-10-08)
