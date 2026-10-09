@@ -139,8 +139,9 @@ Fix bugs in these components in place; do not swap in libraries.
 
 ### Database and migrations
 - `sql/schema.sql` is the full current schema (utf8mb4, `CREATE TABLE IF NOT EXISTS`) and creates the initial admin.
-  - It is tracked in git (the migrations in `sql/` are not). The server installer (`SERVER SETUP AND UPDATE/szerver_beallitas.sh`) re-applies it to an existing database to fill in missing tables, so keep it idempotent: only `CREATE TABLE IF NOT EXISTS` and `INSERT … ON DUPLICATE KEY UPDATE`, never `DROP`, `DELETE`, `ALTER` or plain `INSERT`.
-- Schema changes ship as **incremental `sql/frissites_<version>.sql`** files that users run manually in phpMyAdmin. When you change the schema, update `schema.sql` **and** add a `frissites_X.Y.sql` file. Also add a troubleshooting row to `TELEPITES.md` §10 for the "Unknown column" error users see when they forget the migration. Nothing applies migrations automatically.
+  - It is tracked in git (the migrations in `sql/` are not). The server installer (`SERVER SETUP AND UPDATE/szerver_beallitas.sh`) runs it whole on a database with no users, and loads it into a scratch database to diff against the live one (`sema_egyeztetes`), so keep it idempotent: only `CREATE TABLE IF NOT EXISTS` and `INSERT … ON DUPLICATE KEY UPDATE`, never `DROP`, `DELETE`, `ALTER` or plain `INSERT`.
+- Schema changes ship as **incremental `sql/frissites_<version>.sql`** files that users run manually in phpMyAdmin. When you change the schema, update `schema.sql` **and** add a `frissites_X.Y.sql` file. Also add a troubleshooting row to `TELEPITES.md` §10 for the "Unknown column" error users see when they forget the migration.
+  - On cPanel nothing applies migrations automatically. On the internal server the installer adds what the live database lacks compared to `schema.sql`: tables, columns, indexes, foreign keys, and non-lossy column changes (new ENUM values, wider types, NULL allowed, new defaults). It never drops or narrows anything and never moves data; it only warns about such differences, so those still need the `frissites` file.
 - The DB session is forced to Budapest time and strict `sql_mode` (`includes/db.php`).
 
 ### Security and privacy conventions
@@ -154,10 +155,13 @@ Fix bugs in these components in place; do not swap in libraries.
 
 ## Internal server installer (`SERVER SETUP AND UPDATE/szerver_beallitas.sh`)
 
-One bash script turns a fresh Ubuntu Server (24.04 / 26.04) into the company's internal BaninaPRO server, and every later run updates it: DB backup → `git pull` → system upgrade → container rebuild. Run it as `sudo bash szerver_beallitas.sh` from the repo. If it is run as a lone file, it clones the repo into `~/BaninaPRO` and re-executes from there.
+One bash script turns a fresh Ubuntu Server (24.04 / 26.04, the minimized install too) into the company's internal BaninaPRO server, and every later run updates it: DB backup → `git pull` → system upgrade → container rebuild. Run it as `sudo bash szerver_beallitas.sh` from the repo. If it is run as a lone file, it clones the repo into `~/BaninaPRO` and re-executes from there, passing its flags on (`--email`, `--nincs-visszaallitas`).
+
+It is the only installer. A trimmed "light" copy (USB stick, no system updates) existed until 2026-10-09; the user had it deleted.
 
 Goals the user set. Keep them when changing anything here:
 - **Self-healing, no human intervention.** The service must stay reachable on the LAN whatever happens.
+- **Rerunning repairs everything** (2026-10-09). Whatever broke, running the installer again must leave an environment where BaninaPRO runs. It installs or repairs everything it needs itself, from the base tools to Docker, the code and the database, and stops only when something truly can't be fixed.
 - **License-clean.** No paid or proprietary dependencies, no extra modules where a built-in tool works. For example, e-mail goes through `curl`'s SMTP support, not msmtp.
   - The one exception is AnyDesk, kept by the user's decision. Its free edition is for private use only, so the business license is the user's responsibility. Don't replace it without asking.
   - Everything else installed is open source and free for business use: Ubuntu, Docker Engine, MySQL Community, phpMyAdmin, PHP, Apache, Firefox, LXQt, curl, avahi.
@@ -169,6 +173,24 @@ Install and repair behavior:
 - **Failure severity.** Non-essential steps warn with `figy` and continue; essential ones stop with `hiba`. Any other failing command stops the run through the ERR trap ("Váratlan hiba"), so wrap non-essential writes in `if …; then …; else figy …; fi`.
 - **Command substitution.** The script's stdout is the log, but inside `$(...)` it is captured. A function used as `x="$(f)"` must print only its result and send everything else, including package installs and `ok`/`info` lines, to stderr (`>&2`). `asztal_mappa` once returned apt's output as the desktop path ("File name too long") on a machine without `xdg-user-dirs`.
 - **Summary.** It is printed at the end, and also after a failure (`kilepeskor`). It is saved to `~/BaninaPRO-osszegzes.txt`, mode 600.
+- **One installer at a time.** `main` takes `/run/baninapro-telepito.lock` with `flock -n`; `fut` closes fds 7 and 8 (the two locks) in its children.
+- **The watchdog never blocks the installer.** If it holds `/run/baninapro-orszem.lock`, the installer stops `baninapro-orszem.service` and runs `reset-failed` on it. A recovery round can last 15 min, and the installer once waited all that time with nothing on screen. The timer starts the watchdog again afterwards.
+- **Bootstrap before anything else** (`elofeltetelek`):
+  - `internet_van` works without curl (bash `/dev/tcp`). When the check fails, `halozat_javit` reapplies netplan / restarts networkd and NetworkManager if there is no default route, and `dns_javit` adds fallback resolvers in `/etc/systemd/resolved.conf.d/90-baninapro-dns.conf` if names don't resolve. `ido_javit` restarts systemd-timesyncd and chrony (25.10+ ships chrony).
+  - `alapeszkozok_biztosit` installs whatever `ALAP_PARANCSOK` lists as missing (curl, git, psmisc, iproute2, procps, cron, locales…), plus ca-certificates and tzdata.
+  - `cel_felhasznalo` picks the user: `SUDO_USER`, else the repo owner, else the first regular user (UID 1000+); if there is none, it creates `baninapro`.
+  - `felh` runs commands as that user with `runuser`, not sudo (Ubuntu 25.10+ defaults to sudo-rs). It also sets a git identity, because `git stash` fails without one on a fresh machine.
+- **The code is always the GitHub version.**
+  - `repo_rendbe` runs before the update. It chowns the repo back to the user, removes a stale `.git/index.lock`, and aborts half-done merges and rebases. A corrupt `.git` goes to `/var/backups/baninapro-repo/`, and a non-git folder (for example, a copied one) is re-initialised from GitHub.
+  - `git_frissit` fetches, then stashes local edits and deletions of tracked files (the user can get them back with `git stash list`). It switches back to `main` and fast-forwards. If the local branch has diverged, it keeps a `baninapro-helyi-*` branch and resets to `origin/main`. A local branch that is *ahead* of origin is left alone; the test harness relies on this.
+- **Docker repair.**
+  - `docker_inditas` unmasks the units and checks `daemon.json` with `dockerd --validate` (only where that flag exists, Docker 23+). If Docker still won't start, `docker_ujratelepites` reinstalls the packages.
+  - `buildx_biztosit` adds buildx.
+  - `kepek_biztosit` pulls the images from `docker-compose.yml` and the Dockerfile's `FROM`. If Docker Hub fails (outage or rate limit), it pulls from `KEP_TUKROK` (`public.ecr.aws/docker/library`, `mirror.gcr.io/library`) and retags. Existing images are never re-pulled, so `mysql:latest` doesn't jump versions by itself.
+  - `alkalmazas_epites` tries four builds in turn: compose `build --pull`, compose `build`, compose with `COMPOSE_BAKE=false`, then plain `docker build -t baninapro-app`.
+  - `idegen_kontenerek_le` removes containers that use our names but belong to another compose project. Their volumes are kept.
+  - `port_felszabadit` frees 80, 8081 and 3307: it stops foreign containers, disables services (including systemd `.socket` units) and kills stray processes. Port 80 is mandatory. If 8081 or 3307 can't be freed, the override gives that service `ports: !reset []` and the run continues.
+- **Other system pieces:** the journal is capped at 200 MB (`journald.conf.d/50-baninapro.conf`); a 2 GB `/swapfile` is created when there is no swap, RAM < 4 GB and ≥ 12 GB free; ufw (if someone enabled it) gets 22, 80, 8081 and 5353/udp; a broken or empty set of Ubuntu apt sources is rewritten as `ubuntu.sources` (`forrasok_rendbe`); `universe` is enabled in both the deb822 and the one-line format; another display manager (gdm3, sddm…) is disabled and `lightdm` enabled with `--force`.
 - **No automatic system updates at all.** The user asked for this because storage is tight: the server must not search for, download or install updates by itself. Step 1 (`lepes_auto_frissites_ki`) does the following:
   - writes `/etc/apt/apt.conf.d/99baninapro-nincs-automatikus-frissites` (every `APT::Periodic` setting 0);
   - masks the timers in `AUTO_FRISSITO_IDOZITOK` (apt-daily, apt-daily-upgrade, fwupd-refresh, update-notifier, motd-news, ua-timer) and `unattended-upgrades.service`;
@@ -180,34 +202,43 @@ Install and repair behavior:
 
 Network and secrets:
 - **The repo is public.** The server pulls `https://github.com/Sarokin/BaninaPRO.git` over HTTPS without keys, and `repo_cim_beallit` switches an old SSH remote to it.
-- **Ports.** The installer writes `docker-compose.override.yml` on every run; it stays out of git via `.git/info/exclude`:
+- **Ports.** The installer writes `docker-compose.override.yml` on every run (`override_iras`); it stays out of git via `.git/info/exclude`:
   - app on `0.0.0.0:80`;
   - phpMyAdmin on `0.0.0.0:8081`, with a login form and no auto-login. The login user is `PMA_FELH` (`BaninaPRO`), with all privileges on the app database. The user asked for the weak initial password `BaninaPRO1234` and will change it. The account is created only when missing and its password is never reset, so a changed password survives updates. root keeps a random password.
   - MySQL only on `127.0.0.1:3307`.
-  - The file uses Compose `!override`, which needs Compose 2.24.4 or newer (`compose_eleg_uj`).
+  - The file uses Compose `!override` and `!reset`, which need Compose 2.24.4 or newer (`compose_eleg_uj`).
+  - The file holds the DB passwords. It is mode 600 and owned by the user, so Apache in the container (www-data) gets 403 for it, and `lepes_ellenorzes` checks that.
 - **Server secrets live in `/etc/baninapro`, never in git:**
   - `titkok`: random DB root and app passwords;
-  - `config.php`: `docker/config.php` with the server's `DB_PASS` and `APP_DEBUG=false`, mounted over `includes/config.php`;
+  - `config.php`: `docker/config.php` with the server's `DB_PASS` and `APP_DEBUG=false`, mounted over `includes/config.php`. It is rewritten **in place** (`cat > f`), never replaced: the running container bind-mounted the old inode and would keep reading it until restarted;
+  - `docker-compose.override.yml`: the master copy of the repo's override, which the watchdog restores from;
   - `email` (sender address, SMTP host and port) and `smtp.curl` (sender credentials as a quoted curl config, read with `curl -K`);
   - `ntfy`: the push server and the secret topic (see Push notifications below).
 - **Notifications are push first (ntfy); e-mail is optional.** The user cannot give access to the fixed recipient `JELENTES_CIMZETT`, and there is no keyless way to e-mail it: Gmail rejects or spams unauthenticated direct delivery, and ntfy.sh refuses anonymous e-mail forwarding (error 40053). So e-mail needs a separate sender mailbox, such as a company cPanel mailbox or a Gmail account with an app password. The installer asks for one only with `sudo bash szerver_beallitas.sh --email`, and the flag survives the self-update re-exec.
-  - On an old volume, `db_root_atallitas` replaces the public default root password.
-- **Schema repair.** `adatbazis_rendbe` re-applies `sql/schema.sql` when tables or the initial admin are missing. That is why the schema must stay idempotent (see Database and migrations).
+
+Database repair (`adatbazis_rendbe`, in this order):
+1. **Wait for MySQL** (`db_var_inditasra`, restarts it once). If `compose up` fails and MySQL won't start, `adatbazis_ujraepites` rebuilds it, but only if a backup with business data exists and the old files fit on the disk. It copies the raw datadir (about 140 MB even for a tiny database) to `/var/backups/baninapro/serult-adatbazis-<date>`, removes the volume and lets it start empty; step 4 then restores. `kontenerek_inditasa` stops retrying as soon as `db_osszeomlik` sees the DB container restarting or exited; otherwise every attempt waits out the 150 s healthcheck.
+2. **Root password:** the server's; else the old public `baninapro_root` (`db_root_atallitas`); else `db_jelszo_helyreallitas`. That last one starts the MySQL image once on the volume with `--init-file` (`--skip-networking`) to reset root to the server's password, which covers a lost `titkok`. Data is untouched.
+3. **Tables:** the whole `schema.sql`, with the initial admin, runs only when there are no users. It never goes into a live database: there the INSERT would recreate `admin` with the public password next to a renamed admin.
+4. **Users and restore:** the app user's password is always reset to the server's, and the PMA user is created if missing. If the database has no business data (`adatbazis_ures`: ≤ 1 user and no company, kötés, invoice or utalás), `mentesbol_visszaallitas` restores the newest complete backup (footer `-- Mentés vége: N tábla, M sor`) that *contains* business data. `mentesek_keresese` reads it from the per-table headers (`-- Tábla: \`cegek\` (2 sor)`) and counts companies, kötések, invoices, utalások and users beyond the initial admin. Choosing by total rows was a bug: the app's own `…_visszaallitas_elott.sql`, taken of the empty database just before the restore, becomes the newest file. The search covers the `adatok` volume's `DBBCKP` and `/var/backups/baninapro`; a host backup is copied into `DBBCKP` (www-data, uid 33), then `cron_mentes.php vissza` runs. `--nincs-visszaallitas` skips this.
+5. **Schema sync** (`sema_egyeztetes`): loads `schema.sql` into the scratch database `baninapro_sema_minta`, then runs PHP in the app container as root (`sema_osszevetes`, a heredoc). The PHP compares the scratch and live databases with `SHOW CREATE TABLE` and `information_schema`, applies the additive changes (see Database and migrations) and prints `UJ`/`FIGY`/`HIBA` lines ending with `VEGE`. Finally the scratch database is dropped.
 
 Runtime pieces, all regenerated on every run. Never edit them on the server:
 - **Watchdog** `/usr/local/sbin/baninapro-orszem` (systemd timer, every 2 min). When the app or DB check fails, it escalates:
-  1. `compose up -d`
-  2. `compose restart`
-  3. Docker restart, at most every 30 min
-  4. priority-5 push, plus an e-mail alert if a sender is configured
-  5. machine reboot after 1 h of failure, at most every 6 h
+  1. `kod_rendben`: if tracked files are missing or modified, it restores them from git (edits go to `git stash`). If the repo is gone, it re-clones it from GitHub and restarts the app container. It does this only while the app is down, so edits made while debugging on a working server are left alone.
+     - Bind mounts follow the inode. Moving or deleting the repo doesn't affect a running app; a restarted container gets a skeleton that Docker creates in its place (`includes/config.php` as an empty mountpoint), and Apache answers 403. So the check is "no `docker-compose.yml` and no `.git`", not "empty dir": the skeleton is moved aside to `BaninaPRO.hianyos-<date>`, and the fresh clone needs the container restart.
+  2. `compose up -d`
+  3. `compose restart`
+  4. Docker restart, at most every 30 min
+  5. priority-5 push, plus an e-mail alert if a sender is configured
+  6. machine reboot after 1 h of failure, at most every 6 h
 
-  It also keeps Docker, AnyDesk and cron running (`figyel`), keeps automatic updates off (re-masks the timers), restarts stopped containers, and watches free disk space and `reboot-required`. It pushes only when a component's state changes (`valtozott`, state in `/var/lib/baninapro-orszem`), never on every run. It shares `/run/baninapro-orszem.lock` with the installer, which holds the lock while it runs.
+  It also keeps Docker, AnyDesk and cron running (`figyel`), keeps automatic updates off (re-masks the timers), restarts stopped containers, and watches free disk space and `reboot-required`. On every run `beallitasok_rendben` restores a missing or changed override from `/etc/baninapro` and rebuilds a missing `config.php` (Docker leaves a directory in its place) from `titkok`, and `baninapro-mentes masol` copies new backups. It pushes only when a component's state changes (`valtozott`, state in `/var/lib/baninapro-orszem`), never on every run. It shares `/run/baninapro-orszem.lock` with the installer, which holds the lock while it runs. Every docker CLI call runs under `timeout`. Command output reaches the log only through `naplora`, which dates every line: the daily report selects the last 24 hours by the date at the start of each line, and undated `docker compose` output used to slip through that filter.
 - **Daily report** `/usr/local/sbin/baninapro-jelentes` (systemd timer 03:30, the DB backup cron runs at 03:00).
   - Modes: `napi`, `kezi` (desktop icon, terminal window, sudoers rule for exactly this command), `proba`, `riasztas`.
   - It pushes a short summary, except in `riasztas` mode, where the watchdog has already pushed. The full report is e-mailed only if a sender is configured.
   - Reports are kept in `/var/log/baninapro-jelentes/`.
-- **Nightly backup** `/usr/local/sbin/baninapro-mentes` (`/etc/cron.d/baninapro`, 03:00) wraps `cron_mentes.php`, logs to `/var/log/baninapro-mentes.log` and pushes the result.
+- **Nightly backup** `/usr/local/sbin/baninapro-mentes` (`/etc/cron.d/baninapro`, 03:00) wraps `cron_mentes.php`, logs to `/var/log/baninapro-mentes.log` and pushes the result. `baninapro-mentes masol` copies the newest complete backups from the volume to `/var/backups/baninapro` (outside Docker, newest 14 kept, only with ≥ 1 GB to spare), so a lost Docker data root can still be restored. The nightly run, the installer and the watchdog all call it.
 - **Push notifications (ntfy).** The user subscribes to one secret topic in the ntfy phone app. The installer creates `baninapro-<24 random chars>` once in `/etc/baninapro/ntfy` and keeps it. It shows the topic in the summary and in `~/Asztal/BaninaPRO-ertesitesek.txt`, and sends one test push the first time (`NTFY_PROBA_KESZ=1`).
   - The user wants a push for everything except user activity. Logins and logouts are the only user events reported.
   - `/usr/local/sbin/baninapro-ertesites [-p 1-5] [-t tags] "Cím" "Üzenet"` publishes JSON to the server root. Unsent messages wait in `/var/spool/baninapro-ertesites` (at most 300), and the watchdog flushes them every 2 min. `--sorbol` is serialized with `flock`, so a message is never sent twice. 4xx responses other than 429 are dropped.
@@ -220,75 +251,16 @@ Runtime pieces, all regenerated on every run. Never edit them on the server:
   - AnyDesk runs with `Restart=always`.
   - Power-on after AC loss is set through `/sys/class/firmware-attributes` where the firmware allows it; otherwise the installer prints BIOS instructions.
 
-Testing: reproduce the server in a privileged systemd Ubuntu container:
-- `--privileged --cgroupns=private --tmpfs /run`;
+Testing: Docker Desktop runs on this Mac, so reproduce the server in a privileged systemd Ubuntu container:
+- The image is `ubuntu:24.04` (or `26.04`) plus `systemd systemd-sysv dbus sudo iproute2 kmod udev tzdata locales systemd-resolved` and a `baninapro` user with passwordless sudo. Leave curl, git, ca-certificates and cron out, so the bootstrap is tested too.
+- `--privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock`;
 - anonymous volumes for `/var/lib/docker` and `/var/lib/containerd`;
-- unmount the bind-mounted `/etc/hosts` and `/etc/hostname`;
-- run the script as a sudo user, without a TTY.
-- Point pushes at a local ntfy server (`binwiederhier/ntfy serve`; `sed` `NTFY_SZERVER` in the test copy) and read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
+- unmount the bind-mounted `/etc/hosts` and `/etc/hostname`, then write real ones;
+- run the script as the sudo user without a TTY: `docker exec -u baninapro bp-szerver sudo bash …`.
+- **Test the working tree, not GitHub.** `git clone` the local repo into the scratchpad, copy the changed script in, commit there, then point `origin` at GitHub and fetch. The clone is then *ahead* of `origin/main`, which `git_frissit` leaves alone. Never `sed` the script in the test copy: the stash logic would revert it.
+- Point pushes at a local ntfy server (`binwiederhier/ntfy serve` on a shared docker network) by pre-creating `/etc/baninapro/ntfy` with `NTFY_SZERVER=http://bp-ntfy`. Read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
 - `docker restart -t 180 <container>` simulates a clean reboot. `docker kill` followed by `docker start` simulates a power cut.
-
-## Light installer (`SERVER SETUP AND UPDATE/szerver_beallitas_light.sh`)
-
-A trimmed copy of the full installer for the real server: a minimized Ubuntu Server with only LightDM, the minimal Xorg and AnyDesk, Docker already installed and running, and 1.7 GB free on the internal disk. Everything must fit in 1 GB. Run it as `sudo bash szerver_beallitas_light.sh`; flags are `--email`, `--usb=/dev/sdX` and `--usb-formazas`.
-
-Scope (the user's decision):
-- It does only the BaninaPRO side: containers, DB, nightly backup, watchdog, pushes, daily report, hostname/timezone, avahi, and never-sleep (including USB autosuspend off).
-- It never installs, configures or watches the desktop, LightDM, Xorg, AnyDesk, SSH or the language, and never installs Docker.
-- No system update of any kind (no `full-upgrade`, no `autoremove`), on the user's request. Automatic updates are switched off as in the full script, so the OS updates only when someone runs apt by hand.
-- Half-finished installs are never continued (no `dpkg --configure -a`, no `apt-get -f install`). `felbemaradt_lezaras` closes them by purging the package with `dpkg --purge --force-remove-reinstreq`, at the start of step 2 and before every install. This is the user's decision.
-  - It purges without `--force-depends`, so dpkg refuses anything other packages depend on.
-  - It never purges `VEDETT_CSOMAGOK` (Docker/containerd, LightDM/Xorg, the kernel, grub, systemd, libc, apt/dpkg, sudo, SSH, networking, `ubuntu-*`) or anything matching the running kernel. For these it only warns, once per run.
-  - AnyDesk has its own rule (`anydesk_futo_csomagjai`): it checks which package owns `/proc/<pid>/exe` of the running `anydesk` processes.
-    - If the half-finished package is the one running, it is the working AnyDesk, not a second copy. Its postinst fails at the xdg-desktop-menu step without `xdg-utils`, so the program runs but dpkg shows it half-configured. It is kept, and the warning suggests `sudo apt-get install xdg-utils`.
-    - If the working AnyDesk runs from elsewhere, the package is a surplus duplicate. It is purged with its maintainer scripts moved aside to `/var/backups/baninapro-dpkg`, because its prerm would stop the running AnyDesk service.
-    - If AnyDesk isn't running, it is kept.
-  - Pending triggers (`W`/`t`) don't count as half-finished.
-- Every apt run would try to finish a half-finished install, because apt runs `dpkg --configure --pending` at the end. So `dpkg_rendben` gates every install: if anything half-finished remains, or dpkg was interrupted, apt is not run at all.
-  - In that case a missing optional package is only a warning, and a missing required tool stops the run with a message.
-  - `apt-get update` runs only when something must be installed, at most once per run.
-- Space thresholds are in MB (`HELY_*`, `KEVES_HELY_MB`). It cleans up first, but only downloaded package files, journals and the Docker cache.
-- No pre-run DB backup and no `git pull` or self-update (the user removed them: that step seemed to hang). Code updates are manual: `cd ~/BaninaPRO && git pull`, then rerun. The nightly backup still runs.
-- **Speed: as much in RAM as possible.** This is the user's request, and it touches only the generated override, never the app or `docker/`.
-  - All three containers get a tmpfs `/tmp`. That holds the PHP sessions (`session.save_path=/tmp`), uploads and MySQL temp files.
-  - `$TITOK_MAPPA/php-gyorsitas.ini` is mounted into `conf.d` and turns on opcache and the realpath cache. `validate_timestamps=1` and `revalidate_freq=2`, so code from a `git pull` shows within 2 s.
-  - MySQL gets `--innodb-buffer-pool-size` at a quarter of RAM (256 MB–4 GB), plus `--innodb-flush-log-at-trx-commit=2` and `--skip-log-bin`. A power cut can lose up to 1 s of commits, which the user accepted.
-  - The override's db `command` replaces the base one, so it repeats the charset options. Keep them in sync with `docker-compose.yml`.
-  - The DB data itself stays on the stick.
-- Never call the docker CLI without a timeout while the stick might be missing. `docker.socket` accepts the connection, but `docker.service` can't start (`RequiresMountsFor=`), so a plain `docker inspect` blocks forever with no spinner. Use `docker_valaszol` (checks `systemctl is-active docker.service`, then runs `docker info` under `timeout`), and wrap the other calls in `timeout`.
-
-USB stick (default `/dev/sdb`, found later by label, never by name):
-- **Layout.** GPT with two partitions:
-  - `BANINAPRO` (FAT32, 1/10 of the stick, 1–16 GiB) holds `BaninaPRO-mentesek/`, a mirror of every backup, plus `OLVASSEL.txt`. It is FAT so the user (on a Mac) can read the backups after pulling the stick; exFAT would need linux-modules-extra on a minimized kernel.
-  - `BANINAPRO-ADAT` (ext4) is bind-mounted onto `/var/lib/docker` and `/var/lib/containerd`, so images, containers, the MySQL volume and the app's LOG/DBBCKP all live on the stick. Docker 29 uses the containerd image store, so images are in `/var/lib/containerd` and both directories must move.
-  - `baninapro/` on the ext4 partition holds copies of `titkok` and `ntfy`, so the DB opens on a new server. The e-mail password is not copied.
-- **No stick, no Docker.** fstab has a managed block by UUID with `nofail`; `/etc/fstab.baninapro-elott` is the original. Docker and containerd get `RequiresMountsFor=` drop-ins. The empty mountpoints and placeholder dirs are `chattr +i`, so without the stick nothing can write to the small internal disk.
-- **Formatting safety.** It formats only a whole disk that is:
-  - USB (`TRAN=usb`), unmounted and unused (no LVM, RAID or crypt), and at least 8 GB;
-  - empty: each filesystem is mounted read-only and checked, and an unreadable filesystem counts as not empty.
-
-  Anything else needs `--usb-formazas`. It also refuses to prepare a new stick while `/etc/baninapro/usb` names one that is missing, because the DB would start empty.
-- **Migration.** Stop Docker and containerd, copy with `cp -a`, bind-mount, start, then compare the image/volume/container inventory. Only then delete the internal copy. On any failure it rolls back completely.
-  - The marker `baninapro/docker-athelyezve` means a finished move. A stick that has it is adopted: its data and secrets win, and the internal data is set aside, not deleted. A stick without it but with content is a half-finished copy and is wiped and redone.
-- **`/usr/local/sbin/baninapro-usb`** has the subcommands `ellenoriz`, `tukor`, `allapot`, `levalaszt` and `csatol`.
-  - The watchdog calls `ellenoriz` first. It remounts a stick that reappeared, possibly under a new name; a missing stick gives one push and no further recovery, so no reboot loop.
-  - The watchdog also calls `tukor` on every run, and the nightly wrapper calls it after the backup. `tukor` copies the newest files first and never deletes a newer copy to make room for an older one. The two newest backups also go to `/var/backups/baninapro` on the internal disk, in case the stick dies.
-  - The watchdog logs only failures, with a date. The daily report lists the last 24 hours of the watchdog log as interventions, and undated lines sort after the date filter and flood it.
-- **Adoption order.** An adopted stick's containers start by themselves as soon as Docker starts. So `titkok` and `/etc/baninapro/config.php` must exist before `docker_inditas`. Otherwise Docker creates a *directory* at the missing bind-mount source and the app container fails with "not a directory". `szerver_config` (in both scripts) removes such a directory.
-
-Testing: this Mac (Intel, macOS 15) has no Docker, so the installer is tested in a Lima VM.
-- Use `limactl` with `--vm-type=vz` and an extra raw disk (`limactl disk create`, `additionalDisks: format: false`) as the stick. Virtio disks are not `TRAN=usb`, so run with `BANINA_USB_LEMEZ=/dev/vdb BANINA_USB_TESZT=1`. In test mode, loop devices also pass the disk checks, which is how the formatting-safety cases are tested.
-- Scenarios worth repeating after changes:
-  - fresh run with an existing container and volume (data must survive the move);
-  - rerun;
-  - reboot;
-  - boot without the stick (`limactl edit --set '.additionalDisks=[]'`): Docker must not start, and the internal disk must not grow;
-  - `levalaszt` / `csatol`, and unmounting under a running system (the watchdog remounts);
-  - a "new server": move `/etc/baninapro` and the drop-ins aside, give Docker a fresh internal root, and the stick must be adopted with its data.
-- Claude Code's safety check blocks a script piped into the VM (`limactl shell … bash -s`) if it contains `rm`. Write test scripts without deletions.
-- `LIMA_HOME` must be a short path: socket paths are limited to 104 characters.
-- Pushes go to a local fake ntfy, set by pre-creating `/etc/baninapro/ntfy` with `NTFY_SZERVER=http://127.0.0.1:…`.
-- The light script is a copy. Fix the shared parts in both scripts: the apt helpers, the notifier, the login watcher, the watchdog, the report and the DB functions.
+- In a container, LightDM and systemd-timesyncd don't run. The summary then asks for a reboot, which a run without a TTY skips.
 
 ## Working notes (lessons learned)
 
@@ -318,7 +290,9 @@ Verification:
   - The Mac's `/bin/bash` is 3.2, so run bash checks in an Ubuntu container.
 - **Server installer.**
   - Run `bash -n` and `shellcheck -S warning -e SC1111` (the `koalaman/shellcheck` image) on the script and on its generated helper scripts.
+  - Extract the PHP heredoc of `sema_osszevetes` (from `<?php` to the `PHP` line) and run `php -l` on it (`php:8.3-cli` image).
   - Then run a full end-to-end test from the server's real broken state (see the installer section).
+  - Under `set -o pipefail`, `tr … </dev/urandom | head -c N` exits 141 (SIGPIPE) and `x="$(… | head -n 1)"` can too. Add `|| true`, or read the whole output into a variable or array first.
 - **Destructive commands get blocked.** The auto-mode permission check blocks commands such as `DROP DATABASE`, even on a throwaway database. Verify non-destructively instead: diffs, or a separate throwaway container.
 
 PDF output (1.21, `includes/pdf.php` + `includes/nyomtatas.php`):
