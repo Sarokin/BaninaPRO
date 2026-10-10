@@ -96,6 +96,10 @@ ALAP_FELH="baninapro"
 GEP_MENTES="/var/backups/baninapro"
 GEP_MENTES_DB=14
 # a hivatalos Docker-képek nyilvános tükrei – ha a Docker Hub nem érhető el, vagy korlátozza a letöltést
+# Régi processzoron (ami nem tudja az x86-64-v2 utasításkészletet: SSE4.2, POPCNT…) a hivatalos MySQL-kép el sem
+# indul („Fatal glibc error: CPU does not support x86-64-v2”) – ott az adatbázis ez a kép (MariaDB, MySQL-kompatibilis)
+DB_KEP_REGI_CPU="mariadb:10.11"
+DB_KEP=""
 KEP_TUKROK=(public.ecr.aws/docker/library mirror.gcr.io/library)
 # tartalék, ha az AnyDesk csomagtárolója nem működne (ha ez a változat már nincs fent, a legfrissebbet keresi meg)
 ANYDESK_DEB="https://deb.anydesk.com/pool/main/a/anydesk/anydesk_8.1.0_amd64.deb"
@@ -1918,7 +1922,8 @@ lepes_baninapro() {
         figy "A 3307-es portot egy másik program foglalja – a MySQL most csak a konténerek között érhető el (a BaninaPRO-t nem érinti)."
     fi
 
-    # 4) szerver-kiegészítés a docker-compose.yml mellé
+    # 4) szerver-kiegészítés a docker-compose.yml mellé (régi processzoron az adatbázis képe is)
+    db_kep_valasztas
     override_iras
     if (( PMA_PORT_KI )); then
         ok "Szerver-beállítás: BaninaPRO a $APP_PORT-as, phpMyAdmin a $PMA_PORT-es porton – a belső hálózatról is (jelszóval)"
@@ -2010,6 +2015,7 @@ services:
       MYSQL_ROOT_PASSWORD: "$DB_ROOT_JELSZO"
       MYSQL_PASSWORD: "$DB_APP_JELSZO"
 EOF
+        if [[ -n $DB_KEP ]]; then printf '    image: %s\n' "$DB_KEP"; fi
         if (( ! DB_PORT_KI )); then printf '    ports: !reset []\n'; fi
         printf '  phpmyadmin:\n'
         if (( PMA_PORT_KI )); then printf '    ports: !override\n      - "%s:80"\n' "$PMA_PORT"; else printf '    ports: !reset []\n'; fi
@@ -2105,8 +2111,33 @@ idegen_kontenerek_le() {
 # A BaninaPRO képei: a docker-compose.yml image-sorai és az alkalmazás Dockerfile-jának alapképe (pl. mysql:latest,
 # phpmyadmin:latest, php:8.3-apache)
 kepek_listaja() {
-    awk '$1 == "image:" { gsub(/["'"'"']/, "", $2); print $2 }' "$REPO/docker-compose.yml" 2>/dev/null || true
+    awk -v db="$DB_KEP" '$1 == "image:" { gsub(/["'"'"']/, "", $2); if (db != "" && $2 ~ /^mysql(:|$)/) $2 = db; print $2 }' \
+        "$REPO/docker-compose.yml" 2>/dev/null || true
     awk 'toupper($1) == "FROM" { print $2; exit }' "$REPO/docker/Dockerfile" 2>/dev/null || true
+}
+# A processzor tudja-e az x86-64-v2 utasításkészletet (a mai MySQL-képek alaprendszere e nélkül nem indul el)
+cpu_v2() {
+    local j jelzok
+    [[ $(uname -m) == x86_64 ]] || return 0
+    jelzok=" $(grep -m1 -E '^flags' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true) "
+    [[ $jelzok != "  " ]] || return 0
+    for j in cx16 lahf_lm popcnt pni sse4_1 sse4_2 ssse3; do
+        [[ $jelzok == *" $j "* ]] || return 1
+    done
+}
+# Az adatbázis képe: régi processzoron a MySQL helyett MariaDB ($DB_KEP_REGI_CPU). Ha a kötetben már MySQL-lel írt
+# adatfájlok vannak (mysql.ibd), azokat a MariaDB nem tudja megnyitni – ahhoz nem nyúl, csak figyelmeztet.
+db_kep_valasztas() {
+    local m
+    DB_KEP=""
+    if cpu_v2; then return 0; fi
+    m="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$DB_KOTET" 2>/dev/null || true)"
+    if [[ -n $m && -e $m/mysql.ibd ]]; then
+        figy "A gép processzora túl régi a MySQL-képhez (nincs x86-64-v2), de az adatbázis-kötetben MySQL-lel írt adatok vannak – ezeket a MariaDB nem tudja megnyitni, ezért a képet nem cserélem. Az adatokat egy újabb gépen kell kimenteni."
+        return 0
+    fi
+    DB_KEP="$DB_KEP_REGI_CPU"
+    info "A gép processzora régi (nincs x86-64-v2): a MySQL-kép ezen nem indul el – az adatbázis a(z) $DB_KEP képpel fut (MySQL-kompatibilis)."
 }
 # Egy kép letöltése: a Docker Hubról; ha az nem megy (elérhetetlen, vagy korlátozza a letöltések számát), a hivatalos
 # képek nyilvános tükreiről – a kép az eredeti nevén kerül a gépre, így a compose és az építés is megtalálja
@@ -2239,7 +2270,7 @@ db_jelszo_helyreallitas() {
     info "Az adatbázis nem fogadja el a szerver jelszavát – helyreállítom (az adatokhoz nem nyúlok)…"
     AKT_MUVELET="az adatbázis jelszavának helyreállítása"
     kep="$(timeout 30 docker inspect -f '{{.Config.Image}}' "$DB_KONTENER" 2>/dev/null || true)"
-    [[ -n $kep ]] || kep="$(kepek_listaja | grep -m1 -i mysql || echo mysql:latest)"
+    [[ -n $kep ]] || kep="$(kepek_listaja | grep -m1 -i -E 'mysql|mariadb' || echo mysql:latest)"
     {
         printf "CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED BY '%s';\n" "$DB_ROOT_JELSZO"
         printf "ALTER USER 'root'@'localhost' IDENTIFIED BY '%s';\n" "$DB_ROOT_JELSZO"
