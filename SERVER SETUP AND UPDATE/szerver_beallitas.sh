@@ -30,9 +30,10 @@
 #  Kapcsolók:  --email                 a napi jelentés e-mail-feladójának (újra)beállítása
 #              --nincs-visszaallitas   üres adatbázisnál se állítsa vissza a legutóbbi mentést (lásd lent)
 #
-#  Újrafuttatva frissít: adatbázis-mentés → git pull → rendszerfrissítés → konténerek újraépítése → takarítás.
-#  Automatikus rendszerfrissítés NINCS (kevés a tárhely): a gép magától nem keres, nem tölt le és nem telepít
-#  frissítést – csak ennek a scriptnek a kézi futtatásakor frissül, utána törli a régi kerneleket és a letöltött csomagokat.
+#  Újrafuttatva a BaninaPRO-t frissíti: adatbázis-mentés → git pull → konténerek újraépítése → takarítás.
+#  A RENDSZERT SOHA NEM FRISSÍTI – első telepítéskor sem: csak a hiányzó csomagokat telepíti, a már fent lévőket nem
+#  frissíti (apt --no-upgrade, nincs full-upgrade). Automatikus frissítés sincs: a gép magától nem keres, nem tölt le és
+#  nem telepít frissítést. A minimális (minimized) Ubuntu Serverre is minden szükséges csomagot feltelepít.
 #  Bármikor nyugodtan újrafuttatható: ami már kész, azt csak ellenőrzi.
 #  Önjavító – bármi romlott el, a futtatása után a BaninaPRO újra fut. Amit magától rendbe tesz:
 #    - csomagkezelés: félbemaradt csomagtelepítés, hiányzó alapeszközök (curl, git…), hibás külső csomagtároló;
@@ -346,10 +347,8 @@ apt_() {
     local rc=0 m="csomagkezelés" proba kezdet
     case " $* " in
         *" update "*)       m="csomaglisták frissítése" ;;
-        *" full-upgrade "*) m="rendszerfrissítés" ;;
         *" install "*)      m="csomagok telepítése" ;;
         *" remove "*)       m="csomagok eltávolítása" ;;
-        *" autoremove "*)   m="felesleges csomagok törlése" ;;
     esac
     for proba in 1 2 3; do
         AKT_MUVELET="$m"
@@ -363,9 +362,21 @@ apt_() {
     AKT_MUVELET=""
     return "$rc"
 }
-telepit()     { apt_ install "$@"; }
-telepit_min() { apt_ install --no-install-recommends "$@"; }
+# A rendszert soha nem frissíti (a felhasználó kérése): a --no-upgrade miatt a már fent lévő csomag nem frissül, csak a
+# hiányzó települ. (Egy új csomag függőségét az apt csak akkor hozza újabb változatban, ha az új csomag megköveteli.)
+telepit()     { apt_ install --no-upgrade "$@"; }
+telepit_min() { apt_ install --no-upgrade --no-install-recommends "$@"; }
 van_csomag()  { [[ $(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null) == ii* ]]; }
+# Sérült csomagok újratelepítése pontosan a fent lévő változatban (újabbat nem hoz – az frissítés volna). 1, ha ez a
+# változat már nem tölthető le.
+ujratelepit_azonos() {
+    local p v valtozatok=()
+    for p in "$@"; do
+        v="$(dpkg-query -W -f='${Version}' "$p" 2>/dev/null || true)"
+        if [[ -n $v ]]; then valtozatok+=("$p=$v"); else valtozatok+=("$p"); fi
+    done
+    apt_ install --reinstall --no-upgrade "${valtozatok[@]}"
+}
 
 # a megadott nevek közül azok, amelyeknek van telepíthető változata (a csak „virtuális” nevek kimaradnak)
 elerheto() {
@@ -1012,8 +1023,8 @@ email_kerdesek() {
 # =============================================================================
 lepesek_listaja() {
     LEPESEK=(
-        "lepes_auto_frissites_ki|5|Automatikus rendszerfrissítés kikapcsolva: nem keres, nem tölt le (kevés a tárhely)"
-        "lepes_rendszer|300|Rendszerfrissítés, alapcsomagok, tárhely és memória (napló-korlát, swap)"
+        "lepes_auto_frissites_ki|5|Automatikus frissítés kikapcsolva: a rendszert semmi nem frissíti (kevés a tárhely)"
+        "lepes_rendszer|120|Alapcsomagok (rendszerfrissítés nélkül), tárhely és memória (napló-korlát, swap)"
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
         "lepes_nyelv|45|Magyar nyelv és magyar billentyűzet"
         "lepes_asztal|360|Asztali környezet: LXQt + Xorg + LightDM, magyar feliratokkal"
@@ -1065,7 +1076,7 @@ futtat_lepesek() {
 # =============================================================================
 # Az automatikus rendszerfrissítés teljesen ki (a felhasználó kérése: kevés a tárhely, és ne fogyassza a gépet):
 # nem keres (apt update), nem tölt le és nem telepít – sem az apt / unattended-upgrades, sem a snap, sem a
-# firmware-frissítő, sem a hír- és kiadásfigyelő. A rendszer csak ennek a scriptnek a kézi futtatásakor frissül.
+# firmware-frissítő, sem a hír- és kiadásfigyelő. Ez a script sem frissíti a rendszert (első telepítéskor sem).
 # Az őrszem 2 percenként ellenőrzi, hogy így maradjon.
 AUTO_FRISSITO_IDOZITOK=(apt-daily.timer apt-daily-upgrade.timer fwupd-refresh.timer update-notifier-download.timer
     update-notifier-motd.timer motd-news.timer ua-timer.timer)
@@ -1074,7 +1085,7 @@ lepes_auto_frissites_ki() {
     # az apt saját beállítása: a periodikus munkák (lista-frissítés, letöltés, telepítés, takarítás) ki
     cat > /etc/apt/apt.conf.d/99baninapro-nincs-automatikus-frissites <<'EOF'
 // BaninaPRO szerver: nincs automatikus frissítés – nem keres, nem tölt le, nem telepít (a szerver_beallitas.sh írta).
-// A rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül.
+// A szerver_beallitas.sh sem frissíti a rendszert: csak a hiányzó csomagokat telepíti.
 APT::Periodic::Enable "0";
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
@@ -1101,30 +1112,35 @@ EOF
         if fut timeout 120 snap refresh --hold; then ok "Snap: az automatikus frissítés ki"
         else figy "A snap automatikus frissítését nem sikerült kikapcsolni."; fi
     fi
-    ok "A rendszer csak akkor frissül, amikor ezt a scriptet kézzel futtatod (utána takarít: régi kernelek, letöltött csomagok)"
+    ok "A rendszert ez a script sem frissíti (első telepítéskor sem) – csak a hiányzó csomagokat telepíti"
 }
 
 lepes_rendszer() {
     # egy korábbi, félbeszakadt futás vagy félbemaradt csomagtelepítés után a csomagkezelő rendbetétele
     csomagkezelo_rendbe || true
     forrasok_rendbe
+    minimal_rendszer_forditasok
 
-    apt_ update || figy "Az apt update hibát jelzett: $(apt_hibak) – folytatom."
-    APT_LISTA_FRISS=1
-    if apt_ full-upgrade; then
-        ok "Rendszer frissítve"
-    else
-        figy "A rendszerfrissítés nem sikerült teljesen: $(apt_hibak) – folytatom, a következő futás újra megpróbálja."
-    fi
-    # kevés a tárhely: a már nem kellő csomagok (pl. a régi kernelek) törlése – az automatikus frissítés ezt nem végzi
-    if apt_ autoremove --purge; then ok "Felesleges csomagok (pl. régi kernelek) törölve"
-    else figy "A felesleges csomagok törlése nem sikerült: $(apt_hibak)"; fi
+    # csak a csomaglisták frissülnek (hogy a hiányzó csomagok letölthetők legyenek) – a rendszer NEM frissül:
+    # nincs upgrade / full-upgrade, és a telepítés a már fent lévő csomagokat sem frissíti (--no-upgrade)
+    lista_frissites
     telepit ca-certificates curl wget gnupg git openssh-server cron psmisc locales \
         || hiba "Az alapcsomagok nem telepíthetők: $(apt_hibak)"
     telepit_opcionalis keyboard-configuration console-setup software-properties-common
     universe_bekapcsol
-    ok "Alapcsomagok telepítve (curl, wget, git, openssh-server, cron…)"
+    ok "Alapcsomagok telepítve (curl, wget, git, openssh-server, cron…) – a rendszer nem frissült"
     tarhely_memoria
+}
+
+# Minimális (minimized) Ubuntu: a dpkg minden fordítást kihagy (/etc/dpkg/dpkg.cfg.d/excludes) – a magyar fordításokat
+# visszaengedi (a többi nyelv kimarad, a hely így is kicsi), így az asztal, a menük és a mappák magyarul jönnek létre.
+minimal_rendszer_forditasok() {
+    local f=/etc/dpkg/dpkg.cfg.d/zz-baninapro-magyar
+    grep -qs '^path-exclude=/usr/share/locale' /etc/dpkg/dpkg.cfg.d/* || return 0
+    if [[ ! -f $f ]]; then
+        printf '# BaninaPRO szerver: a minimális rendszeren is legyenek magyar fordítások (a szerver_beallitas.sh írta)\npath-include=/usr/share/locale/hu/*\npath-include=/usr/share/locale/hu_HU/*\n' > "$f"
+        ok "Minimális rendszer: a magyar fordítások ezentúl települnek (a többi nyelv továbbra is kimarad)"
+    fi
 }
 
 # Az Ubuntu csomagforrásai: ha egy sincs bekapcsolva (törölt vagy kikommentezett forrásfájl), a gyári beállítás vissza
@@ -1224,6 +1240,8 @@ lepes_gepnev() {
 lepes_nyelv() {
     telepit language-pack-hu language-pack-hu-base \
         || figy "A magyar nyelvi csomagok nem települtek: $(apt_hibak) – a nyelvi beállítás enélkül is elkészül."
+    # az asztali programok magyar fordításai (pl. a mappanevek: Asztal, Letöltések) – az Ubuntu ezeket külön szállítja
+    telepit_opcionalis language-pack-gnome-hu language-pack-gnome-hu-base
     if [[ -f /etc/locale.gen ]] && ! grep -q "^$NYELV UTF-8" /etc/locale.gen; then
         if grep -q "^# *$NYELV UTF-8" /etc/locale.gen; then
             sed -i "s/^# *$NYELV UTF-8/$NYELV UTF-8/" /etc/locale.gen
@@ -1235,7 +1253,7 @@ lepes_nyelv() {
     fut locale-gen "$NYELV" || true
     if ! grep -qix 'hu_HU.utf8' <<<"$(locale -a)"; then
         # a locales csomag sérült vagy hiányos: újratelepítés, majd még egy próba
-        apt_ install --reinstall locales || true
+        ujratelepit_azonos locales || true
         fut locale-gen "$NYELV" || true
     fi
     AKT_MUVELET=""
@@ -1290,6 +1308,16 @@ lepes_asztal() {
     # a jegyzet szerinti minimális asztal – ez kötelező
     telepit_min lxqt-core xorg lightdm || hiba "Az asztali környezet nem telepíthető: $(apt_hibak)"
     ok "LXQt + Xorg + LightDM telepítve"
+    # Minimális kernel (linux-modules-extra nélkül): ha nincs grafikus meghajtó (/dev/dri), a futó kernelhez tartozó
+    # modulcsomag – ugyanaz a kernelváltozat, nem frissítés. (Nélküle is van kép: az Xorg egyszerű framebufferrel indul.)
+    if ! compgen -G '/dev/dri/card*' >/dev/null && ! van_csomag "linux-modules-extra-$(uname -r)" \
+        && [[ -n $(elerheto "linux-modules-extra-$(uname -r)") ]]; then
+        telepit_opcionalis "linux-modules-extra-$(uname -r)"
+        if van_csomag "linux-modules-extra-$(uname -r)"; then
+            ok "A futó kernel kiegészítő meghajtói (grafika) telepítve: linux-modules-extra-$(uname -r)"
+            UJRAINDITAS=1
+        fi
+    fi
     # kiegészítők: üdvözlőképernyő, ablakkezelő, terminál, asztali segédprogramok (xdg-utils: az AnyDesk
     # telepítője is igényli) – ha valamelyik nem érhető el, attól még megy tovább
     telepit_opcionalis lightdm-gtk-greeter openbox qterminal xdg-utils desktop-file-utils
@@ -1409,7 +1437,7 @@ lepes_anydesk() {
     # maga után, ami minden további apt-telepítést (pl. a Dockerét) megakaszt – ezért ennek előbb fent kell lennie.
     telepit_opcionalis xdg-utils desktop-file-utils
     if ! van_csomag anydesk; then
-        # elsősorban a hivatalos csomagtárolóból – így a rendszerfrissítéssel együtt frissül
+        # elsősorban a hivatalos csomagtárolóból
         install -m 0755 -d /etc/apt/keyrings
         AKT_MUVELET="AnyDesk csomagtároló beállítása"
         if fut curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY -o /etc/apt/keyrings/keys.anydesk.com.asc; then
@@ -1527,9 +1555,9 @@ lepes_docker() {
 # a Docker csomagjainak újratelepítése (a hiányzó vagy sérült programfájlok, szolgáltatás-leírások pótlása)
 docker_ujratelepites() {
     if van_csomag docker-ce; then
-        apt_ install --reinstall docker-ce docker-ce-cli containerd.io || figy "A Docker újratelepítése nem sikerült: $(apt_hibak)"
+        ujratelepit_azonos docker-ce docker-ce-cli containerd.io || figy "A Docker nem telepíthető újra a fent lévő változatában ($(apt_hibak)) – újabbat nem teszek fel, mert a rendszert nem frissítem."
     elif van_csomag docker.io; then
-        apt_ install --reinstall docker.io containerd runc || figy "A Docker újratelepítése nem sikerült: $(apt_hibak)"
+        ujratelepit_azonos docker.io containerd runc || figy "A Docker nem telepíthető újra a fent lévő változatában ($(apt_hibak)) – újabbat nem teszek fel, mert a rendszert nem frissítem."
     else
         docker_telepites
     fi
@@ -3171,9 +3199,9 @@ if (( szabad < 5 )); then
 elif valtozott tarhely ok; then
     ert -p 3 -t white_check_mark "Van elég szabad hely" "Szabad hely a lemezen: $szabad GB."
 fi
-# rendszerfrissítés után újraindítás kellene (a gép magától nem indul újra)
+# csomagtelepítés után újraindítás kellene (a gép magától nem indul újra)
 if [[ -f /var/run/reboot-required ]]; then
-    if valtozott ujrainditas_kell hiba; then ert -p 2 -t information_source "Újraindítás ajánlott" "Rendszerfrissítés után a gép újraindítása szükséges – alkalmas időben: sudo reboot"; fi
+    if valtozott ujrainditas_kell hiba; then ert -p 2 -t information_source "Újraindítás ajánlott" "Egy csomagtelepítés után a gép újraindítása szükséges – alkalmas időben: sudo reboot"; fi
 else
     valtozott ujrainditas_kell ok || true
 fi
@@ -3474,7 +3502,7 @@ if (( ${#auto_be[@]} )); then
     auto="BE: ${auto_be[*]}"
     pr "Az automatikus frissítés be van kapcsolva (${auto_be[*]}) – az őrszem kikapcsolja"
 else
-    auto="ki – a rendszer csak a szerver_beallitas.sh kézi futtatásakor frissül"
+    auto="ki – a rendszert semmi nem frissíti (a szerver_beallitas.sh sem)"
 fi
 anydesk_id="$(timeout 15 anydesk --get-id 2>/dev/null | tr -dc '0-9' || true)"
 

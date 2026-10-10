@@ -155,7 +155,7 @@ Fix bugs in these components in place; do not swap in libraries.
 
 ## Internal server installer (`SERVER SETUP AND UPDATE/szerver_beallitas.sh`)
 
-One bash script turns a fresh Ubuntu Server (24.04 / 26.04, the minimized install too) into the company's internal BaninaPRO server, and every later run updates it: DB backup → `git pull` → system upgrade → container rebuild. Run it as `sudo bash szerver_beallitas.sh` from the repo. If it is run as a lone file, it clones the repo into `~/BaninaPRO` and re-executes from there, passing its flags on (`--email`, `--nincs-visszaallitas`).
+One bash script turns a fresh Ubuntu Server (24.04 / 26.04, the minimized install too) into the company's internal BaninaPRO server, and every later run updates BaninaPRO: DB backup → `git pull` → container rebuild. It never updates the system (see below). Run it as `sudo bash szerver_beallitas.sh` from the repo. If it is run as a lone file, it clones the repo into `~/BaninaPRO` and re-executes from there, passing its flags on (`--email`, `--nincs-visszaallitas`).
 
 It is the only installer. A trimmed "light" copy (USB stick, no system updates) existed until 2026-10-09; the user had it deleted.
 
@@ -180,6 +180,10 @@ Install and repair behavior:
   - `alapeszkozok_biztosit` installs whatever `ALAP_PARANCSOK` lists as missing (curl, git, psmisc, iproute2, procps, cron, locales…), plus ca-certificates and tzdata.
   - `cel_felhasznalo` picks the user: `SUDO_USER`, else the repo owner, else the first regular user (UID 1000+); if there is none, it creates `baninapro`.
   - `felh` runs commands as that user with `runuser`, not sudo (Ubuntu 25.10+ defaults to sudo-rs). It also sets a git identity, because `git stash` fails without one on a fresh machine.
+- **Minimized Ubuntu Server** (the user's real server is one). Its `/etc/dpkg/dpkg.cfg.d/excludes` drops every `/usr/share/locale/*/LC_MESSAGES/*.mo`, so the desktop came up half English (`~/Desktop` instead of `~/Asztal`).
+  - `minimal_rendszer_forditasok` adds `zz-baninapro-magyar` with `path-include=/usr/share/locale/hu/*` before the language and desktop packages. Ubuntu ships some desktop translations (`xdg-user-dirs`, which names `~/Asztal`) only in `language-pack-gnome-hu-base`, so `lepes_nyelv` installs that too (8 MB). Never run `unminimize`: it reinstalls everything and costs space.
+  - If there is no `/dev/dri/card*`, `lepes_asztal` installs `linux-modules-extra-$(uname -r)` (same kernel version, so not an update). Xorg still works on the framebuffer without it.
+  - The test image (`ubuntu:24.04` from Docker Hub) is itself minimized, with the same excludes file, so container tests cover this.
 - **The code is always the GitHub version.**
   - `repo_rendbe` runs before the update. It chowns the repo back to the user, removes a stale `.git/index.lock`, and aborts half-done merges and rebases. A corrupt `.git` goes to `/var/backups/baninapro-repo/`, and a non-git folder (for example, a copied one) is re-initialised from GitHub.
   - `git_frissit` fetches, then stashes local edits and deletions of tracked files (the user can get them back with `git stash list`). It switches back to `main` and fast-forwards. If the local branch has diverged, it keeps a `baninapro-helyi-*` branch and resets to `origin/main`. A local branch that is *ahead* of origin is left alone; the test harness relies on this.
@@ -198,7 +202,9 @@ Install and repair behavior:
   - sets `Prompt=never` for release upgrades and holds snaps;
   - Firefox's policy has `DisableAppUpdate`.
 
-  The system updates only when someone runs the installer by hand: `full-upgrade`, then `autoremove --purge` (old kernels), `apt-get clean`, and `docker image prune` after the rebuild.
+  **The installer never updates the system either, not even on the first install** (the user's decision, 2026-10-10). There is no `upgrade`, `full-upgrade` or `autoremove`. `apt-get update` refreshes the lists once per run, so missing packages can be installed.
+  - `telepit` and `telepit_min` pass `--no-upgrade`, so an installed package is never upgraded. A new package may still pull a newer dependency when it requires one.
+  - Repairs reinstall the exact installed version (`ujratelepit_azonos`, `pkg=version`), never a newer one. If that version is gone from the archive, the script warns instead of upgrading.
 
 Network and secrets:
 - **The repo is public.** The server pulls `https://github.com/Sarokin/BaninaPRO.git` over HTTPS without keys, and `repo_cim_beallit` switches an old SSH remote to it.
