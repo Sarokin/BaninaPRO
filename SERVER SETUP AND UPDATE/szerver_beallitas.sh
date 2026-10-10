@@ -3,7 +3,7 @@
 #  BaninaPRO – szerver telepítő és frissítő
 #
 #  Egy friss (szűz) Ubuntu Serverből egyetlen futtatással kész BaninaPRO szerver lesz:
-#  magyar nyelv és billentyűzet, LXQt asztal automatikus belépéssel, AnyDesk, Docker Engine, SSH,
+#  magyar nyelv és billentyűzet, Xfce asztal automatikus belépéssel, AnyDesk, Docker Engine, SSH,
 #  és a BaninaPRO kész adatbázissal, a belső hálózat bármely gépéről elérhetően:
 #    BaninaPRO:   http://<a szerver IP-címe>        vagy  http://baninapro.local
 #    phpMyAdmin:  http://<a szerver IP-címe>:8081   (BaninaPRO / BaninaPRO1234 – kezdőjelszó, változtasd meg)
@@ -1027,7 +1027,7 @@ lepesek_listaja() {
         "lepes_rendszer|120|Alapcsomagok (rendszerfrissítés nélkül), tárhely és memória (napló-korlát, swap)"
         "lepes_gepnev|3|Gépnév ($GEPNEV) és időzóna ($IDOZONA)"
         "lepes_nyelv|45|Magyar nyelv és magyar billentyűzet"
-        "lepes_asztal|360|Asztali környezet: LXQt + Xorg + LightDM, magyar feliratokkal"
+        "lepes_asztal|360|Asztali környezet: Xfce + Xorg + LightDM, magyar feliratokkal"
         "lepes_autologin|2|Automatikus bejelentkezés ($CEL_FELH)"
         "lepes_bongeszo|90|Firefox böngésző (magyar, kezdőlap: http://localhost)"
         "lepes_anydesk|30|AnyDesk – mindig fut, a géppel együtt indul"
@@ -1158,9 +1158,9 @@ forrasok_rendbe() {
     figy "Az Ubuntu csomagforrásai hiányoztak vagy ki voltak kapcsolva – visszaállítottam a gyári beállítást ($f)."
 }
 
-# az universe csomagtároló (innen jön az LXQt és az Ubuntu saját Docker-csomagja)
+# az universe csomagtároló (innen jön az Xfce és az Ubuntu saját Docker-csomagja)
 universe_bekapcsol() {
-    [[ -z $(elerheto lxqt-core) ]] || return 0
+    [[ -z $(elerheto xfce4) ]] || return 0
     AKT_MUVELET="universe csomagtároló bekapcsolása"
     if ! { command -v add-apt-repository >/dev/null && fut add-apt-repository -y universe; }; then
         # tartalék: közvetlenül a forrásfájlba (új formátum: ubuntu.sources; régi, egysoros: sources.list)
@@ -1173,7 +1173,7 @@ universe_bekapcsol() {
     fi
     AKT_MUVELET=""
     apt_ update || true
-    [[ -n $(elerheto lxqt-core) ]] || figy "Az universe csomagtároló nem kapcsolható be – az asztal telepítése elakadhat."
+    [[ -n $(elerheto xfce4) ]] || figy "Az universe csomagtároló nem kapcsolható be – az asztal telepítése elakadhat."
 }
 
 # Tárhely és memória: a rendszernapló legfeljebb 200 MB. Ha nincs swap, és kevés a memória (4 GB alatt), egy 2 GB-os
@@ -1300,14 +1300,49 @@ EOF
     ok "Billentyűzet: magyar (konzol és grafikus felület)"
 }
 
+# A minimális (minimized) Ubuntu a csomagok fordításait telepítéskor kihagyja (/etc/dpkg/dpkg.cfg.d/excludes: „Drop all
+# translations”). Az Xfce a magyar feliratait a saját csomagjaiban hozza (külön fordításcsomagja nincs), ezért a magyart
+# visszaengedem – a többi nyelv továbbra is kimarad. A dpkg a szabályokat sorban olvassa, és az utolsó illeszkedő dönt:
+# a „zz-” kezdetű fájl a sor végére kerül.
+magyar_forditasok_engedve() {
+    mkdir -p /etc/dpkg/dpkg.cfg.d
+    printf '%s\n' '# BaninaPRO szerver: a csomagok magyar fordítása is települjön (a szerver_beallitas.sh írta)' \
+        'path-include=/usr/share/locale/hu/LC_MESSAGES/*.mo' > /etc/dpkg/dpkg.cfg.d/zz-baninapro-magyar
+}
+# az asztal azon csomagjai, amelyeknek a magyar fordítása hiányzik a lemezről (még a fenti szabály előtt települtek)
+magyar_forditas_hianyzik() {
+    local p f
+    for p in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}\n' 2>/dev/null \
+        | awk -F'|' '$1 ~ /^ii/ && $2 ~ /^(xfce4|libxfce4|xfwm4|xfdesktop4|xfconf|thunar|libthunar|exo-utils|libexo|garcon|libgarcon|lightdm-gtk-greeter)/ { print $2 }'); do
+        f="$(dpkg -L "$p" 2>/dev/null | grep -E '^/usr/share/locale/hu/LC_MESSAGES/.+\.mo$' | head -n 1 || true)"
+        if [[ -n $f && ! -e $f ]]; then echo "$p"; fi
+    done
+}
+magyar_forditasok_potlasa() {
+    local hianyos=() maradt=()
+    mapfile -t hianyos < <(magyar_forditas_hianyzik)
+    (( ${#hianyos[@]} )) || return 0
+    info "${#hianyos[@]} asztali csomag magyar fordítása hiányzik – újratelepítem őket…"
+    apt_ install --reinstall --no-install-recommends "${hianyos[@]}" || true
+    mapfile -t maradt < <(magyar_forditas_hianyzik)
+    if (( ${#maradt[@]} )); then
+        figy "Az asztal ${#maradt[@]} csomagjának magyar fordítása nem pótolható (angolul jelenik meg): ${maradt[*]} – $(apt_hibak)"
+    else
+        ok "Magyar feliratok pótolva: ${#hianyos[@]} csomag"
+    fi
+}
+
 lepes_asztal() {
     local dm
-    if ! van_csomag lightdm; then UJRAINDITAS=1; fi
+    if ! van_csomag lightdm || ! van_csomag xfce4-session; then UJRAINDITAS=1; fi
     # ha egy másik bejelentkező-kezelő (pl. gdm3) is fent van, a telepítő ne kérdezze, melyik legyen
     echo 'lightdm shared/default-x-display-manager select lightdm' | debconf-set-selections >/dev/null 2>&1 || true
-    # a jegyzet szerinti minimális asztal – ez kötelező
-    telepit_min lxqt-core xorg lightdm || hiba "Az asztali környezet nem telepíthető: $(apt_hibak)"
-    ok "LXQt + Xorg + LightDM telepítve"
+    magyar_forditasok_engedve
+    # Az asztal MINDIG Xfce (a felhasználó döntése) – más asztali környezetet a telepítő nem tesz fel. Ez kötelező.
+    # (Az xfce4-terminal ugyanebben a lépésben: az asztal csomagjai „egy terminált” kérnek, és ha nincs kijelölve,
+    # az apt magától mást választhat – Ubuntu 24.04-en a gnome-terminalt, a GNOME sok csomagjával együtt.)
+    telepit_min xfce4 xfce4-terminal xorg lightdm || hiba "Az asztali környezet (Xfce) nem telepíthető: $(apt_hibak)"
+    ok "Xfce + Xorg + LightDM telepítve"
     # Minimális kernel (linux-modules-extra nélkül): ha nincs grafikus meghajtó (/dev/dri), a futó kernelhez tartozó
     # modulcsomag – ugyanaz a kernelváltozat, nem frissítés. (Nélküle is van kép: az Xorg egyszerű framebufferrel indul.)
     if ! compgen -G '/dev/dri/card*' >/dev/null && ! van_csomag "linux-modules-extra-$(uname -r)" \
@@ -1318,25 +1353,17 @@ lepes_asztal() {
             UJRAINDITAS=1
         fi
     fi
-    # kiegészítők: üdvözlőképernyő, ablakkezelő, terminál, asztali segédprogramok (xdg-utils: az AnyDesk
-    # telepítője is igényli) – ha valamelyik nem érhető el, attól még megy tovább
-    telepit_opcionalis lightdm-gtk-greeter openbox qterminal xdg-utils desktop-file-utils
-
-    # magyar feliratok: a --no-install-recommends miatt a fordításcsomagok (…-l10n) maguktól nem jönnek
-    local jeloltek=(qttranslations5-l10n qt6-translations-l10n) l10n=() p
-    for p in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}\n' | awk -F'|' '$1 ~ /^ii/ {print $2}'); do
-        case $p in
-            *-l10n) continue ;;
-            lxqt*|liblxqt*|pcmanfm-qt*|libfm-qt*|qterminal*|lximage-qt*) ;;
-            *) continue ;;
-        esac
-        # pl. lxqt-panel → lxqt-panel-l10n, libfm-qt14 → libfm-qt-l10n
-        jeloltek+=("$p-l10n" "$(sed -E 's/[0-9.-]+(t64)?$//' <<<"$p")-l10n")
-    done
-    # shellcheck disable=SC2046  # szándékos szófelbontás: csomagnevek listája
-    mapfile -t l10n < <(elerheto $(printf '%s\n' "${jeloltek[@]}" | sort -u))
-    telepit_opcionalis "${l10n[@]}"
-    ok "Magyar feliratok: ${#l10n[@]} fordításcsomag"
+    # kiegészítők: a munkamenet üzenetbusza (dbus-x11 – enélkül az Xfce nem indul el, ha a gépen nincs más), üdvözlő-
+    # képernyő, asztali segédprogramok (xdg-utils: az AnyDesk telepítője is igényli) – ha valamelyik nem érhető el,
+    # attól még megy tovább
+    telepit_opcionalis dbus-x11 lightdm-gtk-greeter xdg-utils desktop-file-utils
+    # magyar feliratok: az Xfce csomagjai magukban hozzák – ami korábban a fordítása nélkül települt, azt pótolja
+    magyar_forditasok_potlasa
+    # az első bejelentkezéskor a panel ne kérdezzen (alapértelmezett / üres panel): az alapértelmezettel indul
+    if [[ -d /etc/X11/Xsession.d ]]; then
+        printf '%s\n' '# BaninaPRO szerver: az Xfce panelje kérdés nélkül, az alapértelmezett beállítással indul (a szerver_beallitas.sh írta)' \
+            'export XFCE_PANEL_MIGRATE_DEFAULT=1' > /etc/X11/Xsession.d/60baninapro-xfce
+    fi
 
     echo /usr/sbin/lightdm > /etc/X11/default-display-manager
     # a LightDM legyen a bejelentkező-kezelő akkor is, ha egy másik (gdm3, sddm…) is fent van: azok ki, a --force
@@ -1351,11 +1378,18 @@ lepes_asztal() {
 }
 
 lepes_autologin() {
-    local sesszio="lxqt" greeter="" ses=()
-    if [[ ! -f /usr/share/xsessions/lxqt.desktop ]]; then
+    # a munkamenet mindig Xfce – akkor is, ha a gépen más asztal is fent van (pl. egy korábbi telepítés LXQt-je)
+    local sesszio="xfce" greeter="" ses=() regi=""
+    if [[ ! -f /usr/share/xsessions/xfce.desktop ]]; then
         ses=(/usr/share/xsessions/*.desktop)
         [[ -e ${ses[0]} ]] || hiba "Nem található grafikus munkamenet (/usr/share/xsessions)."
         sesszio="$(basename "${ses[0]}" .desktop)"
+        figy "Az Xfce munkamenete (xfce.desktop) nincs meg – átmenetileg ezzel indul az asztal: $sesszio. Futtasd újra a telepítőt."
+    fi
+    regi="$(sed -n 's/^autologin-session=//p' /etc/lightdm/lightdm.conf.d/50-autologin.conf 2>/dev/null | head -n 1 || true)"
+    if [[ -n $regi && $regi != "$sesszio" ]]; then
+        UJRAINDITAS=1
+        info "Az asztal eddig „$regi” volt – újraindítás után $sesszio lesz."
     fi
     if [[ -f /usr/share/xgreeters/lightdm-gtk-greeter.desktop ]]; then
         greeter="greeter-session=lightdm-gtk-greeter"
@@ -1768,9 +1802,9 @@ EOF
 [Seat:*]
 xserver-command=X -s 0 -dpms
 EOF
-    # a bejelentkezett munkamenetben is (ha egy program mégis bekapcsolná): xset induláskor, az LXQt energiakezelője
-    # tétlenségi műveletek nélkül, az xscreensaver (ha fent van) kikapcsolva
-    felh mkdir -p "$CEL_HOME/.config/autostart" "$CEL_HOME/.config/lxqt"
+    # a bejelentkezett munkamenetben is (ha egy program mégis bekapcsolná): xset induláskor, az Xfce energiakezelője
+    # és képernyővédője (ha fent van) rendszerszinten kikapcsolva, az xscreensaver (ha fent van) kikapcsolva
+    felh mkdir -p "$CEL_HOME/.config/autostart"
     cat > "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -1778,20 +1812,59 @@ Name=BaninaPRO: nincs képernyővédő
 Exec=sh -c "xset s off; xset s noblank; xset -dpms"
 NoDisplay=true
 EOF
-    f="$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
-    ini_beallit "$f" enableIdlenessWatcher false General
-    ini_beallit "$f" enableIdlenessBacklightWatcher false General
-    ini_beallit "$f" enableLidWatcher false General
+    xfce_energia
     if command -v xscreensaver >/dev/null; then
         f="$CEL_HOME/.xscreensaver"
         if [[ -f $f ]] && grep -q '^mode:' "$f"; then sed -i 's/^mode:.*/mode:\t\toff/' "$f"; else printf 'mode:\t\toff\n' >> "$f"; fi
         chown "$CEL_FELH:" "$f"
     fi
-    chown "$CEL_FELH:" "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop" "$CEL_HOME/.config/lxqt/lxqt-powermanagement.conf"
+    chown "$CEL_FELH:" "$CEL_HOME/.config/autostart/baninapro-kepernyo.desktop"
     ok "Képernyővédő és kijelző-kikapcsolás letiltva"
 
     # 3) áramszünet után magától bekapcsol: ez a BIOS beállítása – ahol a gép engedi, innen állítja be
     aram_utan_bekapcsol
+}
+
+# Az Xfce energiakezelője (xfce4-power-manager) és képernyővédője (xfce4-screensaver) – ha fent vannak – ne kapcsolja
+# ki a kijelzőt, ne altasson és ne zároljon. Rendszerszintű xfconf-alapértékek, zárolva (locked): a munkamenetben
+# kattintgatva sem írhatók felül, és a felhasználó saját beállítófájljához nem kell nyúlni.
+xfce_energia() {
+    local m=/etc/xdg/xfce4/xfconf/xfce-perchannel-xml
+    mkdir -p "$m"
+    cat > "$m/xfce4-power-manager.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BaninaPRO szerver: a kijelző soha nem kapcsol ki, a gép soha nem alszik el (a szerver_beallitas.sh írta) -->
+<channel name="xfce4-power-manager" version="1.0" locked="*" unlocked="root">
+  <property name="xfce4-power-manager" type="empty">
+    <property name="dpms-enabled" type="bool" value="false"/>
+    <property name="blank-on-ac" type="int" value="0"/>
+    <property name="blank-on-battery" type="int" value="0"/>
+    <property name="dpms-on-ac-sleep" type="uint" value="0"/>
+    <property name="dpms-on-ac-off" type="uint" value="0"/>
+    <property name="dpms-on-battery-sleep" type="uint" value="0"/>
+    <property name="dpms-on-battery-off" type="uint" value="0"/>
+    <property name="inactivity-on-ac" type="uint" value="14"/>
+    <property name="inactivity-on-battery" type="uint" value="14"/>
+    <property name="lid-action-on-ac" type="uint" value="0"/>
+    <property name="lid-action-on-battery" type="uint" value="0"/>
+    <property name="lock-screen-suspend-hibernate" type="bool" value="false"/>
+    <property name="presentation-mode" type="bool" value="true"/>
+  </property>
+</channel>
+EOF
+    cat > "$m/xfce4-screensaver.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BaninaPRO szerver: nincs képernyővédő és képernyőzár (a szerver_beallitas.sh írta) -->
+<channel name="xfce4-screensaver" version="1.0" locked="*" unlocked="root">
+  <property name="saver" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+  <property name="lock" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
+    chmod 644 "$m/xfce4-power-manager.xml" "$m/xfce4-screensaver.xml"
 }
 
 # Áramszünet után magától bekapcsol: ez a gép BIOS/UEFI-beállítása („Restore on AC Power Loss”). Ahol a firmware
@@ -3405,12 +3478,21 @@ Version=1.0
 Name=BaninaPRO ellenőrzés
 Comment=A szerver ellenőrzése, és az állapotjelentés elküldése (push-értesítés, e-mail)
 Exec=sudo $JELENTO kezi
-Icon=utilities-system-monitor
+Icon=org.xfce.terminal
 Terminal=true
 Categories=System;Monitor;
 EOF
     chown "$CEL_FELH:" "$1"
     chmod 755 "$1"
+    # Az Xfce az asztali indítót akkor futtatja kérdés nélkül, ha futtatható, és – ahol van gvfs – az ellenőrzőösszege
+    # megbízhatónak van jelölve. Ez csak a felhasználó futó munkamenetében állítható be; ha most nem megy, a
+    # következő futás pótolja (addig az Xfce egyszer rákérdez: „Indítás mindenképp”).
+    local busz
+    busz="/run/user/$(id -u "$CEL_FELH" 2>/dev/null || echo 0)/bus"
+    if command -v gio >/dev/null && [[ -S $busz ]]; then
+        felh env DBUS_SESSION_BUS_ADDRESS="unix:path=$busz" timeout 20 gio set -t string "$1" metadata::xfce-exe-checksum \
+            "$(sha256sum < "$1" | cut -d' ' -f1)" >/dev/null 2>&1 || true
+    fi
 }
 
 # A jelentő script (a beállításokkal együtt íródik ki)

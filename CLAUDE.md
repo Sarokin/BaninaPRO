@@ -164,9 +164,13 @@ Goals the user set. Keep them when changing anything here:
 - **Rerunning repairs everything** (2026-10-09). Whatever broke, running the installer again must leave an environment where BaninaPRO runs. It installs or repairs everything it needs itself, from the base tools to Docker, the code and the database, and stops only when something truly can't be fixed.
 - **License-clean.** No paid or proprietary dependencies, no extra modules where a built-in tool works. For example, e-mail goes through `curl`'s SMTP support, not msmtp.
   - The one exception is AnyDesk, kept by the user's decision. Its free edition is for private use only, so the business license is the user's responsibility. Don't replace it without asking.
-  - Everything else installed is open source and free for business use: Ubuntu, Docker Engine, MySQL Community, phpMyAdmin, PHP, Apache, Firefox, LXQt, curl, avahi.
+  - Everything else installed is open source and free for business use: Ubuntu, Docker Engine, MySQL Community, phpMyAdmin, PHP, Apache, Firefox, Xfce, curl, avahi.
 
 Install and repair behavior:
+- **The desktop is always Xfce** (the user's decision, never LXQt or anything else). On every run `lepes_autologin` sets the LightDM session to `xfce`, so a machine installed earlier with LXQt switches too (it asks for a reboot); the old LXQt packages are left installed.
+  - Packages: `xfce4 xfce4-terminal xorg lightdm` in one mandatory transaction, without recommends. Keep `xfce4-terminal` in that transaction: the desktop packages depend on "a terminal", and without a named one apt on 24.04 picks `gnome-terminal` and its GNOME dependencies.
+  - Hungarian: Xfce has no `-l10n` packages; its translations are `.mo` files inside its own packages, and a minimized Ubuntu drops those at install time (`/etc/dpkg/dpkg.cfg.d/excludes`). `magyar_forditasok_engedve` writes `zz-baninapro-magyar` (a `path-include` for `hu`) before the install, and `magyar_forditasok_potlasa` reinstalls desktop packages whose Hungarian `.mo` is listed by `dpkg -L` but missing on disk.
+  - The offline pendrive maker (`offline_pendrive_keszito.txt`) carries the same package names and checks; change both together, and update the sha256 on its last line.
 - **apt self-repair.** `apt_` reads the failure from the log, repairs and retries; `apt_nyers` is a single raw call.
   - `csomagkezelo_rendbe` finishes half-configured packages. It removes a broken package only when that package is optional (`NEM_KOTELEZO_CSOMAGOK`).
   - Known trap: AnyDesk's postinst exits 1 when `xdg-utils` is missing. That leaves dpkg half-configured and breaks every later apt call (this is what once stopped the Docker step). So `xdg-utils` is installed first.
@@ -253,7 +257,7 @@ Runtime pieces, all regenerated on every run. Never edit them on the server:
   - The installer pushes its own end result (`vegeredmeny_ertesites`), success or failure.
 - **Power settings.**
   - Sleep targets are masked, plus `sleep.conf.d` and `logind.conf.d`.
-  - No screensaver or DPMS: Xorg `ServerFlags`, LightDM `-s 0 -dpms`, session `xset`, LXQt power management.
+  - No screensaver or DPMS: Xorg `ServerFlags`, LightDM `-s 0 -dpms`, session `xset`, and locked system-wide xfconf defaults for the Xfce power manager and screensaver (`/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/`).
   - AnyDesk runs with `Restart=always`.
   - Power-on after AC loss is set through `/sys/class/firmware-attributes` where the firmware allows it; otherwise the installer prints BIOS instructions.
 
