@@ -1134,6 +1134,7 @@ lepes_rendszer() {
     universe_bekapcsol
     ok "Alapcsomagok telepítve (curl, wget, git, openssh-server, cron…) – a rendszer nem frissült"
     tarhely_memoria
+    gep_gyorsitas
 }
 
 # Minimális (minimized) Ubuntu: a dpkg minden fordítást kihagy (/etc/dpkg/dpkg.cfg.d/excludes) – a magyar fordításokat
@@ -1208,6 +1209,37 @@ tarhely_memoria() {
     else
         figy "Kevés a memória ($mem_mb MB), nincs swap, és a swap-fájlhoz kevés a szabad hely – a BaninaPRO így is fut, de szűkösen."
     fi
+}
+
+# Gyenge processzorra hangolva (a szerver: AMD G-T48E – 2 mag, 1,4 GHz, lassú háttértár): a processzor mindig teljes
+# órajelen jár (performance – alapból visszavenne 800 MHz-re, és minden kérés lassan indulna), és a rendszer csak
+# végső esetben lapoz a lassú háttértárra. Ahol a processzor órajele nem állítható, ott nincs teendő.
+gep_gyorsitas() {
+    local g db=0
+    cat > /etc/systemd/system/baninapro-cpu.service <<'EOF'
+# BaninaPRO szerver: a processzor mindig teljes órajelen (a szerver_beallitas.sh írta)
+[Unit]
+Description=BaninaPRO: a processzor teljes sebessegen (performance)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null 2>&1; exit 0'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable baninapro-cpu.service >/dev/null 2>&1 || true
+    systemctl restart baninapro-cpu.service >/dev/null 2>&1 || true
+    for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        if [[ $(cat "$g" 2>/dev/null || true) == performance ]]; then db=$((db + 1)); fi
+    done
+    if (( db )); then ok "A processzor teljes órajelen jár (performance, $db mag) – újraindítás után is"; fi
+    mkdir -p /etc/sysctl.d
+    printf '%s\n' '# BaninaPRO szerver: csak végső esetben lapozzon a háttértárra (a szerver_beallitas.sh írta)' \
+        'vm.swappiness=10' > /etc/sysctl.d/60-baninapro.conf
+    sysctl -q -p /etc/sysctl.d/60-baninapro.conf >/dev/null 2>&1 || true
 }
 
 lepes_gepnev() {
@@ -1336,6 +1368,23 @@ magyar_forditasok_potlasa() {
     fi
 }
 
+# Gyenge processzoron az ablakkezelő effektjei (kompozitálás: árnyékok, áttetszőség) minden ablakrajzolásnál a
+# processzort terhelik, és az AnyDesk képét is lassítják – rendszerszinten kikapcsolva, zárolva.
+xfce_gyors() {
+    local m=/etc/xdg/xfce4/xfconf/xfce-perchannel-xml
+    mkdir -p "$m"
+    cat > "$m/xfwm4.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BaninaPRO szerver: ablakeffektek (kompozitálás) nélkül – gyenge processzorra (a szerver_beallitas.sh írta) -->
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false" locked="*" unlocked="root"/>
+  </property>
+</channel>
+EOF
+    chmod 644 "$m/xfwm4.xml"
+}
+
 lepes_asztal() {
     local dm
     if ! van_csomag lightdm || ! van_csomag xfce4-session; then UJRAINDITAS=1; fi
@@ -1363,6 +1412,7 @@ lepes_asztal() {
     telepit_opcionalis dbus-x11 lightdm-gtk-greeter xdg-utils desktop-file-utils
     # magyar feliratok: az Xfce csomagjai magukban hozzák – ami korábban a fordítása nélkül települt, azt pótolja
     magyar_forditasok_potlasa
+    xfce_gyors
     # az első bejelentkezéskor a panel ne kérdezzen (alapértelmezett / üres panel): az alapértelmezettel indul
     if [[ -d /etc/X11/Xsession.d ]]; then
         printf '%s\n' '# BaninaPRO szerver: az Xfce panelje kérdés nélkül, az alapértelmezett beállítással indul (a szerver_beallitas.sh írta)' \
@@ -1994,6 +2044,15 @@ szerver_config() {
 # A szerver-kiegészítés a docker-compose.yml mellé (a compose magától betölti): belső hálózati elérés, jelszavas
 # phpMyAdmin, a szerver saját jelszavai, rögzített projektnév (így a kötetek neve sem változik). Egy példánya a
 # $TITOK_MAPPA-ban is megvan: ha a BaninaPRO mappából eltűnne (pl. egy git clean után), az őrszem onnan visszateszi.
+# az adatbázis memória-gyorsítótára: a gép memóriájának nyolcada, 128 MB és 1 GB között
+db_pool_mb() {
+    local mem
+    mem="$(awk '/^MemTotal:/ { print int($2 / 1024 / 8) }' /proc/meminfo 2>/dev/null || echo 128)"
+    [[ $mem =~ ^[0-9]+$ ]] || mem=128
+    if (( mem < 128 )); then mem=128; elif (( mem > 1024 )); then mem=1024; fi
+    echo "$mem"
+}
+
 override_iras() {
     local f="$REPO/docker-compose.override.yml"
     {
@@ -2002,7 +2061,12 @@ override_iras() {
 # A docker compose a docker-compose.yml mellé automatikusan betölti. A szerveren:
 #  - a BaninaPRO ($APP_PORT) és a phpMyAdmin ($PMA_PORT) a belső hálózatról is elérhető, a MySQL csak a gépen belülről;
 #  - a phpMyAdmin jelszót kér (nincs automatikus root-belépés), az adatbázis a szerver saját jelszavait használja;
-#  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva).
+#  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva);
+#  - gyorsítás (gyenge processzorra, lassú háttértárra): a munkamenetek és az ideiglenes fájlok a memóriában (/tmp),
+#    az adatbázis másodpercenként ír a lemezre (nem minden műveletnél – áramszünetnél legfeljebb az utolsó 1 mp
+#    veszhet el), bináris napló és teljesítménymérés nélkül. (A PHP kódgyorsítótára – opcache – a PHP-képben alapból
+#    be van kapcsolva.) Az adatbázis parancssora felülírja a docker-compose.yml-ét, ezért a karakterkészlet két
+#    kapcsolója itt is szerepel – a kettő maradjon egyforma.
 name: $PROJEKT
 services:
   app:
@@ -2010,10 +2074,13 @@ services:
       - "$APP_PORT:80"
     volumes:
       - $TITOK_MAPPA/config.php:/var/www/html/includes/config.php:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
   db:
     environment:
       MYSQL_ROOT_PASSWORD: "$DB_ROOT_JELSZO"
       MYSQL_PASSWORD: "$DB_APP_JELSZO"
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=$(db_pool_mb)M", "--innodb-flush-log-at-trx-commit=2", "--skip-log-bin", "--performance-schema=OFF"]
 EOF
         if [[ -n $DB_KEP ]]; then printf '    image: %s\n' "$DB_KEP"; fi
         if (( ! DB_PORT_KI )); then printf '    ports: !reset []\n'; fi
