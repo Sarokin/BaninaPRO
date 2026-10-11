@@ -1365,16 +1365,9 @@ EOF
     ok "Billentyűzet: magyar (konzol és grafikus felület)"
 }
 
-# A minimális (minimized) Ubuntu a csomagok fordításait telepítéskor kihagyja (/etc/dpkg/dpkg.cfg.d/excludes: „Drop all
-# translations”). Az Xfce a magyar feliratait a saját csomagjaiban hozza (külön fordításcsomagja nincs), ezért a magyart
-# visszaengedem – a többi nyelv továbbra is kimarad. A dpkg a szabályokat sorban olvassa, és az utolsó illeszkedő dönt:
-# a „zz-” kezdetű fájl a sor végére kerül.
-magyar_forditasok_engedve() {
-    mkdir -p /etc/dpkg/dpkg.cfg.d
-    printf '%s\n' '# BaninaPRO szerver: a csomagok magyar fordítása is települjön (a szerver_beallitas.sh írta)' \
-        'path-include=/usr/share/locale/hu/LC_MESSAGES/*.mo' > /etc/dpkg/dpkg.cfg.d/zz-baninapro-magyar
-}
-# az asztal azon csomagjai, amelyeknek a magyar fordítása hiányzik a lemezről (még a fenti szabály előtt települtek)
+# Az Xfce a magyar feliratait a saját csomagjaiban hozza (külön fordításcsomagja nincs); egy minimális (minimized)
+# Ubuntun ezek csak a minimal_rendszer_forditasok szabálya után települnek. Az asztal azon csomagjai, amelyeknek a
+# magyar fordítása hiányzik a lemezről (még a szabály előtt települtek):
 magyar_forditas_hianyzik() {
     local p f
     for p in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}\n' 2>/dev/null \
@@ -1419,7 +1412,6 @@ lepes_asztal() {
     if ! van_csomag lightdm || ! van_csomag xfce4-session; then UJRAINDITAS=1; fi
     # ha egy másik bejelentkező-kezelő (pl. gdm3) is fent van, a telepítő ne kérdezze, melyik legyen
     echo 'lightdm shared/default-x-display-manager select lightdm' | debconf-set-selections >/dev/null 2>&1 || true
-    magyar_forditasok_engedve
     # Az asztal MINDIG Xfce (a felhasználó döntése) – más asztali környezetet a telepítő nem tesz fel. Ez kötelező.
     # (Az xfce4-terminal ugyanebben a lépésben: az asztal csomagjai „egy terminált” kérnek, és ha nincs kijelölve,
     # az apt magától mást választhat – Ubuntu 24.04-en a gnome-terminalt, a GNOME sok csomagjával együtt.)
@@ -4039,7 +4031,8 @@ lepes_ellenorzes() {
     else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
     # a push-értesítések: a sorban álló (még el nem küldött) értesítések elküldése – ha nem megy, nincs internet
     if (( ! NINCS_INTERNET )); then fut "$ERTESITO" --sorbol || true; fi
-    s="$(find /var/spool/baninapro-ertesites -name '*.json' 2>/dev/null | wc -l)"
+    # (a mappa csak az első sorba állított értesítéskor jön létre – ha még nincs meg, a find hibája ne állítsa meg a futást)
+    s="$( { find /var/spool/baninapro-ertesites -name '*.json' 2>/dev/null || true; } | wc -l)"
     if (( NINCS_INTERNET )); then info "Push-értesítések: internet nélkül sorba állnak ($s vár) – maguktól elmennek, amint a gép internetet kap"
     elif (( s == 0 )); then ok "Push-értesítések: minden értesítés elment ($NTFY_SZERVER)"
     else figy "$s push-értesítés még sorban áll ($NTFY_SZERVER nem érhető el?) – az őrszem 2 percenként újrapróbálja."; fi
