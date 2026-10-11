@@ -29,6 +29,8 @@
 #    sudo bash szerver_beallitas.sh
 #  Kapcsolók:  --email                 a napi jelentés e-mail-feladójának (újra)beállítása
 #              --nincs-visszaallitas   üres adatbázisnál se állítsa vissza a legutóbbi mentést (lásd lent)
+#              --nincs-internet        internet nélküli gépen: nem ellenőrzi a hálózatot, és semmit nem próbál letölteni –
+#                                      azzal dolgozik, ami a gépen van (a pendrive-os offline_telepites.sh magától így indítja)
 #
 #  Újrafuttatva a BaninaPRO-t frissíti: adatbázis-mentés → git pull → konténerek újraépítése → takarítás.
 #  A RENDSZERT SOHA NEM FRISSÍTI – első telepítéskor sem: csak a hiányzó csomagokat telepíti, a már fent lévőket nem
@@ -137,6 +139,10 @@ UJRAINDITAS=0 ELSO_INDITAS=0 ARCH="" CEL_FELH="" CEL_HOME="" ANYDESK_JELSZO="" T
 UTOLSO_PARANCS="" ARGOK=() APT_LISTA_FRISS=0
 # --nincs-visszaallitas: üres adatbázisnál se állítsa vissza a legutóbbi mentést (tiszta lappal indulás)
 NINCS_VISSZAALLITAS=0
+# --nincs-internet (vagy BANINA_NINCS_INTERNET=1 – a pendrive-os offline_telepites.sh így indítja): a telepítő nem
+# ellenőrzi és nem javítgatja a hálózatot, és semmit nem próbál letölteni – azzal dolgozik, ami a gépen (és a pendrive
+# helyi csomagtárolójában) van. Ha a hálózat-ellenőrzés nem talál internetet, magától is erre a módra vált.
+NINCS_INTERNET=0
 # a phpMyAdmin és a MySQL portja kifelé (ha egy idegen program foglalja, és nem szabadítható fel, kimarad – a BaninaPRO
 # enélkül is működik); az adatbázis rendbetételének eredménye az összegzéshez
 PMA_PORT_KI=1 DB_PORT_KI=1 VISSZAALLITVA="" SERULT_DB_MASOLAT=""
@@ -363,7 +369,7 @@ apt_() {
         rc=0
         apt_nyers "$@" || rc=$?
         if (( rc == 0 || proba == 3 )); then break; fi
-        apt_javit "$kezdet" "$@"
+        apt_javit "$kezdet" "$@" || break
     done
     AKT_MUVELET=""
     return "$rc"
@@ -482,6 +488,8 @@ apt_javit() {
     fi
     # hálózati vagy letöltési hiba: rövid szünet, a gyorsítótár ürítése, friss csomaglisták
     if grep -qE 'Failed to fetch|Temporary failure|Could not resolve|Could not connect|Connection (failed|timed out|refused|reset)|Hash Sum mismatch|unexpected size|Unable to fetch|Service Unavailable|Bad Gateway|Gateway Time' <<<"$szoveg"; then
+        # internet nélküli módban nincs mire várni: ami nincs a gépen (vagy a pendrive csomagtárolójában), az nem lesz meg
+        if (( NINCS_INTERNET )); then return 1; fi
         AKT_MUVELET="hálózati hiba – rövid várakozás, majd újra"
         if grep -qE 'Temporary failure resolving|Could not resolve' <<<"$szoveg"; then halozat_javit; fi
         varj 15
@@ -515,6 +523,7 @@ tarolo_kikapcsol() {
 # rendszeridő: rossz órával a https és a csomagtárolók aláírása is „érvénytelen”
 ido_javit() {
     local d=""
+    (( ! NINCS_INTERNET )) || return 0
     AKT_MUVELET="rendszeridő szinkronizálása"
     timedatectl set-ntp true >/dev/null 2>&1 || true
     # az időszinkron szolgáltatása: Ubuntu 25.10 előtt a systemd-timesyncd, azóta a chrony
@@ -561,6 +570,7 @@ internet_van() {
 # A hálózat rendbetétele: ha nincs alapértelmezett útvonal, a hálózati beállítás újraalkalmazása (netplan, networkd,
 # NetworkManager); ha a névfeloldás nem működik, tartalék DNS-szerverek.
 halozat_javit() {
+    (( ! NINCS_INTERNET )) || return 0
     AKT_MUVELET="a hálózat ellenőrzése"
     if [[ -z $(ip -4 route show default 2>/dev/null) && -z $(ip -6 route show default 2>/dev/null) ]]; then
         info "Nincs hálózati útvonal (alapértelmezett átjáró) – a hálózati beállítást újra alkalmazom…"
@@ -577,6 +587,7 @@ halozat_javit() {
 # Csak akkor írja be, ha a névfeloldás nem működött (utána megmarad: ha a router DNS-e újra elromlana, ne álljon le).
 dns_javit() {
     local f=/etc/systemd/resolved.conf.d/90-baninapro-dns.conf
+    (( ! NINCS_INTERNET )) || return 0
     AKT_MUVELET="névfeloldás (DNS) javítása"
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         if [[ ! -f $f ]]; then
@@ -622,6 +633,8 @@ alapeszkozok_biztosit() {
 # a csomaglisták frissítése (futásonként egyszer elég)
 lista_frissites() {
     if (( APT_LISTA_FRISS )); then return 0; fi
+    # internet nélkül csak akkor van mit frissíteni, ha az apt egy helyi csomagtárolóra van irányítva (pendrive)
+    if (( NINCS_INTERNET )) && [[ -z ${APT_CONFIG:-} ]]; then APT_LISTA_FRISS=1; return 0; fi
     if apt_ update; then APT_LISTA_FRISS=1; else figy "Az apt update hibát jelzett: $(apt_hibak) – folytatom."; fi
 }
 
@@ -852,10 +865,19 @@ elofeltetelek() {
     cel_felhasznalo
     ok "Felhasználó: $CEL_FELH ($CEL_HOME)"
 
-    AKT_MUVELET="internetkapcsolat ellenőrzése"
-    internet_van || hiba "Nincs internetkapcsolat (a github.com nem érhető el, és a hálózat újraindítása sem segített) – ellenőrizd a hálózati kábelt / a routert, majd futtasd újra."
-    AKT_MUVELET=""
-    ok "Internetkapcsolat rendben"
+    if (( NINCS_INTERNET )); then
+        ok "Internet nélküli mód: a hálózatot nem ellenőrzöm, és semmit nem töltök le – azzal dolgozom, ami a gépen van"
+    else
+        AKT_MUVELET="internetkapcsolat ellenőrzése"
+        if internet_van; then
+            ok "Internetkapcsolat rendben"
+        else
+            NINCS_INTERNET=1
+            export BANINA_NINCS_INTERNET=1
+            figy "Nincs internetkapcsolat – internet nélküli módban folytatom: semmit nem töltök le, azzal dolgozom, ami a gépen van. (Legközelebb a hálózat-ellenőrzés is kihagyható: sudo bash $(basename "$SCRIPT") --nincs-internet)"
+        fi
+        AKT_MUVELET=""
+    fi
     # a script saját eszközei – egy minimális rendszeren a curl, a git is hiányozhat
     alapeszkozok_biztosit
 
@@ -942,7 +964,10 @@ frissites_elokeszites() {
     elotte="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
     repo_rendbe
     AKT_MUVELET="a legfrissebb kód letöltése (git)"
-    if git_frissit; then
+    if (( NINCS_INTERNET )) && [[ -z ${GIT_CONFIG_COUNT:-} ]]; then
+        # (a pendrive-os indító a git-et a pendrive-on lévő másolatra irányítja – GIT_CONFIG_COUNT –, az frissíthet)
+        info "Internet nélküli mód: a kód frissítése kimarad – a gépen lévő változat fut ($(felh git -C "$REPO" log -1 --format='%h, %cd' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null || echo '?'))."
+    elif git_frissit; then
         ok "A kód naprakész – a GitHubon lévő változat ($(felh git -C "$REPO" log -1 --format='%h, %cd' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null || true))"
     else
         figy "A kód frissítése (git) nem sikerült – a meglévő kóddal folytatom. ($(tail -n 1 "$NAPLO"))"
@@ -1169,6 +1194,7 @@ forrasok_rendbe() {
 # az universe csomagtároló (innen jön az Xfce és az Ubuntu saját Docker-csomagja)
 universe_bekapcsol() {
     [[ -z $(elerheto xfce4) ]] || return 0
+    (( ! NINCS_INTERNET )) || return 0
     AKT_MUVELET="universe csomagtároló bekapcsolása"
     if ! { command -v add-apt-repository >/dev/null && fut add-apt-repository -y universe; }; then
         # tartalék: közvetlenül a forrásfájlba (új formátum: ubuntu.sources; régi, egysoros: sources.list)
@@ -1482,7 +1508,7 @@ lepes_bongeszo() {
     local lista=/etc/apt/sources.list.d/mozilla.list jelolt
     if ! van_csomag firefox; then
         # a Mozilla saját csomagtárolójából (nem snap): apt-tal frissül, van magyar nyelvi csomagja
-        if [[ ! -f $lista ]]; then
+        if [[ ! -f $lista ]] && (( ! NINCS_INTERNET )); then
             install -m 0755 -d /etc/apt/keyrings
             if ! fut curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc; then
                 figy "A Mozilla csomagtároló kulcsa nem tölthető le – a böngésző kimarad."
@@ -1531,7 +1557,7 @@ lepes_anydesk() {
         # elsősorban a hivatalos csomagtárolóból
         install -m 0755 -d /etc/apt/keyrings
         AKT_MUVELET="AnyDesk csomagtároló beállítása"
-        if fut curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY -o /etc/apt/keyrings/keys.anydesk.com.asc; then
+        if (( ! NINCS_INTERNET )) && fut curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY -o /etc/apt/keyrings/keys.anydesk.com.asc; then
             chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
             echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] https://deb.anydesk.com all main" > "$lista"
             apt_ update || true
@@ -1569,6 +1595,7 @@ lepes_anydesk() {
 # a géphez való), akkor a legfrissebb a csomagtároló listájából
 anydesk_deb_telepit() {
     local deb="$TMPD/anydesk.deb" url
+    (( ! NINCS_INTERNET )) || return 1   # internet nélkül nincs honnan letölteni
     for url in "$ANYDESK_DEB" "$(anydesk_deb_legfrissebb)"; do
         [[ -n $url && $url == *"_$ARCH.deb" ]] || continue
         AKT_MUVELET="AnyDesk letöltése"
@@ -1682,7 +1709,7 @@ docker_telepites() {
     install -m 0755 -d /etc/apt/keyrings
     kod="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
     AKT_MUVELET="Docker csomagtároló beállítása"
-    if fut curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
+    if (( ! NINCS_INTERNET )) && fut curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
         chmod a+r /etc/apt/keyrings/docker.asc
         printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
             "$kod" "$ARCH" > /etc/apt/sources.list.d/docker.sources
@@ -1767,7 +1794,7 @@ compose_biztosit() {
     case $ARCH in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; armhf) arch=armv7 ;; *) arch=$ARCH ;; esac
     install -d -m 755 "$(dirname "$cel")"
     AKT_MUVELET="docker compose letöltése"
-    if ujraprobal 3 curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch" -o "$cel"; then
+    if (( ! NINCS_INTERNET )) && ujraprobal 3 curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch" -o "$cel"; then
         chmod 755 "$cel"
     fi
     AKT_MUVELET=""
@@ -1810,7 +1837,9 @@ lepes_ssh() {
     # a frissítés (git pull) a nyilvános GitHub-repóból megy, https-en – GitHub-kulcs nem kell
     repo_cim_beallit
     AKT_MUVELET="GitHub elérés ellenőrzése"
-    if ujraprobal 2 felh git -C "$REPO" ls-remote --exit-code origin HEAD; then
+    if (( NINCS_INTERNET )); then
+        info "Internet nélküli mód: a GitHub-elérést nem ellenőrzöm (ha a gép internetet kap, a frissítések innen jönnek: $REPO_URL)."
+    elif ujraprobal 2 felh git -C "$REPO" ls-remote --exit-code origin HEAD; then
         ok "GitHub elérés rendben – a frissítések innen jönnek: $REPO_URL"
     else
         figy "A GitHub-repó most nem érhető el ($REPO_URL) – a következő futás újra megpróbálja a frissítést."
@@ -2075,7 +2104,8 @@ override_iras() {
 #  - gyorsítás (gyenge processzorra, lassú háttértárra): a munkamenetek és az ideiglenes fájlok a memóriában (/tmp),
 #    az adatbázis másodpercenként ír a lemezre (nem minden műveletnél – áramszünetnél legfeljebb az utolsó 1 mp
 #    veszhet el), bináris napló és teljesítménymérés nélkül. (A PHP kódgyorsítótára – opcache – a PHP-képben alapból
-#    be van kapcsolva.) Az adatbázis parancssora felülírja a docker-compose.yml-ét, ezért a karakterkészlet két
+#    be van kapcsolva.) Az adatbázis első létrehozásakor az időzóna-táblák betöltése kimarad (lassú gépen percekig
+#    tartana; az alkalmazás nem névvel, hanem eltolással állítja az időzónát). Az adatbázis parancssora felülírja a docker-compose.yml-ét, ezért a karakterkészlet két
 #    kapcsolója itt is szerepel – a kettő maradjon egyforma.
 name: $PROJEKT
 services:
@@ -2090,6 +2120,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: "$DB_ROOT_JELSZO"
       MYSQL_PASSWORD: "$DB_APP_JELSZO"
+      MARIADB_INITDB_SKIP_TZINFO: "1"
+      MYSQL_INITDB_SKIP_TZINFO: "1"
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=$(db_pool_mb)M", "--innodb-flush-log-at-trx-commit=2", "--skip-log-bin", "--performance-schema=OFF"]
 EOF
         if [[ -n $DB_KEP ]]; then printf '    image: %s\n' "$DB_KEP"; fi
@@ -2233,6 +2265,7 @@ regi_db_kepek_torlese() {
 # képek nyilvános tükreiről – a kép az eredeti nevén kerül a gépre, így a compose és az építés is megtalálja
 kep_letolt() {
     local kep=$1 t
+    (( ! NINCS_INTERNET )) || return 1   # internet nélkül nincs honnan (a pendrive-os indító előre betölti a képeket)
     if ujraprobal 2 timeout 1800 docker pull -q "$kep"; then return 0; fi
     [[ $kep != */* ]] || return 1   # tükör csak a hivatalos (library) képekhez van
     for t in "${KEP_TUKROK[@]}"; do
@@ -2256,7 +2289,9 @@ kepek_biztosit() {   # a hiányzó képek letöltése – a meglévőkhöz nem n
         if kep_letolt "$k"; then ok "Docker-kép letöltve: $k"; else HIANYZO_KEPEK+=("$k"); fi
     done
     AKT_MUVELET=""
-    if (( ${#HIANYZO_KEPEK[@]} )); then
+    if (( ${#HIANYZO_KEPEK[@]} && NINCS_INTERNET )); then
+        figy "Nincs a gépen, és internet nélkül nem tölthető le: ${HIANYZO_KEPEK[*]} – egy most elkészített offline pendrive hozza."
+    elif (( ${#HIANYZO_KEPEK[@]} )); then
         figy "Nem tölthető le (sem a Docker Hubról, sem a tükrökről): ${HIANYZO_KEPEK[*]} – ellenőrizd az internetet."
     fi
 }
@@ -2264,7 +2299,7 @@ kepek_biztosit() {   # a hiányzó képek letöltése – a meglévőkhöz nem n
 # el), a meglévő alapképből; ha a compose építője (buildx / bake) nem működik, a Docker egyszerű építőjével.
 alkalmazas_epites() {
     AKT_MUVELET="az alkalmazás építése (PHP 8.3 + Apache)"
-    if ujraprobal 2 dc build --pull app; then
+    if (( ! NINCS_INTERNET )) && ujraprobal 2 dc build --pull app; then
         ok "Az alkalmazás képe elkészült (a PHP-alapkép is frissítve)"
     elif ujraprobal 2 dc build app; then
         ok "Az alkalmazás képe elkészült (a meglévő PHP-alapképből)"
@@ -2286,7 +2321,7 @@ kontenerek_inditasa() {
     for k in "${HIANYZO_KEPEK[@]}"; do
         if [[ $k == *phpmyadmin* ]]; then szolg=(app db); fi
     done
-    AKT_MUVELET="konténerek indítása (első induláskor a MySQL 1-2 percig készíti az adatbázist)"
+    AKT_MUVELET="konténerek indítása (első induláskor az adatbázis létrehozása gyenge gépen percekig tart)"
     if fut dc up -d --remove-orphans "${szolg[@]}"; then AKT_MUVELET=""; return 0; fi
     # ha a MySQL újra és újra összeomlik, a további próbák csak az időt viszik – a hívó az adatbázist javítja
     if db_osszeomlik; then AKT_MUVELET=""; return 1; fi
@@ -2321,25 +2356,65 @@ db_nev() { timeout 30 docker exec "$DB_KONTENER" printenv MYSQL_DATABASE 2>/dev/
 pma_kezdojelszo_el() {
     timeout 30 docker exec "$DB_KONTENER" mysql -N -B -h 127.0.0.1 -u"$PMA_FELH" -p"$PMA_KEZDO_JELSZO" -e 'SELECT 1' >/dev/null 2>&1
 }
-# Megvárja, amíg a MySQL elindul (első induláskor 1-2 perc); ha beragad, újraindítja. 1, ha így sem indul el.
+# Az adatbázis-konténer még az első beállítását végzi-e (az adatfájlok létrehozása, a séma betöltése): a mostani
+# indulása óta írt naplójában megvan a kezdete, de a vége még nincs.
+db_elso_beallitas_fut() {
+    local kezdet szoveg
+    kezdet="$(timeout 30 docker inspect -f '{{.State.StartedAt}}' "$DB_KONTENER" 2>/dev/null || true)"
+    [[ -n $kezdet ]] || return 1
+    szoveg="$(timeout 60 docker logs --since "$kezdet" "$DB_KONTENER" 2>&1 || true)"
+    [[ $szoveg == *"Initializing database files"* && $szoveg != *"init process done"* ]]
+}
+# Megvárja, amíg az adatbázis elindul. Az első indulás (az adatfájlok létrehozása, a séma betöltése) gyors gépen 1-2
+# perc, gyenge processzoron és lassú háttértáron 10 percnél is több lehet. Amíg a konténer fut, és az első beállítását
+# végzi, NEM nyúl hozzá (legfeljebb 30 percig vár): egy közbeni újraindítás félkész adatbázist hagyna maga után. Csak
+# akkor indítja újra, ha a konténer leállt, vagy már nem az első beállítás fut, mégsem válaszol. 1, ha így sem indul el.
 db_var_inditasra() {
-    local i
-    AKT_MUVELET="várakozás az adatbázisra (első induláskor 1-2 perc)"
-    for (( i = 0; i < 120; i++ )); do
+    local i allapot
+    AKT_MUVELET="várakozás az adatbázisra (az első indulás gyenge gépen 10-15 perc is lehet – ne szakítsd meg)"
+    for (( i = 0; i < 900; i++ )); do
         if db_kesz; then AKT_MUVELET=""; return 0; fi
+        allapot="$(timeout 30 docker inspect -f '{{.State.Status}}' "$DB_KONTENER" 2>/dev/null || true)"
         # ha a konténer hibával kilépett vagy újra és újra összeomlik, nincs mire várni
-        if (( i > 15 )) && [[ $(timeout 30 docker inspect -f '{{.State.Status}}' "$DB_KONTENER" 2>/dev/null || true) =~ ^(exited|dead|restarting|)$ ]]; then
-            break
-        fi
+        if (( i > 15 )) && [[ $allapot =~ ^(exited|dead|restarting|)$ ]]; then break; fi
+        # 4 perc után csak addig vár tovább, amíg az első beállítás tart
+        if (( i >= 120 )) && ! db_elso_beallitas_fut; then break; fi
         varj 2
     done
+    if db_elso_beallitas_fut; then
+        # fél óra alatt sem készült el, de még dolgozik: nem szakítja meg
+        AKT_MUVELET=""
+        return 1
+    fi
     fut timeout 300 docker restart "$DB_KONTENER" || true
-    for (( i = 0; i < 60; i++ )); do
+    for (( i = 0; i < 900; i++ )); do
         if db_kesz; then AKT_MUVELET=""; return 0; fi
+        if (( i >= 60 )) && ! db_elso_beallitas_fut; then break; fi
         varj 2
     done
     AKT_MUVELET=""
     return 1
+}
+# Félkész adatbázis: az első beállítás megszakadt (áramszünet, újraindítás közben), ezért az adatbázis-kötetben nincs
+# meg az alkalmazás adatbázisának mappája – vagyis adat sincs benne. Ilyenkor, és csak ilyenkor, a kötetet törli, és az
+# adatbázis elölről létrejön. Ha az alkalmazás adatbázisa megvan a köteten, nem nyúl hozzá (1-gyel tér vissza).
+DB_UJRA_LETREHOZVA=0
+db_felkesz_ujra() {
+    local m nev
+    (( ! DB_UJRA_LETREHOZVA )) || return 1
+    m="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$DB_KOTET" 2>/dev/null || true)"
+    [[ -n $m && -d $m ]] || return 1
+    nev="$(db_nev)"
+    [[ -n $nev && ! -d $m/$nev ]] || return 1
+    DB_UJRA_LETREHOZVA=1
+    figy "Az adatbázis első beállítása korábban megszakadt: az adatbázis-kötetben nincs meg a(z) $nev adatbázis, így adat sincs benne – a félkész adatfájlokat törlöm, és az adatbázist újra létrehozom."
+    AKT_MUVELET="a félkész adatbázis újra létrehozása"
+    fut timeout 300 docker stop "$DB_KONTENER" || true
+    fut timeout 120 docker rm -f "$DB_KONTENER" || true
+    if ! fut timeout 300 docker volume rm "$DB_KOTET"; then AKT_MUVELET=""; return 1; fi
+    ELSO_INDITAS=1
+    kontenerek_inditasa || { AKT_MUVELET=""; return 1; }
+    db_var_inditasra
 }
 # Régebbi, a nyilvános alapjelszóval (docker-compose.yml) létrehozott adatbázis: a root-jelszó átállítása a szerver
 # saját jelszavára (a konténer a MYSQL_ROOT_PASSWORD-ben már ezt kapja, de az csak üres adatbázisnál érvényesül)
@@ -2414,10 +2489,11 @@ db_felhasznalok() {
 # a legfrissebbet visszaállítja; végül a séma egyeztetése a kóddal (a hiányzó táblák, oszlopok, indexek pótlása).
 adatbazis_rendbe() {
     local tablak felhasznalok
-    db_var_inditasra || return 1
+    # (ha nem indul el, és a kötetben csak egy megszakadt első beállítás félkész fájljai vannak: újra létrehozza)
+    if ! db_var_inditasra && ! db_felkesz_ujra; then return 1; fi
     # a root-jelszó: a szerver jelszava; egy régebbi adatbázisnál a nyilvános alapjelszó; ha egyik sem, helyreállítás
     if ! db_sql -e 'SELECT 1' >/dev/null 2>&1 && ! db_root_atallitas && ! db_jelszo_helyreallitas; then
-        return 1
+        if ! db_felkesz_ujra || ! db_sql -e 'SELECT 1' >/dev/null 2>&1; then return 1; fi
     fi
     # Üres adatbázis (nincs felhasználó): a teljes séma, a kezdő adminnal. Egy meglévő adatbázisba kezdő admin soha nem
     # kerül (egy átnevezett admin mellé a nyilvános kezdőjelszóval) – oda csak a hiányzó táblák stb. (sema_egyeztetes).
@@ -2944,7 +3020,9 @@ EOF
 
     # első alkalommal próba-értesítés (a feliratkozás után ez már látszik a telefonon)
     if ! grep -q '^NTFY_PROBA_KESZ=1' "$f"; then
-        if "$ERTESITO" -p 3 -t bell "Értesítések bekapcsolva" \
+        if (( NINCS_INTERNET )); then
+            info "Internet nélkül a push-értesítések nem mennek ki – sorba állnak, és maguktól elmennek, amint a gép internetet kap."
+        elif "$ERTESITO" -p 3 -t bell "Értesítések bekapcsolva" \
             "Ez a próba-értesítés: a BaninaPRO szerver ($GEPNEV) mostantól ide jelez – leállás, újraindulás, áramszünet, hibák és helyreállás, AnyDesk / Docker, éjszakai mentés, napi jelentés ($JELENTES_IDO), belépések."; then
             echo 'NTFY_PROBA_KESZ=1' >> "$f"
             ok "Próba-értesítés elküldve"
@@ -3960,9 +4038,10 @@ lepes_ellenorzes() {
     if systemctl is-active --quiet baninapro-belepesfigyelo.service; then ok "A belépésfigyelő fut (be- és kilépésekről értesít)"
     else figy "A belépésfigyelő (baninapro-belepesfigyelo) nem fut."; fi
     # a push-értesítések: a sorban álló (még el nem küldött) értesítések elküldése – ha nem megy, nincs internet
-    fut "$ERTESITO" --sorbol || true
+    if (( ! NINCS_INTERNET )); then fut "$ERTESITO" --sorbol || true; fi
     s="$(find /var/spool/baninapro-ertesites -name '*.json' 2>/dev/null | wc -l)"
-    if (( s == 0 )); then ok "Push-értesítések: minden értesítés elment ($NTFY_SZERVER)"
+    if (( NINCS_INTERNET )); then info "Push-értesítések: internet nélkül sorba állnak ($s vár) – maguktól elmennek, amint a gép internetet kap"
+    elif (( s == 0 )); then ok "Push-értesítések: minden értesítés elment ($NTFY_SZERVER)"
     else figy "$s push-értesítés még sorban áll ($NTFY_SZERVER nem érhető el?) – az őrszem 2 percenként újrapróbálja."; fi
 
     # az e-mail most lett beállítva: próba-jelentés – ha nem megy el, a beállítást törli, és a következő futás újra kérdez
@@ -4188,9 +4267,11 @@ main() {
         case $a in
             --email) EMAIL_KERDES=1 ;;                     # a feladó-postafiók (újra)beállítása
             --nincs-visszaallitas) NINCS_VISSZAALLITAS=1 ;; # üres adatbázisnál se állítson vissza mentést
+            --nincs-internet) NINCS_INTERNET=1 ;;           # internet nélküli gép: nincs hálózat-ellenőrzés, nincs letöltés
             *) ;;
         esac
     done
+    if [[ ${BANINA_NINCS_INTERNET:-} == 1 ]]; then NINCS_INTERNET=1; fi
     # egyszerre csak egy telepítő fusson (egy második példány összeakadna az elsővel)
     exec 7>/run/baninapro-telepito.lock
     if ! flock -n 7; then
