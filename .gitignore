@@ -30,3 +30,10 @@ BaninaPRO_WEB/
 # Frontend tesztek (Playwright) – csak helyben, nem kerülnek a repóba
 tests/
 docker-compose.teszt.yml
+
+# SQL-mentések / exportok (éles adatok!) – a repó nyilvános, ilyen fájl soha nem kerülhet bele.
+# (Az egyetlen kivétel a séma: sql/schema.sql – lásd fent.)
+*.sql
+*.sql.gz
+*.sql.zip
+!sql/schema.sql

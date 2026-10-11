@@ -315,7 +315,7 @@ Testing: Docker Desktop runs on this Mac, so reproduce the server in a privilege
 
 ## Quick app update (`SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh`)
 
-The user asked for this on 2026-10-11 and chose the name: a script that only pulls the pushed commits and overwrites the files, in seconds, without the installer's 17 steps. The server has internet now, so the normal way to ship a web change is: push here, then the user runs `bash BaninaPro_App_Updater.sh` on the server (a copy sits on the server's desktop; it re-executes itself with sudo).
+The user asked for this on 2026-10-11 and chose the name: a script that only pulls the pushed commits and overwrites the files, in seconds, without the installer's 17 steps. The server has internet now, so the normal way to ship a web change is: push here, then the user clicks the „BaninaPro App Updater” icon on the server's desktop (or runs `bash BaninaPro_App_Updater.sh`; it re-executes itself with sudo and asks for the password).
 
 - **Why it can be this small.** The app container bind-mounts the repo folder, and opcache revalidates within 2 s, so a fast-forward of the working tree is live at once. Nothing is rebuilt or restarted.
 - **What it does:** fetches `origin/main`, stashes local edits of tracked files, fast-forwards, rewrites `/etc/baninapro/config.php` from the new `docker/config.php` (the version number lives there), then checks that the page answers with the new version. It logs to `/var/log/baninapro-frissites.log` and sends a push.
@@ -323,9 +323,30 @@ The user asked for this on 2026-10-11 and chose the name: a script that only pul
   - It finds the repo and the port from the `REPO=` and `APP_PORT=` lines of `/usr/local/sbin/baninapro-orszem`, so keep those lines in `orszem_iras`.
 - **When it hands over to the full installer** (it then changes nothing itself and `exec`s `szerver_beallitas.sh`): the update touches a file in `NEHEZ_FAJLOK` (`sql/schema.sql`, `docker-compose.yml`, `docker/Dockerfile`), the server is not on `main` or has local commits, the fast-forward fails, the server config can't be written, or the page doesn't come back. If you add another file that needs more than a file copy, add it to `NEHEZ_FAJLOK`.
   - A change to `szerver_beallitas.sh` alone does not hand over: the web app is updated, and the script tells the user to run the full installer when convenient. Say so in the reply too, whenever an installer change needs to reach the server.
-- **`VALTOZAT`.** Bump it whenever the script changes. The desktop copy compares it with the repo's copy and runs the repo's if that one is newer, so the user never has to download it again.
+- **`VALTOZAT`.** Bump it whenever the script changes (`SQL_IMPORT.sh` has its own). A copy outside the repo compares it with the repo's copy and runs the repo's if that one is newer.
+- **Desktop icons** (the user asked for click-to-run on 2026-10-11). `asztali_ikonok` in the updater writes two launchers to the user's desktop, `BaninaPro_App_Updater.desktop` and `SQL_IMPORT.desktop`, the same way the installer's `ikon_iras` does (`Terminal=true`, mode 755, `metadata::xfce-exe-checksum` through `gio` when the user's session bus is there). It runs on every updater run, and the installer calls it too: `BaninaPro_App_Updater.sh --ikonok` in `lepes_jelentes`. This is the only place that describes the launchers.
+  - The launchers run the repo's copy with `--ablak`: the script then runs itself as a child (through sudo) and waits for Enter at the end, so the terminal window stays open, also after a hand-over to the installer.
+  - A `.sh` the user downloaded to the desktop is deleted once both launchers exist; the launcher replaces it.
+  - Clicking was never tested in a real Xfce session (the test container has no desktop); only the files and the `--ablak` flow on a terminal were.
 - It takes the installer's lock (`/run/baninapro-telepito.lock`), and every git call runs under `timeout` with stdin from `/dev/null` (see "Nothing may read the terminal").
 - **Testing.** On an installed test server, `git clone --bare` the server's repo to a local folder as the repo owner, point the repo's `origin` at it (the installer leaves a non-GitHub origin alone), and push test commits there from a second clone. Cases: no change, a web change with a version bump and a new constant, a local edit (stash), a `sql/schema.sql` change (hand-over; the installer then adds the table), the installer's lock held, an unreachable origin, a run on a terminal (`script -qec`), and a desktop copy older than the repo's.
+
+## Loading an SQL dump (`SERVER SETUP AND UPDATE/SQL_IMPORT.sh`)
+
+The user asked for this on 2026-10-11 and chose the name: load a dump brought from elsewhere, above all the production site's phpMyAdmin export (`SQLDATA_….sql`), into the server's database. Flow: click the „SQL IMPORT” icon, drag the file into the terminal window, press Enter.
+
+- **Why a plain import fails.** A phpMyAdmin export has `CREATE TABLE` without `DROP TABLE`, so it stops at the first table that exists; its keys, `AUTO_INCREMENT` and foreign keys come as `ALTER TABLE` at the very end.
+- **How it loads.** It uses the app's own restore (`cron_mentes.php vissza`, `db_visszaallit`): a full backup first, automatic rollback if any statement fails, and the maintenance flag meanwhile. The script only prepares the file in `DBBCKP` (`masolat_keszit`):
+  - a foreign dump gets `SET FOREIGN_KEY_CHECKS = 0` and a `DROP TABLE IF EXISTS` for every table now in the database in front, and loses its `USE` / `CREATE DATABASE` lines;
+  - the app's own backup goes in unchanged, so the app's own completeness check (the `-- Mentés vége` footer) still applies.
+- **Checks before touching the database:** the file has `CREATE TABLE`, no `DELIMITER`, the tables in `ALAP_TABLAK` (otherwise it is not a BaninaPRO dump), and its end (`COMMIT;` / `-- Dump completed` / the footer). A dump cut at a statement boundary would otherwise load "successfully" without keys.
+- **Confirmation.** If the server already has business data, the user must type `igen` (`--igen` skips it). On an empty server it loads without asking, which is the "drag, Enter" flow the user wanted.
+- **After loading:** it checks the base tables, the users and the primary key of `felhasznalok` (and restores the pre-load backup if they are missing), deletes the PHP session files in the app container's `/tmp` (the sessions belonged to the old users), removes its copy from `DBBCKP`, and compares the schema with `sql/schema.sql` through the scratch database `baninapro_sema_minta` (`sema_elteres`: missing columns, different column types or nullability, missing indexes). Any difference hands over to the full installer, whose `sema_egyeztetes` repairs it.
+- The whole database is replaced, the users and their passwords too; the server's initial `admin` is gone afterwards. Tell the user.
+- It holds both the installer's and the watchdog's lock: a watchdog recovery would restart the containers in the middle of the load.
+- Measured with the real 12 MB export on the test server (i5-8500): 329 statements in 3 s, the whole run 7–11 s.
+- **Never commit a dump.** The repo is public. `.gitignore` excludes `*.sql` everywhere except `sql/schema.sql`; the user once dropped the production export into `SERVER SETUP AND UPDATE/`.
+- **Testing.** Copy a dump into the installed test server and run the script with the path as argument (`--igen` when data exists). Cases: the first load on a terminal with a quoted path as a dropped file arrives, a second load with and without confirmation, a truncated file, a non-BaninaPRO file, the app's own backup, a dump with a failing statement near the end (rollback: a marker row written before must survive), a path given as `file://` URL, with backslashes and in quotes, and a table added to the local `sql/schema.sql` (hand-over to the installer).
 
 ## Working notes (lessons learned)
 

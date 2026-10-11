@@ -6,7 +6,10 @@
 #  A konténerek a BaninaPRO mappát közvetlenül olvassák, ezért a változás azonnal él: nincs újraépítés, nincs
 #  újraindítás, nincs rendszerbeállítás – néhány másodperc.
 #
-#  Futtatás (bárhonnan, pl. az asztalról):   bash BaninaPro_App_Updater.sh      (a rendszergazdai jelszót kéri)
+#  Futtatás:   az asztali „BaninaPro App Updater” ikonnal (kattintásra terminálablakban indul), vagy terminálból:
+#                  bash BaninaPro_App_Updater.sh      (a rendszergazdai jelszót kéri)
+#  Az asztali ikonokat – a sajátját és az SQL_IMPORT.sh-ét – ez a script készíti el minden futásakor (és a teljes
+#  telepítő is ezt hívja: --ikonok).
 #
 #  Amit elvégez:
 #   - a BaninaPRO mappa frissítése a GitHub main ágára (a szerveren kézzel módosított fájlokat előbb félreteszi:
@@ -24,7 +27,7 @@
 
 set -uo pipefail
 
-VALTOZAT=1   # ha a scriptet módosítod, növeld: egy másolat (pl. az asztalon) ebből tudja, hogy a BaninaPRO mappában újabb van
+VALTOZAT=2   # ha a scriptet módosítod, növeld: egy másolat (pl. az asztalon) ebből tudja, hogy a BaninaPRO mappában újabb van
 REPO_AG="main"
 TITOK_MAPPA="/etc/baninapro"
 ORSZEM="/usr/local/sbin/baninapro-orszem"       # a telepítő írja: ebből tudja, hol a BaninaPRO mappa és melyik a port
@@ -32,6 +35,7 @@ ERTESITO="/usr/local/sbin/baninapro-ertesites"  # push-értesítés (ha a telep�
 NAPLO="/var/log/baninapro-frissites.log"
 TELEPITO_NEV="SERVER SETUP AND UPDATE/szerver_beallitas.sh"
 SAJAT_NEV="SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh"
+IMPORT_NEV="SERVER SETUP AND UPDATE/SQL_IMPORT.sh"
 # ezek változásához a teljes telepítő kell
 NEHEZ_FAJLOK=("sql/schema.sql" "docker-compose.yml" "docker/Dockerfile")
 
@@ -152,8 +156,72 @@ oldal_ellenorzes() {
     return 1
 }
 
+# parancs a BaninaPRO mappa tulajdonosa nevében (ő a szerver asztali felhasználója)
+felh() {
+    if [[ $TULAJ == root ]]; then "$@"; else runuser -u "$TULAJ" -- env HOME="$TULAJ_HOME" "$@"; fi
+}
+
+# a felhasználó asztalának mappája (magyarul: ~/Asztal)
+asztal_mappa() {
+    local m=""
+    m="$(felh env LANG=hu_HU.UTF-8 LC_ALL=hu_HU.UTF-8 xdg-user-dir DESKTOP 2>/dev/null </dev/null || true)"
+    if [[ -z $m || $m == "$TULAJ_HOME" || $m != "$TULAJ_HOME"/* || $m == *$'\n'* ]]; then
+        if [[ -d $TULAJ_HOME/Asztal || ! -d $TULAJ_HOME/Desktop ]]; then m="$TULAJ_HOME/Asztal"; else m="$TULAJ_HOME/Desktop"; fi
+    fi
+    printf '%s' "$m"
+}
+
+# Egy asztali indító: kattintásra terminálablakban futtatja a scriptet (--ablak: a végén megvárja az Entert).
+# Csak akkor írja újra, ha változott. Az Xfce akkor futtatja kérdés nélkül, ha futtatható, és az ellenőrzőösszege
+# megbízhatónak van jelölve – ez a felhasználó futó munkamenetében állítható be; ha most nem megy, az Xfce az első
+# kattintáskor egyszer rákérdez („Indítás mindenképp”).
+ikon_keszit() {   # $1 = az indító fájlja, $2 = név, $3 = leírás, $4 = a script
+    local f="$1" uj busz
+    uj="$(printf '[Desktop Entry]\nType=Application\nVersion=1.0\nName=%s\nComment=%s\nExec=bash "%s" --ablak\nIcon=org.xfce.terminal\nTerminal=true\nCategories=System;\n' "$2" "$3" "$4")"
+    if [[ ! -f $f || $(cat "$f" 2>/dev/null) != "$uj" ]]; then printf '%s\n' "$uj" > "$f" || return 1; fi
+    chown "$TULAJ:" "$f" 2>/dev/null || true
+    chmod 755 "$f" || return 1
+    busz="/run/user/$(id -u "$TULAJ" 2>/dev/null || echo 0)/bus"
+    if command -v gio >/dev/null && [[ -S $busz ]]; then
+        felh env DBUS_SESSION_BUS_ADDRESS="unix:path=$busz" timeout 20 gio set -t string "$f" metadata::xfce-exe-checksum \
+            "$(sha256sum < "$f" | cut -d' ' -f1)" >/dev/null 2>&1 </dev/null || true
+    fi
+}
+
+# A két asztali ikon: „BaninaPro App Updater” (ez a script) és „SQL IMPORT” (SQL_IMPORT.sh) – mindkettő a BaninaPRO
+# mappában lévő példányt indítja, így a frissítésekkel együtt maguk is frissülnek.
+asztali_ikonok() {
+    local asztal db=0
+    asztal="$(asztal_mappa)"
+    felh mkdir -p "$asztal" 2>/dev/null </dev/null || return 1
+    if [[ -f $REPO/$SAJAT_NEV ]] && ikon_keszit "$asztal/BaninaPro_App_Updater.desktop" "BaninaPro App Updater" \
+        "A weboldal gyors frissítése a GitHubról (néhány másodperc)" "$REPO/$SAJAT_NEV"; then db=$(( db + 1 )); fi
+    if [[ -f $REPO/$IMPORT_NEV ]] && ikon_keszit "$asztal/SQL_IMPORT.desktop" "SQL IMPORT" \
+        "Egy SQL-mentés (pl. az éles oldal phpMyAdmin-exportja) betöltése az adatbázisba" "$REPO/$IMPORT_NEV"; then db=$(( db + 1 )); fi
+    # az asztalra letöltött .sh másolat helyett mostantól az ikon indítja (a BaninaPRO mappában lévő példányt)
+    if (( db == 2 )) && [[ $(dirname "$SCRIPT") == "$asztal" && $SCRIPT == *.sh && -f $REPO/$SAJAT_NEV ]]; then
+        if rm -f -- "$SCRIPT"; then info "Az asztalra letöltött $(basename "$SCRIPT") fájlt töröltem: helyette az ikonra kattints."; fi
+    fi
+    IKONOK_DB=$db
+    IKONOK_HELYE="$asztal"
+    (( db == 2 ))
+}
+
 main() {
-    local regi uj ag f n verzio_elotte verzio rc nehez=() valtozott=() ertesites
+    local regi uj ag f n verzio_elotte verzio rc nehez=() valtozott=() ertesites a ablak=0 csak_ikonok=0 tobbi=()
+    for a in "$@"; do
+        case $a in
+            --ablak) ablak=1 ;;          # az asztali ikonról: a végén megvárja az Entert, hogy az ablak ne tűnjön el
+            --ikonok) csak_ikonok=1; tobbi+=("$a") ;;   # csak az asztali ikonok elkészítése (a teljes telepítő hívja)
+            *) tobbi+=("$a") ;;
+        esac
+    done
+    if (( ablak )); then
+        rc=0
+        if [[ $EUID -ne 0 ]]; then sudo bash "$SCRIPT" "${tobbi[@]}" || rc=$?; else bash "$SCRIPT" "${tobbi[@]}" || rc=$?; fi
+        read -r -p $'\nNyomj Entert az ablak bezárásához… ' _ || true
+        exit "$rc"
+    fi
     if [[ $EUID -ne 0 ]]; then
         command -v sudo >/dev/null || { echo "Rendszergazdaként kell futtatni (sudo)."; exit 1; }
         exec sudo bash "$SCRIPT" "$@"
@@ -173,6 +241,11 @@ main() {
     if [[ $TULAJ == UNKNOWN || -z $TULAJ ]]; then TULAJ=root; fi
     TULAJ_HOME="$(getent passwd "$TULAJ" | cut -d: -f6)"
     [[ -n $TULAJ_HOME ]] || TULAJ_HOME=/root
+    if (( csak_ikonok )); then
+        asztali_ikonok || { echo "Az asztali ikonok nem készültek el ($IKONOK_DB/2, $IKONOK_HELYE)."; exit 1; }
+        echo "Asztali ikonok: BaninaPro App Updater, SQL IMPORT ($IKONOK_HELYE)"
+        exit 0
+    fi
     f="$(orszem_ertek APP_PORT)"
     if [[ $f =~ ^[0-9]+$ ]]; then APP_PORT=$f; fi
     command -v git >/dev/null || hiba "A git nincs telepítve – futtasd a teljes telepítőt (szerver_beallitas.sh)."
@@ -202,6 +275,7 @@ main() {
         if (( rc == 10 )); then ok "A szerver beállítófájlja frissítve"; fi
         if (( rc == 1 )); then figy "A szerver beállítófájlja nem frissíthető – futtasd a teljes telepítőt."; fi
         ok "Nincs új változás: a szerveren már a legfrissebb kód van (BaninaPRO ${verzio_elotte:-?}, ${regi:0:7})"
+        if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT"; fi
         if oldal_ellenorzes "$verzio_elotte"; then
             ok "Az oldal működik"
         else
@@ -260,6 +334,8 @@ main() {
         fi
     done
 
+    if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT (kattintásra indulnak)"; fi
+
     if [[ $verzio_elotte != "$verzio" ]]; then ertesites="BaninaPRO ${verzio_elotte:-?} → ${verzio:-?}"; else ertesites="BaninaPRO ${verzio:-?}"; fi
     naploz "Frissítve: $ertesites, ${#valtozott[@]} fájl (${regi:0:7} → ${uj:0:7})"
     if [[ -x $ERTESITO ]]; then
@@ -270,6 +346,6 @@ main() {
     printf '\n  %sKész %d másodperc alatt.%s\n\n' "$C_F" "$SECONDS" "$C_N"
 }
 
-OLDAL_VERZIO="" OLDAL_KOD=""
+OLDAL_VERZIO="" OLDAL_KOD="" IKONOK_DB=0 IKONOK_HELYE=""
 main "$@"
 exit 0

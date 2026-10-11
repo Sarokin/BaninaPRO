@@ -3764,6 +3764,16 @@ EOF
     felh mkdir -p "$CEL_HOME/.local/share/applications"
     ikon_iras "$CEL_HOME/.local/share/applications/baninapro-ellenorzes.desktop"
     ok "Asztali ikon: „BaninaPRO ellenőrzés” ($asztal) – kézzel is lefuttatja az ellenőrzést, és elküldi a jelentést"
+    # a gyors frissítő és az SQL-betöltő asztali ikonjai: a frissítő maga készíti el őket (egy helyen van a leírásuk)
+    if [[ -f "$REPO/SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh" ]]; then
+        muvelet "asztali ikonok"
+        if fut bash "$REPO/SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh" --ikonok; then
+            ok "Asztali ikonok: „BaninaPro App Updater” (a weboldal gyors frissítése) és „SQL IMPORT” (SQL-mentés betöltése) – kattintásra indulnak"
+        else
+            figy "A gyors frissítő és az SQL-betöltő asztali ikonja nem készült el – a napló végén látszik, miért."
+        fi
+        muvelet ""
+    fi
 
     JELENTES_FELADO="$(sed -n 's/^EMAIL_FELADO=//p; s/^EMAIL_CIM=//p' "$TITOK_MAPPA/email" 2>/dev/null | head -n 1 || true)"
     if [[ -n $JELENTES_FELADO ]]; then
