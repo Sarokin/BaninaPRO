@@ -1170,7 +1170,7 @@ lepes_rendszer() {
 minimal_rendszer_forditasok() {
     local f=/etc/dpkg/dpkg.cfg.d/zz-baninapro-magyar
     grep -qs '^path-exclude=/usr/share/locale' /etc/dpkg/dpkg.cfg.d/* || return 0
-    if [[ ! -f $f ]]; then
+    if ! grep -qsxF 'path-include=/usr/share/locale/hu/*' "$f"; then
         printf '# BaninaPRO szerver: a minimális rendszeren is legyenek magyar fordítások (a szerver_beallitas.sh írta)\npath-include=/usr/share/locale/hu/*\npath-include=/usr/share/locale/hu_HU/*\n' > "$f"
         ok "Minimális rendszer: a magyar fordítások ezentúl települnek (a többi nyelv továbbra is kimarad)"
     fi
@@ -3715,6 +3715,10 @@ if [[ $mod == kezi ]]; then printf '\nBaninaPRO szerver – ellenőrzés folyama
 problemak=() allapotok=() kont=()
 pr() { problemak+=("$*"); }
 lan="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
+# internet (alapértelmezett átjáró) nélküli belső hálózaton: az első valódi hálózati csatoló címe (nem a Dockeré)
+if [[ -z $lan ]]; then
+    lan="$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lo)/ { split($4, a, "/"); print a[1]; exit }')"
+fi
 web() { if [[ $1 == 80 ]]; then echo "http://${lan:-$(hostname)}"; else echo "http://${lan:-$(hostname)}:$1"; fi; }
 
 # --- a szolgáltatás ---
@@ -4073,7 +4077,15 @@ port_cim() {
 }
 # a gép IP-címe a helyi hálózaton (amelyiken a kifelé menő forgalom megy)
 lan_ip() {
-    ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true
+    local cim
+    cim="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
+    # internet (alapértelmezett átjáró) nélküli belső hálózaton nincs útvonal kifelé: az első valódi hálózati csatoló
+    # címe (nem a Docker saját hálózataié)
+    if [[ -z $cim ]]; then
+        cim="$(ip -4 -o addr show scope global 2>/dev/null \
+            | awk '$2 !~ /^(docker|br-|veth|virbr|lo)/ { split($4, a, "/"); print a[1]; exit }' || true)"
+    fi
+    echo "$cim"
 }
 # böngészőcím a Docker szerinti kötésből ($1, pl. 0.0.0.0:8081); a gép címe ($2) kerül a 0.0.0.0 / 127.0.0.1 helyére
 web_cim() {
