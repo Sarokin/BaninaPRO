@@ -291,6 +291,12 @@ Testing: Docker Desktop runs on this Mac, so reproduce the server in a privilege
 - Point pushes at a local ntfy server (`binwiederhier/ntfy serve` on a shared docker network) by pre-creating `/etc/baninapro/ntfy` with `NTFY_SZERVER=http://bp-ntfy`. Read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
 - `docker restart -t 180 <container>` simulates a clean reboot. `docker kill` followed by `docker start` simulates a power cut.
 - In a container, LightDM and systemd-timesyncd don't run. The summary then asks for a reboot, which a run without a TTY skips.
+- **Offline (pendrive) run** – this is how the real server is installed, so test it after every installer change:
+  - Start the test server on an internal network (`docker network create --internal bp-offline`), and bind-mount the maker's output folder (`~/BaninaPRO-offline/baninapro-offline`) read-only at `/mnt/pendrive/baninapro-offline`. Then run `sudo bash /mnt/pendrive/baninapro-offline/offline_telepites.sh` as the sudo user.
+  - To test unpushed code, build a second folder inside the container (`/mnt/teszt/baninapro-offline`): symlink `apt`, `kepek` and `kulcsok` to the mounted one, and copy in a bundle of the local repo (`git bundle create … --all`), the launcher extracted from the maker text, and an `ELLENORZO.sha256` whose `BaninaPRO.bundle` line is recomputed.
+  - Scenarios worth repeating: fresh install (24.04 minimal image and 26.04), rerun, a half-initialised DB volume (`docker kill` the db container right after "Waiting for server startup", then `docker start`), a direct run with `--nincs-internet` and one without the flag, watchdog / report / backup by hand, and `docker restart -t 180`.
+  - The Playwright suite can run against the installed test server: `docker create` the playwright container with `BASE_URL=http://<server container>` on the default network (for `npm ci`), `docker network connect bp-offline` it, then `docker start -a`. It must give the usual 62 passed, 2 skipped.
+  - The inner `docker0` uses 172.17.0.0/16, so the test server cannot join the default bridge; give it internet through a network with another subnet. While it has internet, the queued pushes really go out to ntfy.sh, so pre-create `/etc/baninapro/ntfy` first (2026-10-11: a few test pushes went to a random, unsubscribed public topic this way).
 
 ## Working notes (lessons learned)
 
