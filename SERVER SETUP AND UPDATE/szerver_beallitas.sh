@@ -1533,7 +1533,13 @@ lepes_bongeszo() {
     "OverrideFirstRunPage": "",
     "OverridePostUpdatePage": "",
     "DontCheckDefaultBrowser": true,
-    "DisableAppUpdate": true
+    "DisableAppUpdate": true,
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "Preferences": {
+      "ui.prefersReducedMotion": { "Value": 1, "Status": "locked" },
+      "general.smoothScroll": { "Value": false, "Status": "locked" }
+    }
   }
 }
 EOF
@@ -2084,6 +2090,22 @@ db_pool_mb() {
     echo "$mem"
 }
 
+# Az adatbázis egészségpróbája (a docker-compose.yml-ben 5 másodpercenként fut): minden próba egy új folyamatot indít a
+# konténerben – gyenge processzoron ez állandó, mérhető terhelés. A szerveren ezért 30 másodpercenként fut, csak az
+# induláskor sűrűn (hogy az alkalmazásnak ne kelljen várnia) – az indulási ütemet a Docker 25-től ismeri, régebbin
+# 15 másodperces az ütem. A hibásnak jelölésig eltelő idő (2,5–3 perc) nagyjából a régi marad.
+db_egeszsegproba() {
+    local v
+    v="$(timeout 30 docker version -f '{{.Server.Version}}' 2>/dev/null || true)"
+    v="${v%%.*}"
+    printf '    healthcheck:\n'
+    if [[ $v =~ ^[0-9]+$ ]] && (( v >= 25 )); then
+        printf '      interval: 30s\n      timeout: 15s\n      retries: 3\n      start_period: 90s\n      start_interval: 5s\n'
+    else
+        printf '      interval: 15s\n      timeout: 15s\n      retries: 10\n'
+    fi
+}
+
 override_iras() {
     local f="$REPO/docker-compose.override.yml"
     {
@@ -2095,8 +2117,8 @@ override_iras() {
 #  - az alkalmazás beállítófájlja: $TITOK_MAPPA/config.php (a szerver jelszava, hibakijelzés kikapcsolva);
 #  - gyorsítás (gyenge processzorra, lassú háttértárra): a munkamenetek és az ideiglenes fájlok a memóriában (/tmp),
 #    az adatbázis másodpercenként ír a lemezre (nem minden műveletnél – áramszünetnél legfeljebb az utolsó 1 mp
-#    veszhet el), bináris napló és teljesítménymérés nélkül. (A PHP kódgyorsítótára – opcache – a PHP-képben alapból
-#    be van kapcsolva.) Az adatbázis első létrehozásakor az időzóna-táblák betöltése kimarad (lassú gépen percekig
+#    veszhet el), bináris napló és teljesítménymérés nélkül, az egészségpróbája ritkábban fut. (A PHP kódgyorsítótára
+#    – opcache – a PHP-képben alapból be van kapcsolva.) Az adatbázis első létrehozásakor az időzóna-táblák betöltése kimarad (lassú gépen percekig
 #    tartana; az alkalmazás nem névvel, hanem eltolással állítja az időzónát). Az adatbázis parancssora felülírja a docker-compose.yml-ét, ezért a karakterkészlet két
 #    kapcsolója itt is szerepel – a kettő maradjon egyforma.
 name: $PROJEKT
@@ -2116,6 +2138,7 @@ services:
       MYSQL_INITDB_SKIP_TZINFO: "1"
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=$(db_pool_mb)M", "--innodb-flush-log-at-trx-commit=2", "--skip-log-bin", "--performance-schema=OFF"]
 EOF
+        db_egeszsegproba
         if [[ -n $DB_KEP ]]; then printf '    image: %s\n' "$DB_KEP"; fi
         if (( ! DB_PORT_KI )); then printf '    ports: !reset []\n'; fi
         printf '  phpmyadmin:\n'
@@ -3283,12 +3306,12 @@ valtozott() {
     [[ $regi != "$2" ]]
 }
 rendben() {
-    [[ $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$APP_PORT/" || true) == 200 ]] || return 1
+    [[ $(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$APP_PORT/" || true) == 200 ]] || return 1
     timeout 30 docker exec "$APP_KONTENER" php -r 'require "/var/www/html/includes/db.php"; db_val("SELECT 1");' >/dev/null 2>&1
 }
-var_rendben() {   # legfeljebb $1 másodpercig vár, hogy helyreálljon
-    local i
-    for (( i = 0; i < $1; i += 10 )); do rendben && return 0; sleep 10; done
+var_rendben() {   # legfeljebb $1 másodpercig vár, hogy helyreálljon (a próbák ideje is beleszámít: egy beragadt kérés 20 mp)
+    local veg=$(( SECONDS + $1 ))
+    while (( SECONDS < veg )); do rendben && return 0; sleep 10; done
     rendben
 }
 mp_ota() { echo $(( $(date +%s) - $(cat "$1" 2>/dev/null || echo 0) )); }
@@ -3483,7 +3506,10 @@ if (( docker_fut )) && [[ -x $MENTO ]]; then
 fi
 
 # --- a BaninaPRO elérhetősége ---
-if rendben; then
+# Gyenge gépen egy-egy lassú válasz még nem hiba (éppen mentés, nagy PDF, import fut, vagy a gép most indult): csak akkor
+# számít elérhetetlennek, ha egy percen át egyszer sem válaszol – a helyreállítás (a konténerek újraindítása) különben
+# éppen a futó műveletet szakítaná meg.
+if rendben || var_rendben 60; then
     if [[ -f $ALLAPOT/hiba_ota ]]; then helyreallt "magától"; fi
     exit 0
 fi
@@ -3512,11 +3538,11 @@ fi
 kod_rendben
 beallitasok_rendben
 dc up -d --remove-orphans
-var_rendben 120 && helyreallt "a konténerek indítása után"
+var_rendben 240 && helyreallt "a konténerek indítása után"
 # 3) a konténerek újraindítása
 naplo "Még mindig nem érhető el – a konténerek újraindítása"
 dc restart
-var_rendben 180 && helyreallt "a konténerek újraindítása után"
+var_rendben 300 && helyreallt "a konténerek újraindítása után"
 # 4) a Docker újraindítása – legfeljebb félóránként
 if (( $(mp_ota "$ALLAPOT/docker_ujrainditas") > 1800 )); then
     naplo "Még mindig nem érhető el – a Docker újraindítása"
@@ -3524,7 +3550,7 @@ if (( $(mp_ota "$ALLAPOT/docker_ujrainditas") > 1800 )); then
     naplora timeout 300 systemctl restart containerd docker
     sleep 15
     dc up -d --remove-orphans
-    var_rendben 240 && helyreallt "a Docker újraindítása után"
+    var_rendben 420 && helyreallt "a Docker újraindítása után"
 fi
 # 5) riasztás e-mailben – ha már 10 perce nem jó (legfeljebb 6 óránként)
 if (( $(mp_ota "$ALLAPOT/hiba_ota") > 600 && $(mp_ota "$ALLAPOT/riasztva") > 21600 )); then
@@ -3561,7 +3587,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=$ORSZEM
-TimeoutStartSec=20min
+TimeoutStartSec=30min
 EOF
     cat > /etc/systemd/system/baninapro-orszem.timer <<'EOF'
 [Unit]
