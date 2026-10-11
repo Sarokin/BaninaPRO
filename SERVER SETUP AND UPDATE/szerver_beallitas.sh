@@ -95,11 +95,13 @@ ALAP_FELH="baninapro"
 # a legutóbbi adatbázis-mentések másolata a gép saját lemezén, a Dockeren kívül (ennyi marad meg)
 GEP_MENTES="/var/backups/baninapro"
 GEP_MENTES_DB=14
-# a hivatalos Docker-képek nyilvános tükrei – ha a Docker Hub nem érhető el, vagy korlátozza a letöltést
-# Régi processzoron (ami nem tudja az x86-64-v2 utasításkészletet: SSE4.2, POPCNT…) a hivatalos MySQL-kép el sem
-# indul („Fatal glibc error: CPU does not support x86-64-v2”) – ott az adatbázis ez a kép (MariaDB, MySQL-kompatibilis)
-DB_KEP_REGI_CPU="mariadb:10.11"
+# Az adatbázis képe a szerveren (a docker-compose.yml mysql-képe helyett): MariaDB – MySQL-kompatibilis, és minden
+# 64 bites processzoron elindul. A hivatalos MySQL-kép régi processzoron (ami nem tudja az x86-64-v2 utasításkészletet:
+# SSE4.2, POPCNT… – ilyen a szerver AMD G-T48E-je) el sem indul: „Fatal glibc error: CPU does not support x86-64-v2”.
+# (Az offline pendrive-készítő is ebből a sorból olvassa ki, melyik adatbázis-képet tegye a pendrive-ra.)
+DB_KEP_SZERVER="mariadb:10.11"
 DB_KEP=""
+# a hivatalos Docker-képek nyilvános tükrei – ha a Docker Hub nem érhető el, vagy korlátozza a letöltést
 KEP_TUKROK=(public.ecr.aws/docker/library mirror.gcr.io/library)
 # tartalék, ha az AnyDesk csomagtárolója nem működne (ha ez a változat már nincs fent, a legfrissebbet keresi meg)
 ANYDESK_DEB="https://deb.anydesk.com/pool/main/a/anydesk/anydesk_8.1.0_amd64.deb"
@@ -816,7 +818,8 @@ kontener_naplok() {   # a konténerek utolsó naplósorai a képernyőre és a n
     local k
     torol
     for k in "$DB_KONTENER" "$APP_KONTENER"; do
-        { printf '\n  --- %s (utolsó 25 sor) ---\n' "$k"; timeout 30 docker logs --tail 25 "$k" 2>&1 | sed 's/^/    /'; } \
+        { printf '\n  --- %s – kép: %s (utolsó 25 sor) ---\n' "$k" "$(timeout 30 docker inspect -f '{{.Config.Image}}' "$k" 2>/dev/null || echo '?')"
+          timeout 30 docker logs --tail 25 "$k" 2>&1 | sed 's/^/    /'; } \
             | tee /dev/fd/3 || true
     done
 }
@@ -1944,6 +1947,7 @@ aram_utan_bekapcsol() {
 }
 
 lepes_baninapro() {
+    local k
     # 1) adatbázis-séma (a gitben van): üres adatbázisnál a MySQL ebből hozza létre a táblákat és a kezdő admint
     sema_biztosit || hiba "Hiányzik az adatbázis-séma: $SEMA – a git pull nem hozta le (lásd a figyelmeztetéseket). Ellenőrizd a GitHub-elérést, majd futtasd újra."
     if timeout 60 docker volume inspect "$DB_KOTET" >/dev/null 2>&1; then
@@ -1984,6 +1988,11 @@ lepes_baninapro() {
     # 5) a Docker-képek (ha a Docker Hub nem érhető el: a hivatalos képek tükreiről), az alkalmazás képe, indítás
     idegen_kontenerek_le
     kepek_biztosit
+    for k in "${HIANYZO_KEPEK[@]}"; do
+        if [[ $k == mysql:* || $k == mariadb:* ]]; then
+            hiba "Az adatbázis Docker-képe ($k) nincs a gépen, és nem tölthető le. Internet kell hozzá – internet nélkül pedig egy MOST újra elkészített offline pendrive (a régebben készült pendrive-on még a MySQL-kép van, ami régi processzoron nem indul el)."
+        fi
+    done
     alkalmazas_epites || hiba "Az alkalmazás képe nem épült fel – a napló végén látszik, miért."
     if ! kontenerek_inditasa; then
         # a MySQL nem indul el (sérült vagy egy másik MySQL-változattal írt adatfájlok): ha van mentés, abból újraépíti
@@ -1998,6 +2007,7 @@ lepes_baninapro() {
     dc ps || true
     ok "Konténerek elindítva"
     fut timeout 600 docker image prune -f || true   # a felülírt régi képek (a használtakhoz és az adatokhoz nem nyúl)
+    regi_db_kepek_torlese
 
     # 6) adatbázis: indulás, jelszavak, táblák, felhasználók, visszaállítás mentésből, a séma egyeztetése a kóddal
     if ! adatbazis_rendbe; then
@@ -2192,19 +2202,32 @@ cpu_v2() {
         [[ $jelzok == *" $j "* ]] || return 1
     done
 }
-# Az adatbázis képe: régi processzoron a MySQL helyett MariaDB ($DB_KEP_REGI_CPU). Ha a kötetben már MySQL-lel írt
-# adatfájlok vannak (mysql.ibd), azokat a MariaDB nem tudja megnyitni – ahhoz nem nyúl, csak figyelmeztet.
+# Az adatbázis képe a szerveren mindig a MariaDB ($DB_KEP_SZERVER) – a processzortól függetlenül. Egyetlen kivétel:
+# ha az adatbázis-kötetben már MySQL-lel írt adatok vannak (mysql.ibd), azokat a MariaDB nem tudja megnyitni – ott marad
+# a docker-compose.yml MySQL-képe (az adatokhoz és a képhez nem nyúl).
 db_kep_valasztas() {
     local m
-    DB_KEP=""
-    if cpu_v2; then return 0; fi
+    DB_KEP="$DB_KEP_SZERVER"
     m="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$DB_KOTET" 2>/dev/null || true)"
     if [[ -n $m && -e $m/mysql.ibd ]]; then
-        figy "A gép processzora túl régi a MySQL-képhez (nincs x86-64-v2), de az adatbázis-kötetben MySQL-lel írt adatok vannak – ezeket a MariaDB nem tudja megnyitni, ezért a képet nem cserélem. Az adatokat egy újabb gépen kell kimenteni."
+        DB_KEP=""
+        if cpu_v2; then
+            info "Az adatbázis-kötetben MySQL-lel írt adatok vannak – az adatbázis marad a MySQL-képen."
+        else
+            figy "A gép processzora túl régi a MySQL-képhez (nincs x86-64-v2), de az adatbázis-kötetben MySQL-lel írt adatok vannak – ezeket a MariaDB nem tudja megnyitni, ezért a képet nem cserélem. Az adatokat egy újabb gépen kell kimenteni."
+        fi
         return 0
     fi
-    DB_KEP="$DB_KEP_REGI_CPU"
-    info "A gép processzora régi (nincs x86-64-v2): a MySQL-kép ezen nem indul el – az adatbázis a(z) $DB_KEP képpel fut (MySQL-kompatibilis)."
+    info "Az adatbázis képe: $DB_KEP (MySQL-kompatibilis – régi processzoron is elindul)"
+}
+# Ha az adatbázis már a szerver képén (MariaDB) fut, a gépen maradt MySQL-kép csak a helyet foglalja (1 GB fölött) –
+# törli. Kényszerítés nélkül: amit egy konténer még használ, azt a Docker nem engedi törölni.
+regi_db_kepek_torlese() {
+    local k
+    [[ -n $DB_KEP && $(timeout 30 docker inspect -f '{{.Config.Image}}' "$DB_KONTENER" 2>/dev/null || true) == "$DB_KEP" ]] || return 0
+    for k in $(timeout 60 docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^mysql:' || true); do
+        if timeout 300 docker rmi "$k" >/dev/null 2>&1; then ok "A nem használt $k kép törölve (az adatbázis a(z) $DB_KEP képen fut)"; fi
+    done
 }
 # Egy kép letöltése: a Docker Hubról; ha az nem megy (elérhetetlen, vagy korlátozza a letöltések számát), a hivatalos
 # képek nyilvános tükreiről – a kép az eredeti nevén kerül a gépre, így a compose és az építés is megtalálja
