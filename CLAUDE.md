@@ -313,13 +313,27 @@ Testing: Docker Desktop runs on this Mac, so reproduce the server in a privilege
   - The Playwright suite can run against the installed test server: `docker create` the playwright container with `BASE_URL=http://<server container>` on the default network (for `npm ci`), `docker network connect bp-offline` it, then `docker start -a`. It must give the usual 62 passed, 2 skipped.
   - The inner `docker0` uses 172.17.0.0/16, so the test server cannot join the default bridge; give it internet through a network with another subnet. While it has internet, the queued pushes really go out to ntfy.sh, so pre-create `/etc/baninapro/ntfy` first (2026-10-11: a few test pushes went to a random, unsubscribed public topic this way).
 
+## Quick app update (`SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh`)
+
+The user asked for this on 2026-10-11 and chose the name: a script that only pulls the pushed commits and overwrites the files, in seconds, without the installer's 17 steps. The server has internet now, so the normal way to ship a web change is: push here, then the user runs `bash BaninaPro_App_Updater.sh` on the server (a copy sits on the server's desktop; it re-executes itself with sudo).
+
+- **Why it can be this small.** The app container bind-mounts the repo folder, and opcache revalidates within 2 s, so a fast-forward of the working tree is live at once. Nothing is rebuilt or restarted.
+- **What it does:** fetches `origin/main`, stashes local edits of tracked files, fast-forwards, rewrites `/etc/baninapro/config.php` from the new `docker/config.php` (the version number lives there), then checks that the page answers with the new version. It logs to `/var/log/baninapro-frissites.log` and sends a push.
+  - `config_frissit` must produce exactly what the installer's `szerver_config` does (server `DB_PASS`, `APP_DEBUG` false, written in place). Change the two together. It takes the password from the existing server config, not from `titkok`.
+  - It finds the repo and the port from the `REPO=` and `APP_PORT=` lines of `/usr/local/sbin/baninapro-orszem`, so keep those lines in `orszem_iras`.
+- **When it hands over to the full installer** (it then changes nothing itself and `exec`s `szerver_beallitas.sh`): the update touches a file in `NEHEZ_FAJLOK` (`sql/schema.sql`, `docker-compose.yml`, `docker/Dockerfile`), the server is not on `main` or has local commits, the fast-forward fails, the server config can't be written, or the page doesn't come back. If you add another file that needs more than a file copy, add it to `NEHEZ_FAJLOK`.
+  - A change to `szerver_beallitas.sh` alone does not hand over: the web app is updated, and the script tells the user to run the full installer when convenient. Say so in the reply too, whenever an installer change needs to reach the server.
+- **`VALTOZAT`.** Bump it whenever the script changes. The desktop copy compares it with the repo's copy and runs the repo's if that one is newer, so the user never has to download it again.
+- It takes the installer's lock (`/run/baninapro-telepito.lock`), and every git call runs under `timeout` with stdin from `/dev/null` (see "Nothing may read the terminal").
+- **Testing.** On an installed test server, `git clone --bare` the server's repo to a local folder as the repo owner, point the repo's `origin` at it (the installer leaves a non-GitHub origin alone), and push test commits there from a second clone. Cases: no change, a web change with a version bump and a new constant, a local edit (stash), a `sql/schema.sql` change (hand-over; the installer then adds the table), the installer's lock held, an unreachable origin, a run on a terminal (`script -qec`), and a desktop copy older than the repo's.
+
 ## Working notes (lessons learned)
 
 How to work with this user and this codebase. Keep this section current.
 
 Workflow:
 - **Communication.** The user writes in Hungarian and often sends several requests in a row while work is running. Address each one.
-- **Commit and push after verification.** Push to `main` as soon as a change is verified. The internal server updates itself with `git pull` from the public repo, so a push is how a change reaches it.
+- **Commit and push after verification.** Push to `main` as soon as a change is verified. The internal server updates itself with `git pull` from the public repo, so a push is how a change reaches it. After a push, tell the user which script to run on the server: `BaninaPro_App_Updater.sh` for a web change, the full `szerver_beallitas.sh` when the installer itself changed (the updater hands over by itself for schema and container changes).
 - **Bump the version for every user-visible change:**
   - `APP_VERSION` in `includes/config.php` (local and ignored: it is the production config), `includes/config.example.php` and `docker/config.php`;
   - in `TELEPITES.md`: a feature bullet in the matching section, a `**Frissítés X-ről Y-ra (…):**` entry listing the files to upload (newest entry first), and the closing `Verzió: X (date)` line.
