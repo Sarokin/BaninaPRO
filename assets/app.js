@@ -1137,6 +1137,7 @@
         <button class="torol ${App.kereso.q ? '' : 'rejtett'}" type="button" data-act="kereso-torol" aria-label="Keresés törlése" title="Törlés">${I.x}</button>
       </div>
       <div class="kereso-segit" data-kereso-segit>${KERESO_SEGIT}</div>
+      ${INIT.verzio ? `<div class="kereso-verzio">BaninaPRO ${esc(INIT.verzio)}</div>` : ''}
       <div class="kereso-talalatok rejtett" data-kereso-talalatok role="listbox" aria-label="Találatok"></div>
     </div>`;
   }

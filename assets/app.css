@@ -216,6 +216,8 @@ main svg, .menu svg, .modal svg, .toast svg { width: 20px; height: 20px; flex: n
 .kereso-mezo .torol:active { transform: translateY(-50%) scale(.92); }
 .kereso-segit { text-align: center; color: var(--szoveg-2); font-size: 13.5px; line-height: 1.45; padding: 0 8px; min-height: 20px; }
 .kereso-segit b { color: var(--tinta); }
+/* a futó verzió száma: éppen csak látható (1.21.2) */
+.kereso-verzio { text-align: center; color: var(--szoveg-2); font-size: 7px; line-height: 1.4; opacity: .6; margin-top: 4px; user-select: none; }
 .kereso-toltes { display: inline-block; width: 14px; height: 14px; border-radius: 50%; vertical-align: -2px; margin-right: 4px; background: conic-gradient(from 0deg, transparent 0 25%, var(--zold) 100%); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0); animation: forog .8s linear infinite; }
 .kereso-talalatok { display: flex; flex-direction: column; gap: 12px; animation: belep .3s var(--ease) both; }
 .kereso-csoport { background: var(--felulet); border: 1px solid var(--vonal); border-radius: var(--radius); box-shadow: var(--arnyek-1); overflow: hidden; }

@@ -289,6 +289,7 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
 A főoldalon a *Minden utalás* / *Fizetési határidők* gombok **alatt** egy nagy **„Kereső”** mező van. Ez azoknak is
 megoldás, akik nem igazodnak el a Bejövő / Kimenő irányokon: bármit beírnak, a rendszer megmutatja, mi az, és egy
 kattintással odaugrik.
+A kereső tájékoztató szövege alatt apró, szürke betűvel mindig látszik a **futó verzió száma** (1.21.2).
 * **3 beírt karaktertől** gépelés közben magától keres (kb. negyed másodperc szünet után), a találatokat listázza –
   **soha nem ugrik magától**, csak ha rákattintasz egy találatra (billentyűzettel: ↑ ↓ + Enter). Enter a telefonon
   csak a billentyűzetet tünteti el, hogy a lista látszódjon.
@@ -592,6 +593,11 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.21.1-ről 1.21.2-re (a főoldalon látszik a futó verzió száma):** adatbázis-módosítás nincs.
+A főoldalon a kereső tájékoztató szövege alatt apró, szürke betűvel mindig ott a futó verzió (pl. „BaninaPRO 1.21.2”).
+Töltsd fel a frissített `assets/app.js`, `assets/app.css`, `includes/config.php` (csak a verziószám) és `TELEPITES.md`
+fájlokat.
 
 **Frissítés 1.21.0-ról 1.21.1-re (az utalás PDF-jéből kikerült a „Hivatkozás” oszlop):** adatbázis-módosítás nincs.
 Az utalás banki hivatkozása és megjegyzése nem szerepel a PDF-ben; a részteljesítéses számla eredeti összege és
@@ -951,4 +957,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.21.1 (2026-10-08)
+Verzió: 1.21.2 (2026-10-11)
