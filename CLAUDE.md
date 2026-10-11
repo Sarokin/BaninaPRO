@@ -201,6 +201,17 @@ Install and repair behavior:
 - **Failure severity.** Non-essential steps warn with `figy` and continue; essential ones stop with `hiba`. Any other failing command stops the run through the ERR trap ("Váratlan hiba"), so wrap non-essential writes in `if …; then …; else figy …; fi`.
 - **Command substitution.** The script's stdout is the log, but inside `$(...)` it is captured. A function used as `x="$(f)"` must print only its result and send everything else, including package installs and `ok`/`info` lines, to stderr (`>&2`). `asztal_mappa` once returned apt's output as the desktop path ("File name too long") on a machine without `xdg-user-dirs`.
 - **Summary.** It is printed at the end, and also after a failure (`kilepeskor`). It is saved to `~/BaninaPRO-osszegzes.txt`, mode 600.
+- **The progress line never stands still** (the user's request, 2026-10-11: on the real server the container step looked frozen for minutes). `rajzol` runs only inside `fut` and `varj`; a command the main shell runs directly, like most of `adatbazis_rendbe`, blocks it. So a background subshell (`eletjel_fut`) redraws the same line once a second whenever the main shell has published nothing for 2 s: the spinner turns, the time counts, and the label says what is running.
+  - The main shell publishes its state from `rajzol` and `torol` (`allapot_kozles` → `/run/baninapro-telepito.allapot`, fields separated by `\x1f`), and only when it changed.
+  - Set the label with `muvelet "…"` (`muvelet ""` clears it), never by assigning `AKT_MUVELET`: `muvelet` draws at once and publishes, so the heartbeat shows the right text during a direct command.
+  - `torol` always clears the line on a terminal, because the heartbeat may have drawn it. Print to the screen only after `torol`.
+  - Stop it with `eletjel_le` before anything reads the keyboard (`kerdesek`, the reboot question at the end) and before `exec bash`: the re-executed script keeps the PID, so the old heartbeat would not notice. It closes fds 7 and 8, like `fut`.
+  - Without a terminal there is no progress line; the heartbeat then prints one „még dolgozik” line a minute if nothing else was printed.
+  - The elapsed time is appended after the label is cut to the terminal width, so it stays visible on an 80-column console.
+  - To test it, run the installer on a terminal (see the next point) and slow `docker exec` down with a wrapper script at `/usr/local/bin/docker` that sleeps before `exec /usr/bin/docker "$@"`.
+- **Nothing may read the terminal** (found 2026-10-11). `billentyuzet_beallitas` moves the keyboard to fd 6 and makes `/dev/null` the stdin of the script and of every command it runs. The prompts read with `read -u 6` and test `[[ -t 6 ]]`; `fut` and the heartbeat close fd 6. (fd 4 is taken: apt's status output.)
+  - Before this, a run started from a terminal stopped for good in `adatbazis_rendbe`, at the first `db_sql -e …`: `timeout` puts its command into a background process group, `docker exec -i` reads stdin, the terminal stops it with SIGTTIN, and `timeout` cannot end the stopped docker CLI. The user saw this as "it seems to stop after the containers start".
+  - Runs without a terminal never showed it, and every container test ran that way. So also test on a terminal: inside the test server, `script -qec "sudo bash …" /tmp/kepernyo.txt < <(printf 'n\n'; sleep 3000)`. The `n` answers the reboot question at the end; without it the installer reboots after 60 s.
 - **One installer at a time.** `main` takes `/run/baninapro-telepito.lock` with `flock -n`; `fut` closes fds 7 and 8 (the two locks) in its children.
 - **The watchdog never blocks the installer.** If it holds `/run/baninapro-orszem.lock`, the installer stops `baninapro-orszem.service` and runs `reset-failed` on it. A recovery round can last over 20 min, and the installer once waited through one with nothing on screen. The timer starts the watchdog again afterwards.
 - **Bootstrap before anything else** (`elofeltetelek`):
@@ -290,7 +301,7 @@ Testing: Docker Desktop runs on this Mac, so reproduce the server in a privilege
 - `--privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock`;
 - anonymous volumes for `/var/lib/docker` and `/var/lib/containerd`;
 - unmount the bind-mounted `/etc/hosts` and `/etc/hostname`, then write real ones;
-- run the script as the sudo user without a TTY: `docker exec -u baninapro bp-szerver sudo bash …`.
+- run the script as the sudo user without a TTY: `docker exec -u baninapro bp-szerver sudo bash …`, and once on a terminal too (see "Nothing may read the terminal" above).
 - **Test the working tree, not GitHub.** `git clone` the local repo into the scratchpad, copy the changed script in, commit there, then point `origin` at GitHub and fetch. The clone is then *ahead* of `origin/main`, which `git_frissit` leaves alone. Never `sed` the script in the test copy: the stash logic would revert it.
 - Point pushes at a local ntfy server (`binwiederhier/ntfy serve` on a shared docker network) by pre-creating `/etc/baninapro/ntfy` with `NTFY_SZERVER=http://bp-ntfy`. Read them back with `GET /<topic>/json?poll=1&since=all`. Don't send test pushes to the public ntfy.sh.
 - `docker restart -t 180 <container>` simulates a clean reboot. `docker kill` followed by `docker start` simulates a power cut.

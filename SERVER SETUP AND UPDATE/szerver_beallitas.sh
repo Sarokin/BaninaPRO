@@ -157,7 +157,9 @@ OSSZ_SOROK=()
 AKT_LEPES="előkészítés" AKT_ROVID="előkészítés" AKT_MUVELET=""
 # folyamatjelző: a lépések súlya ≈ a várható időtartamuk másodpercben
 OSSZ_SULY=0 KESZ_SULY=0 AKT_SULY=0 LEPES_KEZDET=0
-KEPERNYO_TTY=0 SZELESSEG=80 SAV_SZ=20 SAV_AKTIV=0 SPIN_I=0
+KEPERNYO_TTY=0 SZELESSEG=80 SAV_SZ=20 SPIN_I=0
+# életjel: a háttérfolyamat, ami akkor is rajzolja a folyamatjelzőt, amikor a fő folyamat egy parancsra vár
+ELETJEL_PID="" ELETJEL_FAJL="" ELETJEL_KOZOLT="" UZENET_IDO=0
 C_KEK="" C_ZOLD="" C_SARGA="" C_PIROS="" C_F="" C_HALV="" C_N=""
 S_OK="+" S_FIGY="!" S_HIBA="X" S_VONAL="==" S_PONT="-" S_SEP="-" S_TELE="#" S_URES="." S_SPIN='|/-\' S_ELL="~"
 
@@ -179,6 +181,19 @@ naplo_inditas() {
     exec >>"$NAPLO" 2>&1
 }
 
+# A billentyűzet (a script eredeti bemenete) a 6-os leíróra kerül – csak a kérdések olvasnak róla –, a script és minden
+# parancsa bemenete pedig /dev/null. Enélkül terminálról indítva a telepítő végleg megakadt az adatbázis beállításánál:
+# a „timeout … docker exec -i …” a bemenetéről (a terminálról) olvasna, a timeout viszont háttércsoportba teszi, a
+# terminál ezért megállítja (SIGTTIN), és onnan a timeout sem tudja leállítani. Így semmi nem várhat a billentyűzetre.
+# (A script újraindításakor – exec – a leíró megmarad: a BANINA_BILLENTYUZET jelzi, hogy már be van állítva.)
+billentyuzet_beallitas() {
+    if [[ ${BANINA_BILLENTYUZET:-} != 1 ]] || ! { true <&6; } 2>/dev/null; then
+        exec 6<&0
+        export BANINA_BILLENTYUZET=1
+    fi
+    exec 0</dev/null
+}
+
 kepernyo_beallitas() {
     if [[ -t 3 ]]; then
         KEPERNYO_TTY=1
@@ -190,8 +205,10 @@ kepernyo_beallitas() {
     fi
 }
 
-torol() {   # a folyamatjelző sorának törlése, mielőtt más kerül a képernyőre
-    if (( SAV_AKTIV )); then printf '\r\e[K' >&3 || true; SAV_AKTIV=0; fi
+torol() {   # a folyamatjelző sorának törlése, mielőtt más kerül a képernyőre (a sort az életjel is rajzolhatta)
+    UZENET_IDO=$SECONDS
+    allapot_kozles
+    if (( KEPERNYO_TTY )); then printf '\r\e[K' >&3 || true; fi
 }
 ki() { torol; printf '%s\n' "$*" >&3; printf '%s\n' "$*"; }
 cim() {
@@ -249,6 +266,7 @@ szelesseg_frissit() {
 }
 
 rajzol() {
+    allapot_kozles
     (( KEPERNYO_TTY )) || return 0
     local elt=$(( SECONDS - LEPES_KEZDET )) ezr=0 pct=0 teli sav ures szoveg ido sor k resz="" max
     local mezok=()
@@ -279,14 +297,14 @@ rajzol() {
             if [[ -n $resz ]]; then szoveg+=" ($resz)"; fi
         fi
     fi
+    # a lépésben eltelt idő mindig látszik (ebből látni, hogy fut): keskeny képernyőn a felirat rövidül, nem az idő
     printf -v ido '%02d:%02d' $(( elt / 60 )) $(( elt % 60 ))
-    szoveg+=" $S_SEP $ido"
-    max=$(( SZELESSEG - SAV_SZ - 15 ))
+    max=$(( SZELESSEG - SAV_SZ - 15 - ${#ido} - 3 ))
     if (( ${#szoveg} > max )); then szoveg="${szoveg:0:max-1}$S_ELL"; fi
+    szoveg+=" $S_SEP $ido"
     SPIN_I=$(( (SPIN_I + 1) % ${#S_SPIN} ))
     printf '\r  [%s%s%s%s%s%s] %3d%%  %s %s\e[K' "$C_ZOLD" "$sav" "$C_N" "$C_HALV" "$ures" "$C_N" \
         "$pct" "${S_SPIN:SPIN_I:1}" "$szoveg" >&3 || true
-    SAV_AKTIV=1
 }
 
 kesz_sav() {   # a végén: teli sáv, 100%, teljes idő
@@ -299,14 +317,92 @@ kesz_sav() {   # a végén: teli sáv, 100%, teljes idő
         $(( SECONDS / 60 )) $(( SECONDS % 60 )) >&3
 }
 
+# ---- Életjel ------------------------------------------------------------------
+# A folyamatjelzőt a fő folyamat rajzolja (fut, varj). Amíg viszont egy parancsra közvetlenül vár – ilyen az adatbázis
+# beállításának legtöbb lépése, ami gyenge gépen percekig tart –, nem tud rajzolni: a sor megállna, mintha a telepítő
+# lefagyott volna. Ezért egy háttérfolyamat figyeli a fő folyamat közölt állapotát (/run – memória), és ha az 2 másodperce
+# nem változott, ő rajzolja tovább ugyanazt a sort: pörög a jel, telik az idő, és látszik, min dolgozik éppen.
+# Terminál nélkül (nincs folyamatjelző) percenként egy sort ír, ha közben más nem került a képernyőre.
+
+# az épp futó művelet felirata: azonnal a képernyőre kerül, és az életjel is megkapja (üres = nincs külön felirat)
+muvelet() {
+    AKT_MUVELET="$1"
+    if [[ -n $1 ]]; then rajzol; else allapot_kozles; fi
+}
+
+# a fő folyamat állapota az életjelnek – csak ha változott (másodpercenként legfeljebb egy-két apró írás)
+allapot_kozles() {
+    [[ -n $ELETJEL_FAJL ]] || return 0
+    local s
+    printf -v s '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f.' "$SECONDS" "$UZENET_IDO" "$KESZ_SULY" "$AKT_SULY" \
+        "$OSSZ_SULY" "$LEPES_KEZDET" "$SZELESSEG" "$SAV_SZ" "$AKT_ROVID" "$AKT_MUVELET"
+    [[ $s != "$ELETJEL_KOZOLT" ]] || return 0
+    ELETJEL_KOZOLT="$s"
+    printf '%s\n' "$s" > "$ELETJEL_FAJL" 2>/dev/null || true
+}
+
+eletjel_fut() {   # a háttérfolyamat (a fő folyamat változóit a közölt állapotból veszi, a rajzol függvényt örökli)
+    local f="$ELETJEL_FAJL" sor elozo="" ujra csend=0 jelzett=0 kozolt uzenet veg
+    set +eu
+    trap - ERR EXIT
+    ELETJEL_FAJL="" ELETJEL_PID=""   # ő maga nem közöl állapotot
+    exec >/dev/null 2>&1
+    while kill -0 "$$" 2>/dev/null && [[ -f $f ]]; do
+        sleep 1
+        sor=""
+        IFS= read -r sor < "$f"
+        # a fő folyamat az imént jelzett (vagy éppen ír): ő rajzol, az életjel hallgat
+        if [[ -z $sor || $sor != "$elozo" ]]; then elozo="$sor"; csend=0; continue; fi
+        csend=$(( csend + 1 ))
+        (( csend >= 2 )) || continue
+        IFS=$'\x1f' read -r kozolt uzenet KESZ_SULY AKT_SULY OSSZ_SULY LEPES_KEZDET SZELESSEG SAV_SZ AKT_ROVID AKT_MUVELET veg <<<"$sor"
+        [[ $veg == . && $kozolt =~ ^[0-9]+$ && $uzenet =~ ^[0-9]+$ ]] || continue
+        if (( KEPERNYO_TTY )); then
+            [[ -n $AKT_MUVELET ]] || AKT_MUVELET="dolgozik"
+            # (közvetlenül a rajzolás előtt még egyszer: ha a fő folyamat közben megszólalt, nem ír a sorába)
+            ujra=""
+            IFS= read -r ujra < "$f"
+            [[ $ujra == "$sor" ]] || continue
+            rajzol
+        elif (( SECONDS - uzenet >= 60 && SECONDS - jelzett >= 60 )); then
+            jelzett=$SECONDS
+            printf '  %s még dolgozik: %s%s %s %02d:%02d (lassú gépen ez rendben van)\n' "$S_PONT" "$AKT_ROVID" \
+                "${AKT_MUVELET:+ $S_SEP $AKT_MUVELET}" "$S_SEP" $(( (SECONDS - LEPES_KEZDET) / 60 )) $(( (SECONDS - LEPES_KEZDET) % 60 )) >&3
+        fi
+    done
+}
+
+eletjel_indit() {
+    [[ -z $ELETJEL_PID ]] || return 0
+    ELETJEL_FAJL=/run/baninapro-telepito.allapot
+    ELETJEL_KOZOLT=""
+    UZENET_IDO=$SECONDS
+    allapot_kozles
+    if [[ ! -f $ELETJEL_FAJL ]]; then ELETJEL_FAJL=""; return 0; fi   # (nem írható: életjel nélkül megy tovább)
+    # (a 7-es és a 8-as leírón a telepítő zárjai vannak: a háttérfolyamat ne tartsa fogva)
+    eletjel_fut 6<&- 7>&- 8>&- &
+    ELETJEL_PID=$!
+}
+
+# leállítás: kérdés előtt (ne rajzoljon a beírt szöveg sorába), a script újraindítása előtt és a végén
+eletjel_le() {
+    if [[ -n $ELETJEL_PID ]]; then
+        kill "$ELETJEL_PID" 2>/dev/null || true
+        wait "$ELETJEL_PID" 2>/dev/null || true
+        ELETJEL_PID=""
+    fi
+    if [[ -n $ELETJEL_FAJL ]]; then rm -f "$ELETJEL_FAJL" 2>/dev/null || true; ELETJEL_FAJL=""; fi
+    if (( KEPERNYO_TTY )); then printf '\r\e[K' >&3 || true; fi
+}
+
 # hosszabb parancs: a háttérben fut (kimenete a naplóba), közben a folyamatjelző folyamatosan pörög
 fut() {
     local pid rc=0
     UTOLSO_PARANCS="$*"
     szelesseg_frissit
     # (a 7-es és a 8-as leírón a telepítő zárjai vannak: a gyerekfolyamat ne kapja meg – egy megszakított futás után
-    #  ne tartsa fogva)
-    "$@" 7>&- 8>&- &
+    #  ne tartsa fogva; a 6-os a billentyűzet)
+    "$@" 6<&- 7>&- 8>&- &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         rajzol
@@ -338,7 +434,7 @@ apt_var() {
         if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
             return 0
         fi
-        AKT_MUVELET="várakozás: a háttérben automatikus frissítés fut ($i)"
+        muvelet "várakozás: a háttérben automatikus frissítés fut ($i)"
         varj 5
     done
 }
@@ -363,7 +459,7 @@ apt_() {
         *" remove "*)       m="csomagok eltávolítása" ;;
     esac
     for proba in 1 2 3; do
-        AKT_MUVELET="$m"
+        muvelet "$m"
         if (( proba > 1 )); then AKT_MUVELET+=" ($proba. próba)"; fi
         kezdet="$(naplo_meret)"
         rc=0
@@ -371,7 +467,7 @@ apt_() {
         if (( rc == 0 || proba == 3 )); then break; fi
         apt_javit "$kezdet" "$@" || break
     done
-    AKT_MUVELET=""
+    muvelet ""
     return "$rc"
 }
 # A rendszert soha nem frissíti (a felhasználó kérése): a --no-upgrade miatt a már fent lévő csomag nem frissül, csak a
@@ -427,28 +523,28 @@ hibas_csomagok() {
 # megpróbálja telepíteni –, hogy ne akassza meg a többi telepítést. Ha így is maradt hiba, 1-gyel tér vissza.
 csomagkezelo_rendbe() {
     local hibas=() maradt=() p eltavolithato=" ${NEM_KOTELEZO_CSOMAGOK[*]} $* "
-    AKT_MUVELET="csomagkezelő ellenőrzése"
+    muvelet "csomagkezelő ellenőrzése"
     apt_var
     fut dpkg --configure -a || true
     mapfile -t hibas < <(hibas_csomagok)
-    if (( ${#hibas[@]} == 0 )); then AKT_MUVELET=""; return 0; fi
+    if (( ${#hibas[@]} == 0 )); then muvelet ""; return 0; fi
 
     info "Félbemaradt csomagtelepítés: ${hibas[*]} – javítom…"
     # Az AnyDesk telepítő szkriptje (postinst) az xdg-utils nélkül hibával áll le, és félbemaradt csomagot
     # hagy maga után, ami minden további apt-ot megakaszt – ez a leggyakoribb ok, ezért ezzel kezdem.
-    AKT_MUVELET="hiányzó segédcsomagok pótlása"
+    muvelet "hiányzó segédcsomagok pótlása"
     if ! apt_nyers install --no-install-recommends xdg-utils desktop-file-utils; then
         apt_nyers update || true
         apt_nyers install --no-install-recommends xdg-utils desktop-file-utils || true
     fi
-    AKT_MUVELET="félbemaradt telepítések befejezése"
+    muvelet "félbemaradt telepítések befejezése"
     apt_nyers -f install || true
     fut dpkg --configure -a || true
     mapfile -t hibas < <(hibas_csomagok)
 
     for p in "${hibas[@]}"; do
         if [[ $eltavolithato == *" $p "* || $p == *-l10n ]]; then
-            AKT_MUVELET="$p eltávolítása"
+            muvelet "$p eltávolítása"
             if apt_nyers remove "$p" || fut dpkg --remove --force-remove-reinstreq "$p"; then
                 figy "A(z) $p telepítése félbemaradt, és nem volt javítható – eltávolítottam, hogy ne akassza meg a többit (a következő futás újra megpróbálja)."
             fi
@@ -456,7 +552,7 @@ csomagkezelo_rendbe() {
     done
     fut dpkg --configure -a || true
     mapfile -t maradt < <(hibas_csomagok)
-    AKT_MUVELET=""
+    muvelet ""
     if (( ${#maradt[@]} )); then
         figy "Félbemaradt csomagok maradtak: ${maradt[*]} – $(apt_hibak)"
         return 1
@@ -490,7 +586,7 @@ apt_javit() {
     if grep -qE 'Failed to fetch|Temporary failure|Could not resolve|Could not connect|Connection (failed|timed out|refused|reset)|Hash Sum mismatch|unexpected size|Unable to fetch|Service Unavailable|Bad Gateway|Gateway Time' <<<"$szoveg"; then
         # internet nélküli módban nincs mire várni: ami nincs a gépen (vagy a pendrive csomagtárolójában), az nem lesz meg
         if (( NINCS_INTERNET )); then return 1; fi
-        AKT_MUVELET="hálózati hiba – rövid várakozás, majd újra"
+        muvelet "hálózati hiba – rövid várakozás, majd újra"
         if grep -qE 'Temporary failure resolving|Could not resolve' <<<"$szoveg"; then halozat_javit; fi
         varj 15
         apt-get clean >/dev/null 2>&1 || true
@@ -524,7 +620,7 @@ tarolo_kikapcsol() {
 ido_javit() {
     local d=""
     (( ! NINCS_INTERNET )) || return 0
-    AKT_MUVELET="rendszeridő szinkronizálása"
+    muvelet "rendszeridő szinkronizálása"
     timedatectl set-ntp true >/dev/null 2>&1 || true
     # az időszinkron szolgáltatása: Ubuntu 25.10 előtt a systemd-timesyncd, azóta a chrony
     systemctl restart systemd-timesyncd >/dev/null 2>&1 || true
@@ -540,7 +636,7 @@ ido_javit() {
             info "Rendszeridő beállítva: $(date '+%Y-%m-%d %H:%M')"
         fi
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # TCP-kapcsolat egy géphez (curl nélkül is – a bash saját /dev/tcp-je): $1 gép, $2 port
@@ -561,7 +657,7 @@ internet_van() {
             1|4) halozat_javit ;;
             2)   ido_javit ;;
         esac
-        AKT_MUVELET="internetkapcsolat ellenőrzése ($(( i + 1 )). próba)"
+        muvelet "internetkapcsolat ellenőrzése ($(( i + 1 )). próba)"
         varj 10
     done
     return 1
@@ -571,7 +667,7 @@ internet_van() {
 # NetworkManager); ha a névfeloldás nem működik, tartalék DNS-szerverek.
 halozat_javit() {
     (( ! NINCS_INTERNET )) || return 0
-    AKT_MUVELET="a hálózat ellenőrzése"
+    muvelet "a hálózat ellenőrzése"
     if [[ -z $(ip -4 route show default 2>/dev/null) && -z $(ip -6 route show default 2>/dev/null) ]]; then
         info "Nincs hálózati útvonal (alapértelmezett átjáró) – a hálózati beállítást újra alkalmazom…"
         if command -v netplan >/dev/null; then fut timeout 120 netplan apply || true; fi
@@ -580,7 +676,7 @@ halozat_javit() {
         varj 15
     fi
     if ! nevfeloldas_megy; then dns_javit; fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # Tartalék DNS-szerverek a router (DHCP) DNS-e mellé – a systemd-resolved mindkettőt kérdezi, az első jó válasz nyer.
@@ -588,7 +684,7 @@ halozat_javit() {
 dns_javit() {
     local f=/etc/systemd/resolved.conf.d/90-baninapro-dns.conf
     (( ! NINCS_INTERNET )) || return 0
-    AKT_MUVELET="névfeloldás (DNS) javítása"
+    muvelet "névfeloldás (DNS) javítása"
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         if [[ ! -f $f ]]; then
             mkdir -p /etc/systemd/resolved.conf.d
@@ -606,7 +702,7 @@ dns_javit() {
         fi
     fi
     varj 3
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # ---- Alapeszközök ---------------------------------------------------------------
@@ -642,14 +738,14 @@ szabad_gb() { df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }'; }
 # helyfelszabadítás: letöltött csomagok, régi rendszernaplók, használaton kívüli Docker-képek és -gyorsítótár
 # (a konténerekhez és a kötetekhez – az adatbázishoz – nem nyúl)
 hely_felszabaditas() {
-    AKT_MUVELET="hely felszabadítása"
+    muvelet "hely felszabadítása"
     apt-get clean >/dev/null 2>&1 || true
     journalctl --vacuum-size=200M >/dev/null 2>&1 || true
     if docker_valaszol; then
         fut timeout 600 docker image prune -f || true
         fut timeout 600 docker builder prune -f || true
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 # A Docker válaszol-e – időkorláttal: egy beragadt Docker-szolgáltatásnál egy sima docker-parancs a végtelenségig várna
 docker_valaszol() { command -v docker >/dev/null && timeout "${1:-30}" docker info >/dev/null 2>&1; }
@@ -689,7 +785,7 @@ repo_letoltes() {
     local cel="$CEL_HOME/BaninaPRO" uj hova
     uj="$cel/SERVER SETUP AND UPDATE/szerver_beallitas.sh"
     info "A script nem a BaninaPRO mappájából fut – a repót letöltöm ide: $cel"
-    AKT_MUVELET="a BaninaPRO letöltése (git clone)"
+    muvelet "a BaninaPRO letöltése (git clone)"
     if [[ -d $cel/.git || -f $cel/docker-compose.yml ]]; then
         # már megvan (git-tároló, vagy egy átmásolt BaninaPRO mappa): az ottani futás rendbe teszi és frissíti
         info "A(z) $cel már megvan – onnan folytatom (a frissítést az ottani futás végzi)."
@@ -704,10 +800,11 @@ repo_letoltes() {
     if [[ ! -f $uj && -d $cel/.git ]]; then
         felh git -C "$cel" checkout -q HEAD -- "SERVER SETUP AND UPDATE" >/dev/null 2>&1 || true
     fi
-    AKT_MUVELET=""
+    muvelet ""
     [[ -f $uj ]] || hiba "A BaninaPRO mappában ($cel) nincs meg a telepítő: $uj"
     ok "BaninaPRO: $cel – onnan folytatom."
     rm -rf "$TMPD"
+    eletjel_le
     exec bash "$uj" "${ARGOK[@]}"
 }
 
@@ -742,7 +839,7 @@ repo_rendbe() {
     else
         info "A BaninaPRO mappa nem git-tároló (átmásolták?) – a GitHubhoz kötöm, így frissíthető."
     fi
-    AKT_MUVELET="a BaninaPRO git-tárolójának létrehozása"
+    muvelet "a BaninaPRO git-tárolójának létrehozása"
     if felh git -C "$REPO" init -q \
         && felh git -C "$REPO" remote add origin "$REPO_URL" \
         && ujraprobal 3 felh git -C "$REPO" fetch -q origin "$REPO_AG" \
@@ -752,7 +849,7 @@ repo_rendbe() {
     else
         figy "A BaninaPRO mappa nem köthető a GitHubhoz – a meglévő fájlokkal folytatom."
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # A kód frissítése a GitHubról: letöltés (fetch), majd előrelépés (fast-forward). A helyben módosított vagy törölt
@@ -868,7 +965,7 @@ elofeltetelek() {
     if (( NINCS_INTERNET )); then
         ok "Internet nélküli mód: a hálózatot nem ellenőrzöm, és semmit nem töltök le – azzal dolgozom, ami a gépen van"
     else
-        AKT_MUVELET="internetkapcsolat ellenőrzése"
+        muvelet "internetkapcsolat ellenőrzése"
         if internet_van; then
             ok "Internetkapcsolat rendben"
         else
@@ -876,7 +973,7 @@ elofeltetelek() {
             export BANINA_NINCS_INTERNET=1
             figy "Nincs internetkapcsolat – internet nélküli módban folytatom: semmit nem töltök le, azzal dolgozom, ami a gépen van. (Legközelebb a hálózat-ellenőrzés is kihagyható: sudo bash $(basename "$SCRIPT") --nincs-internet)"
         fi
-        AKT_MUVELET=""
+        muvelet ""
     fi
     # a script saját eszközei – egy minimális rendszeren a curl, a git is hiányozhat
     alapeszkozok_biztosit
@@ -948,7 +1045,7 @@ frissites_elokeszites() {
     cim "Mentés és a legfrissebb kód letöltése"
     local elotte utana
     if docker_valaszol && [[ $(timeout 30 docker inspect -f '{{.State.Running}}' "$APP_KONTENER" 2>/dev/null || true) == true ]]; then
-        AKT_MUVELET="adatbázis-mentés"
+        muvelet "adatbázis-mentés"
         if fut timeout 1800 docker exec "$APP_KONTENER" php -q cron_mentes.php; then
             ok "Adatbázis-mentés a frissítés előtt: $(tail -n 1 "$NAPLO")"
             # (egy korábbi telepítés mentő-segédje: a mentés a gép saját lemezére is)
@@ -956,14 +1053,14 @@ frissites_elokeszites() {
         else
             figy "A frissítés előtti mentés nem sikerült: $(tail -n 1 "$NAPLO")"
         fi
-        AKT_MUVELET=""
+        muvelet ""
     else
         info "A BaninaPRO most nem fut – nincs mit menteni."
     fi
 
     elotte="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
     repo_rendbe
-    AKT_MUVELET="a legfrissebb kód letöltése (git)"
+    muvelet "a legfrissebb kód letöltése (git)"
     if (( NINCS_INTERNET )) && [[ -z ${GIT_CONFIG_COUNT:-} ]]; then
         # (a pendrive-os indító a git-et a pendrive-on lévő másolatra irányítja – GIT_CONFIG_COUNT –, az frissíthet)
         info "Internet nélküli mód: a kód frissítése kimarad – a gépen lévő változat fut ($(felh git -C "$REPO" log -1 --format='%h, %cd' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null || echo '?'))."
@@ -972,12 +1069,13 @@ frissites_elokeszites() {
     else
         figy "A kód frissítése (git) nem sikerült – a meglévő kóddal folytatom. ($(tail -n 1 "$NAPLO"))"
     fi
-    AKT_MUVELET=""
+    muvelet ""
     utana="$(sha256sum "$SCRIPT" 2>/dev/null | cut -d' ' -f1 || true)"
     if [[ $elotte != "$utana" ]]; then
         info "A telepítő script is frissült – az új változattal folytatom."
         export BANINA_UJRA=1
         rm -rf "$TMPD"
+        eletjel_le
         exec bash "$SCRIPT" "$@"
     fi
 }
@@ -985,7 +1083,7 @@ frissites_elokeszites() {
 # Minden kérdés az elején, utána már nem kell a géphez nyúlni. Csak azt kérdezi, ami még nincs beállítva.
 kerdesek() {
     local masodszor="" kell_anydesk=0 kell_email=0
-    [[ -t 0 ]] || return 0
+    [[ -t 6 ]] || return 0
     van_csomag anydesk || kell_anydesk=1
     # az e-mailről csak kérésre kérdez (sudo bash szerver_beallitas.sh --email) – az értesítések push-ként mennek
     kell_email=$EMAIL_KERDES
@@ -994,11 +1092,11 @@ kerdesek() {
     if (( kell_anydesk )); then
         torol
         printf '  AnyDesk jelszó a felügyelet nélküli eléréshez (Enter = kihagyás): ' >&3
-        read -r -s ANYDESK_JELSZO || true
+        read -r -s -u 6 ANYDESK_JELSZO || true
         printf '\n' >&3
         if [[ -n $ANYDESK_JELSZO ]]; then
             printf '  Még egyszer: ' >&3
-            read -r -s masodszor || true
+            read -r -s -u 6 masodszor || true
             printf '\n' >&3
             if [[ $ANYDESK_JELSZO != "$masodszor" ]]; then
                 figy "A két jelszó nem egyezik – az AnyDesk jelszót most nem állítom be."
@@ -1018,7 +1116,7 @@ email_kerdesek() {
     printf '  A napi jelentés és a riasztások címzettje: %s (ehhez a fiókhoz nem kell hozzáférés).\n' "$JELENTES_CIMZETT" >&3
     printf '  A küldéshez egy feladó-postafiók kell: pl. a céges tárhely (cPanel) egy postafiókja, vagy egy erre a\n' >&3
     printf '  célra létrehozott Gmail-fiók. Feladó e-mail-címe (Enter = most kihagyom): ' >&3
-    read -r EMAIL_FELADO || true
+    read -r -u 6 EMAIL_FELADO || true
     EMAIL_FELADO="${EMAIL_FELADO// /}"
     if [[ -n $EMAIL_FELADO && $EMAIL_FELADO != *@*.* ]]; then
         figy "Ez nem e-mail-cím ($EMAIL_FELADO) – az e-mail-küldést most nem állítom be."
@@ -1028,18 +1126,18 @@ email_kerdesek() {
     domain="${EMAIL_FELADO##*@}"
     if [[ ${domain,,} == gmail.com || ${domain,,} == googlemail.com ]]; then alap="smtp.gmail.com"; else alap="mail.$domain"; fi
     printf '  SMTP-szerver [%s]: ' "$alap" >&3
-    read -r EMAIL_SMTP_HOST || true
+    read -r -u 6 EMAIL_SMTP_HOST || true
     EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST// /}"
     EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST:-$alap}"
     printf '  Port [587]: ' >&3
-    read -r EMAIL_SMTP_PORT || true
+    read -r -u 6 EMAIL_SMTP_PORT || true
     [[ $EMAIL_SMTP_PORT =~ ^[0-9]+$ ]] || EMAIL_SMTP_PORT=587
     if [[ $alap == smtp.gmail.com ]]; then
         printf '  A Gmail-fiók alkalmazásjelszava (Google-fiók → Biztonság → Kétlépcsős azonosítás → Alkalmazásjelszavak): ' >&3
     else
         printf '  A postafiók jelszava: ' >&3
     fi
-    read -r -s EMAIL_JELSZO || true
+    read -r -s -u 6 EMAIL_JELSZO || true
     printf '\n' >&3
     # a Google az alkalmazásjelszót szóközökkel tagolva mutatja – azok nem részei a jelszónak
     if [[ $alap == smtp.gmail.com ]]; then EMAIL_JELSZO="${EMAIL_JELSZO// /}"; fi
@@ -1195,7 +1293,7 @@ forrasok_rendbe() {
 universe_bekapcsol() {
     [[ -z $(elerheto xfce4) ]] || return 0
     (( ! NINCS_INTERNET )) || return 0
-    AKT_MUVELET="universe csomagtároló bekapcsolása"
+    muvelet "universe csomagtároló bekapcsolása"
     if ! { command -v add-apt-repository >/dev/null && fut add-apt-repository -y universe; }; then
         # tartalék: közvetlenül a forrásfájlba (új formátum: ubuntu.sources; régi, egysoros: sources.list)
         if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
@@ -1205,7 +1303,7 @@ universe_bekapcsol() {
             sed -i -E '/^[[:space:]]*deb(-src)?[[:space:]].*\/ubuntu(-ports)?\/?[[:space:]]/{/universe/!s/[[:space:]]*$/ universe/}' /etc/apt/sources.list
         fi
     fi
-    AKT_MUVELET=""
+    muvelet ""
     apt_ update || true
     [[ -n $(elerheto xfce4) ]] || figy "Az universe csomagtároló nem kapcsolható be – az asztal telepítése elakadhat."
 }
@@ -1223,7 +1321,7 @@ tarhely_memoria() {
     mem_mb="$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || echo 0)"
     if [[ -n $(swapon --noheadings --show 2>/dev/null || true) ]] || (( ${mem_mb:-0} >= 4096 )); then return 0; fi
     if [[ ! -e /swapfile ]] && (( $(szabad_gb) >= 12 )); then
-        AKT_MUVELET="swap-fájl létrehozása"
+        muvelet "swap-fájl létrehozása"
         if { fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none 2>/dev/null; } \
             && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1; then
             grep -qE '^/swapfile[[:space:]]' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
@@ -1232,7 +1330,7 @@ tarhely_memoria() {
             rm -f /swapfile
             figy "Kevés a memória ($mem_mb MB), és a swap-fájl nem hozható létre – a BaninaPRO így is fut, de szűkösen."
         fi
-        AKT_MUVELET=""
+        muvelet ""
     elif [[ -e /swapfile ]]; then
         if swapon /swapfile >/dev/null 2>&1; then ok "Swap bekapcsolva (/swapfile)"; fi
     else
@@ -1314,14 +1412,14 @@ lepes_nyelv() {
             echo "$NYELV UTF-8" >> /etc/locale.gen
         fi
     fi
-    AKT_MUVELET="magyar nyelvi beállítás létrehozása"
+    muvelet "magyar nyelvi beállítás létrehozása"
     fut locale-gen "$NYELV" || true
     if ! grep -qix 'hu_HU.utf8' <<<"$(locale -a)"; then
         # a locales csomag sérült vagy hiányos: újratelepítés, majd még egy próba
         ujratelepit_azonos locales || true
         fut locale-gen "$NYELV" || true
     fi
-    AKT_MUVELET=""
+    muvelet ""
     if ! grep -qix 'hu_HU.utf8' <<<"$(locale -a)"; then
         figy "A magyar nyelvi beállítás ($NYELV) nem jött létre – a rendszer angolul marad (a BaninaPRO működését nem érinti)."
     else
@@ -1340,9 +1438,9 @@ lepes_nyelv() {
         'keyboard-configuration keyboard-configuration/modelcode string pc105' \
         'keyboard-configuration keyboard-configuration/variantcode string ' \
         'keyboard-configuration keyboard-configuration/optionscode string ' | debconf-set-selections
-    AKT_MUVELET="billentyűzet beállítása"
+    muvelet "billentyűzet beállítása"
     fut dpkg-reconfigure -f noninteractive keyboard-configuration || true
-    AKT_MUVELET=""
+    muvelet ""
     cat > /etc/default/keyboard <<'EOF'
 # BaninaPRO szerver: magyar billentyűzet (a szerver_beallitas.sh írta)
 XKBMODEL="pc105"
@@ -1554,13 +1652,13 @@ lepes_anydesk() {
     if ! van_csomag anydesk; then
         # elsősorban a hivatalos csomagtárolóból
         install -m 0755 -d /etc/apt/keyrings
-        AKT_MUVELET="AnyDesk csomagtároló beállítása"
+        muvelet "AnyDesk csomagtároló beállítása"
         if (( ! NINCS_INTERNET )) && fut curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY -o /etc/apt/keyrings/keys.anydesk.com.asc; then
             chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
             echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] https://deb.anydesk.com all main" > "$lista"
             apt_ update || true
         fi
-        AKT_MUVELET=""
+        muvelet ""
         if [[ -n $(elerheto anydesk) ]] && telepit anydesk; then
             ok "AnyDesk telepítve (hivatalos csomagtárolóból)"
         else
@@ -1596,16 +1694,16 @@ anydesk_deb_telepit() {
     (( ! NINCS_INTERNET )) || return 1   # internet nélkül nincs honnan letölteni
     for url in "$ANYDESK_DEB" "$(anydesk_deb_legfrissebb)"; do
         [[ -n $url && $url == *"_$ARCH.deb" ]] || continue
-        AKT_MUVELET="AnyDesk letöltése"
+        muvelet "AnyDesk letöltése"
         if fut curl -fsSL "$url" -o "$deb"; then
-            AKT_MUVELET=""
+            muvelet ""
             chmod 644 "$deb"
             if telepit "$deb"; then return 0; fi
             csomagkezelo_rendbe || true
             if van_csomag anydesk; then return 0; fi
         fi
     done
-    AKT_MUVELET=""
+    muvelet ""
     return 1
 }
 anydesk_deb_legfrissebb() {
@@ -1700,20 +1798,20 @@ docker_telepites() {
     done
     if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
         info "A snap-es Docker eltávolítása (ütközne a Docker Engine-nel)…"
-        AKT_MUVELET="snap-es Docker eltávolítása"
+        muvelet "snap-es Docker eltávolítása"
         fut snap remove --purge docker || true
-        AKT_MUVELET=""
+        muvelet ""
     fi
     install -m 0755 -d /etc/apt/keyrings
     kod="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
-    AKT_MUVELET="Docker csomagtároló beállítása"
+    muvelet "Docker csomagtároló beállítása"
     if (( ! NINCS_INTERNET )) && fut curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
         chmod a+r /etc/apt/keyrings/docker.asc
         printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
             "$kod" "$ARCH" > /etc/apt/sources.list.d/docker.sources
         apt_ update || true
     fi
-    AKT_MUVELET=""
+    muvelet ""
     if [[ -n $(elerheto docker-ce) ]] \
         && telepit docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
         ok "Docker Engine telepítve (hivatalos Docker csomagtárolóból)"
@@ -1743,23 +1841,23 @@ docker_daemon_json() {
     [[ ! -f /etc/docker/daemon.json ]] || return 0
     mkdir -p /etc/docker
     printf '{\n  "log-driver": "json-file",\n  "log-opts": { "max-size": "10m", "max-file": "3" }\n}\n' > /etc/docker/daemon.json
-    AKT_MUVELET="Docker újraindítása"
+    muvelet "Docker újraindítása"
     fut systemctl restart docker || true
-    AKT_MUVELET=""
+    muvelet ""
     ok "Docker naplók mérete korlátozva"
 }
 
 # a Docker szolgáltatás indítása; ha nem indul, a gyakori okokat (beragadt indítás, hibás daemon.json) javítja
 docker_inditas() {
     local i sugo=""
-    AKT_MUVELET="Docker indítása"
+    muvelet "Docker indítása"
     # (ha valaki letiltotta – mask – a szolgáltatásokat, vissza)
     systemctl unmask containerd.service docker.service docker.socket >/dev/null 2>&1 || true
     systemctl daemon-reload || true
     systemctl enable containerd docker >/dev/null 2>&1 || true
     if command -v dockerd >/dev/null; then sugo="$(timeout 30 dockerd --help 2>&1 || true)"; fi
     for i in 1 2 3 4; do
-        if docker_valaszol; then AKT_MUVELET=""; return 0; fi
+        if docker_valaszol; then muvelet ""; return 0; fi
         # (a --validate a Docker 23-as változata óta van – a régebbiek nem ismerik, ott nem ezen múlik)
         if [[ -f /etc/docker/daemon.json && $sugo == *--validate* ]] \
             && ! timeout 60 dockerd --validate --config-file=/etc/docker/daemon.json >/dev/null 2>&1; then
@@ -1771,7 +1869,7 @@ docker_inditas() {
         fut timeout 300 systemctl restart containerd docker || true
         varj $(( 3 * i ))
     done
-    AKT_MUVELET=""
+    muvelet ""
     docker_valaszol
 }
 
@@ -1791,11 +1889,11 @@ compose_biztosit() {
     if compose_eleg_uj; then return 0; fi
     case $ARCH in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; armhf) arch=armv7 ;; *) arch=$ARCH ;; esac
     install -d -m 755 "$(dirname "$cel")"
-    AKT_MUVELET="docker compose letöltése"
+    muvelet "docker compose letöltése"
     if (( ! NINCS_INTERNET )) && ujraprobal 3 curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch" -o "$cel"; then
         chmod 755 "$cel"
     fi
-    AKT_MUVELET=""
+    muvelet ""
     compose_eleg_uj || hiba "A „docker compose” bővítmény hiányzik vagy túl régi, és nem sikerült pótolni."
     ok "docker compose pótolva (a Docker GitHub-oldaláról)"
 }
@@ -1834,7 +1932,7 @@ lepes_ssh() {
 
     # a frissítés (git pull) a nyilvános GitHub-repóból megy, https-en – GitHub-kulcs nem kell
     repo_cim_beallit
-    AKT_MUVELET="GitHub elérés ellenőrzése"
+    muvelet "GitHub elérés ellenőrzése"
     if (( NINCS_INTERNET )); then
         info "Internet nélküli mód: a GitHub-elérést nem ellenőrzöm (ha a gép internetet kap, a frissítések innen jönnek: $REPO_URL)."
     elif ujraprobal 2 felh git -C "$REPO" ls-remote --exit-code origin HEAD; then
@@ -1842,7 +1940,7 @@ lepes_ssh() {
     else
         figy "A GitHub-repó most nem érhető el ($REPO_URL) – a következő futás újra megpróbálja a frissítést."
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 lepes_energia() {
@@ -1976,6 +2074,7 @@ aram_utan_bekapcsol() {
 lepes_baninapro() {
     local k
     # 1) adatbázis-séma (a gitben van): üres adatbázisnál a MySQL ebből hozza létre a táblákat és a kezdő admint
+    muvelet "a séma és a meglévő adatbázis ellenőrzése"
     sema_biztosit || hiba "Hiányzik az adatbázis-séma: $SEMA – a git pull nem hozta le (lásd a figyelmeztetéseket). Ellenőrizd a GitHub-elérést, majd futtasd újra."
     if timeout 60 docker volume inspect "$DB_KOTET" >/dev/null 2>&1; then
         ELSO_INDITAS=0
@@ -1986,11 +2085,13 @@ lepes_baninapro() {
     fi
 
     # 2) a szerver saját adatbázis-jelszavai és az alkalmazás szerverre szabott beállítófájlja (nincsenek a gitben)
+    muvelet "a szerver jelszavai és beállítófájlja"
     titkok_biztosit
     szerver_config
 
     # 3) a portok: a BaninaPRO-é kötelező; a phpMyAdminé és a MySQL-é (csak a gépen belül) nem – ha egy idegen program
     #    foglalja, és nem állítható le, az kimarad (a BaninaPRO enélkül is működik)
+    muvelet "a portok ellenőrzése"
     port_felszabadit "$APP_PORT" \
         || hiba "A(z) $(port_nev "$APP_PORT") portot egy másik program használja, és nem állítható le: $(port_foglalo "$APP_PORT")"
     PMA_PORT_KI=1 DB_PORT_KI=1
@@ -2004,8 +2105,10 @@ lepes_baninapro() {
     fi
 
     # 4) szerver-kiegészítés a docker-compose.yml mellé (régi processzoron az adatbázis képe is)
+    muvelet "a szerver-beállítás megírása"
     db_kep_valasztas
     override_iras
+    muvelet ""
     if (( PMA_PORT_KI )); then
         ok "Szerver-beállítás: BaninaPRO a $APP_PORT-as, phpMyAdmin a $PMA_PORT-es porton – a belső hálózatról is (jelszóval)"
     else
@@ -2013,6 +2116,7 @@ lepes_baninapro() {
     fi
 
     # 5) a Docker-képek (ha a Docker Hub nem érhető el: a hivatalos képek tükreiről), az alkalmazás képe, indítás
+    muvelet "a Docker-képek ellenőrzése"
     idegen_kontenerek_le
     kepek_biztosit
     for k in "${HIANYZO_KEPEK[@]}"; do
@@ -2031,10 +2135,13 @@ lepes_baninapro() {
             hiba "A konténerek nem indultak el."
         fi
     fi
+    muvelet "a konténerek állapotának lekérdezése"
     dc ps || true
     ok "Konténerek elindítva"
+    muvelet "a felesleges régi képek törlése"
     fut timeout 600 docker image prune -f || true   # a felülírt régi képek (a használtakhoz és az adatokhoz nem nyúl)
     regi_db_kepek_torlese
+    muvelet ""
 
     # 6) adatbázis: indulás, jelszavak, táblák, felhasználók, visszaállítás mentésből, a séma egyeztetése a kóddal
     if ! adatbazis_rendbe; then
@@ -2300,10 +2407,10 @@ kepek_biztosit() {   # a hiányzó képek letöltése – a meglévőkhöz nem n
     for k in "${kepek[@]}"; do
         [[ -n $k ]] || continue
         if timeout 60 docker image inspect "$k" >/dev/null 2>&1; then continue; fi
-        AKT_MUVELET="a(z) $k kép letöltése"
+        muvelet "a(z) $k kép letöltése"
         if kep_letolt "$k"; then ok "Docker-kép letöltve: $k"; else HIANYZO_KEPEK+=("$k"); fi
     done
-    AKT_MUVELET=""
+    muvelet ""
     if (( ${#HIANYZO_KEPEK[@]} && NINCS_INTERNET )); then
         figy "Nincs a gépen, és internet nélkül nem tölthető le: ${HIANYZO_KEPEK[*]} – egy most elkészített offline pendrive hozza."
     elif (( ${#HIANYZO_KEPEK[@]} )); then
@@ -2313,7 +2420,7 @@ kepek_biztosit() {   # a hiányzó képek letöltése – a meglévőkhöz nem n
 # Az alkalmazás képének építése (PHP 8.3 + Apache). Ha a PHP-alapkép frissítése nem megy (pl. a Docker Hub nem érhető
 # el), a meglévő alapképből; ha a compose építője (buildx / bake) nem működik, a Docker egyszerű építőjével.
 alkalmazas_epites() {
-    AKT_MUVELET="az alkalmazás építése (PHP 8.3 + Apache)"
+    muvelet "az alkalmazás építése (PHP 8.3 + Apache)"
     if (( ! NINCS_INTERNET )) && ujraprobal 2 dc build --pull app; then
         ok "Az alkalmazás képe elkészült (a PHP-alapkép is frissítve)"
     elif ujraprobal 2 dc build app; then
@@ -2323,10 +2430,10 @@ alkalmazas_epites() {
     elif fut timeout 3600 docker build -t "$APP_KEP" "$REPO/docker"; then
         ok "Az alkalmazás képe elkészült (a Docker egyszerű építőjével)"
     else
-        AKT_MUVELET=""
+        muvelet ""
         return 1
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 # A konténerek indítása. Ha a phpMyAdmin képe nem tölthető le, nélküle (a BaninaPRO-hoz nem kell). Ha nem indulnak el:
 # egy idegen konténer foglalta portok felszabadítása, a félig elindultak leállítása (az adatok a kötetekben maradnak),
@@ -2336,18 +2443,18 @@ kontenerek_inditasa() {
     for k in "${HIANYZO_KEPEK[@]}"; do
         if [[ $k == *phpmyadmin* ]]; then szolg=(app db); fi
     done
-    AKT_MUVELET="konténerek indítása (első induláskor az adatbázis létrehozása gyenge gépen percekig tart)"
-    if fut dc up -d --remove-orphans "${szolg[@]}"; then AKT_MUVELET=""; return 0; fi
+    muvelet "konténerek indítása (első induláskor az adatbázis létrehozása gyenge gépen percekig tart)"
+    if fut dc up -d --remove-orphans "${szolg[@]}"; then muvelet ""; return 0; fi
     # ha a MySQL újra és újra összeomlik, a további próbák csak az időt viszik – a hívó az adatbázist javítja
-    if db_osszeomlik; then AKT_MUVELET=""; return 1; fi
+    if db_osszeomlik; then muvelet ""; return 1; fi
     varj 10
-    if fut dc up -d --remove-orphans "${szolg[@]}"; then AKT_MUVELET=""; return 0; fi
+    if fut dc up -d --remove-orphans "${szolg[@]}"; then muvelet ""; return 0; fi
     port_felszabadit "$APP_PORT" || true
     if (( PMA_PORT_KI )); then port_felszabadit "$PMA_PORT" || true; fi
     fut dc down --remove-orphans || true
     varj 5
-    if ujraprobal 2 dc up -d --remove-orphans "${szolg[@]}"; then AKT_MUVELET=""; return 0; fi
-    AKT_MUVELET=""
+    if ujraprobal 2 dc up -d --remove-orphans "${szolg[@]}"; then muvelet ""; return 0; fi
+    muvelet ""
     return 1
 }
 
@@ -2386,9 +2493,9 @@ db_elso_beallitas_fut() {
 # akkor indítja újra, ha a konténer leállt, vagy már nem az első beállítás fut, mégsem válaszol. 1, ha így sem indul el.
 db_var_inditasra() {
     local i allapot
-    AKT_MUVELET="várakozás az adatbázisra (az első indulás gyenge gépen 10-15 perc is lehet – ne szakítsd meg)"
+    muvelet "várakozás az adatbázisra (az első indulás gyenge gépen 10-15 perc is lehet – ne szakítsd meg)"
     for (( i = 0; i < 900; i++ )); do
-        if db_kesz; then AKT_MUVELET=""; return 0; fi
+        if db_kesz; then muvelet ""; return 0; fi
         allapot="$(timeout 30 docker inspect -f '{{.State.Status}}' "$DB_KONTENER" 2>/dev/null || true)"
         # ha a konténer hibával kilépett vagy újra és újra összeomlik, nincs mire várni
         if (( i > 15 )) && [[ $allapot =~ ^(exited|dead|restarting|)$ ]]; then break; fi
@@ -2398,16 +2505,16 @@ db_var_inditasra() {
     done
     if db_elso_beallitas_fut; then
         # fél óra alatt sem készült el, de még dolgozik: nem szakítja meg
-        AKT_MUVELET=""
+        muvelet ""
         return 1
     fi
     fut timeout 300 docker restart "$DB_KONTENER" || true
     for (( i = 0; i < 900; i++ )); do
-        if db_kesz; then AKT_MUVELET=""; return 0; fi
+        if db_kesz; then muvelet ""; return 0; fi
         if (( i >= 60 )) && ! db_elso_beallitas_fut; then break; fi
         varj 2
     done
-    AKT_MUVELET=""
+    muvelet ""
     return 1
 }
 # Félkész adatbázis: az első beállítás megszakadt (áramszünet, újraindítás közben), ezért az adatbázis-kötetben nincs
@@ -2423,12 +2530,12 @@ db_felkesz_ujra() {
     [[ -n $nev && ! -d $m/$nev ]] || return 1
     DB_UJRA_LETREHOZVA=1
     figy "Az adatbázis első beállítása korábban megszakadt: az adatbázis-kötetben nincs meg a(z) $nev adatbázis, így adat sincs benne – a félkész adatfájlokat törlöm, és az adatbázist újra létrehozom."
-    AKT_MUVELET="a félkész adatbázis újra létrehozása"
+    muvelet "a félkész adatbázis újra létrehozása"
     fut timeout 300 docker stop "$DB_KONTENER" || true
     fut timeout 120 docker rm -f "$DB_KONTENER" || true
-    if ! fut timeout 300 docker volume rm "$DB_KOTET"; then AKT_MUVELET=""; return 1; fi
+    if ! fut timeout 300 docker volume rm "$DB_KOTET"; then muvelet ""; return 1; fi
     ELSO_INDITAS=1
-    kontenerek_inditasa || { AKT_MUVELET=""; return 1; }
+    kontenerek_inditasa || { muvelet ""; return 1; }
     db_var_inditasra
 }
 # Régebbi, a nyilvános alapjelszóval (docker-compose.yml) létrehozott adatbázis: a root-jelszó átállítása a szerver
@@ -2448,7 +2555,7 @@ EOF
 db_jelszo_helyreallitas() {
     local nev="baninapro-db-jelszo" sql="$TMPD/jelszo.sql" kep i jo=0
     info "Az adatbázis nem fogadja el a szerver jelszavát – helyreállítom (az adatokhoz nem nyúlok)…"
-    AKT_MUVELET="az adatbázis jelszavának helyreállítása"
+    muvelet "az adatbázis jelszavának helyreállítása"
     kep="$(timeout 30 docker inspect -f '{{.Config.Image}}' "$DB_KONTENER" 2>/dev/null || true)"
     [[ -n $kep ]] || kep="$(kepek_listaja | grep -m1 -i -E 'mysql|mariadb' || echo mysql:latest)"
     {
@@ -2477,7 +2584,7 @@ db_jelszo_helyreallitas() {
     rm -f "$sql"
     kontenerek_inditasa || true
     db_var_inditasra || true
-    AKT_MUVELET=""
+    muvelet ""
     if (( jo )) && db_sql -e 'SELECT 1' >/dev/null 2>&1; then
         figy "Az adatbázis nem fogadta el a szerver jelszavát (elveszett vagy megváltozott) – a root-jelszót visszaállítottam a szerver jelszavára ($TITOK_MAPPA/titkok). Az adatok érintetlenek."
         return 0
@@ -2507,22 +2614,26 @@ adatbazis_rendbe() {
     # (ha nem indul el, és a kötetben csak egy megszakadt első beállítás félkész fájljai vannak: újra létrehozza)
     if ! db_var_inditasra && ! db_felkesz_ujra; then return 1; fi
     # a root-jelszó: a szerver jelszava; egy régebbi adatbázisnál a nyilvános alapjelszó; ha egyik sem, helyreállítás
+    muvelet "adatbázis: a jelszó ellenőrzése"
     if ! db_sql -e 'SELECT 1' >/dev/null 2>&1 && ! db_root_atallitas && ! db_jelszo_helyreallitas; then
         if ! db_felkesz_ujra || ! db_sql -e 'SELECT 1' >/dev/null 2>&1; then return 1; fi
     fi
     # Üres adatbázis (nincs felhasználó): a teljes séma, a kezdő adminnal. Egy meglévő adatbázisba kezdő admin soha nem
     # kerül (egy átnevezett admin mellé a nyilvános kezdőjelszóval) – oda csak a hiányzó táblák stb. (sema_egyeztetes).
+    muvelet "adatbázis: a táblák ellenőrzése"
     felhasznalok="$(db_szam 'SELECT COUNT(*) FROM felhasznalok')"
     if [[ -z $felhasznalok || $felhasznalok == 0 ]]; then
         info "Az adatbázisban nincs felhasználó – a táblák és a kezdő admin a sémából…"
-        AKT_MUVELET="adatbázis-táblák létrehozása a sémából"
+        muvelet "adatbázis: a táblák létrehozása a sémából"
         db_sql < "$SEMA" || true
         felhasznalok="$(db_szam 'SELECT COUNT(*) FROM felhasznalok')"
-        if [[ -z $felhasznalok || $felhasznalok == 0 ]]; then AKT_MUVELET=""; return 1; fi
+        if [[ -z $felhasznalok || $felhasznalok == 0 ]]; then muvelet ""; return 1; fi
         ok "Adatbázis-táblák és a kezdő admin létrehozva a sémából"
     fi
+    muvelet "adatbázis: a felhasználók és a jogosultságok beállítása"
     db_felhasznalok
     # üres adatbázis, de van korábbi mentés: a legfrissebb visszaállítása (--nincs-visszaallitas: kihagyja)
+    muvelet "adatbázis: van-e benne üzleti adat"
     if adatbazis_ures; then
         if (( NINCS_VISSZAALLITAS )); then
             info "Az adatbázis üres – a mentésből visszaállítást kihagyom (--nincs-visszaallitas)."
@@ -2531,9 +2642,10 @@ adatbazis_rendbe() {
         fi
     fi
     sema_egyeztetes || true
-    AKT_MUVELET=""
+    muvelet "adatbázis: záró ellenőrzés"
     tablak="$(db_szam 'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()')"
     felhasznalok="$(db_szam 'SELECT COUNT(*) FROM felhasznalok')"
+    muvelet ""
     ok "Adatbázis rendben: ${tablak:-?} tábla, ${felhasznalok:-?} felhasználó"
 }
 
@@ -2592,7 +2704,7 @@ mentesbol_visszaallitas() {
         fi
     fi
     info "Az adatbázis üres, de van korábbi mentés: $nev ($sorok sor) – visszaállítom…"
-    AKT_MUVELET="az adatbázis visszaállítása a mentésből ($nev)"
+    muvelet "az adatbázis visszaállítása a mentésből ($nev)"
     kezdet="$(naplo_meret)"
     if fut timeout 3600 docker exec "$APP_KONTENER" php -q cron_mentes.php vissza "$nev"; then
         VISSZAALLITVA="$nev"
@@ -2600,7 +2712,7 @@ mentesbol_visszaallitas() {
     else
         figy "A mentés ($nev) visszaállítása nem sikerült – az adatbázis üres maradt. $(naplo_resz "$kezdet" | grep -m1 -E 'HIBA|Error|error' || true)"
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # A MySQL nem indul el (sérült vagy egy másik MySQL-változattal írt adatfájlok, pl. egy áramszünet után): ha van teljes
@@ -2627,26 +2739,26 @@ adatbazis_ujraepites() {
         return 1
     fi
     hova="$GEP_MENTES/serult-adatbazis-$(date +%Y%m%d_%H%M%S)"
-    AKT_MUVELET="a régi adatfájlok félretétele ($hova)"
+    muvelet "a régi adatfájlok félretétele ($hova)"
     fut timeout 300 docker stop "$DB_KONTENER" || true
     install -d -m 700 "$GEP_MENTES"
     if ! fut cp -a "$m" "$hova"; then
         rm -rf "$hova"
         figy "A MySQL nem indul el, és a régi adatfájlok nem másolhatók félre – az adatfájlokhoz nem nyúlok."
-        AKT_MUVELET=""
+        muvelet ""
         return 1
     fi
-    AKT_MUVELET="az adatbázis újra létrehozása"
+    muvelet "az adatbázis újra létrehozása"
     fut timeout 120 docker rm -f "$DB_KONTENER" || true
     if ! fut timeout 300 docker volume rm "$DB_KOTET"; then
         figy "A sérült adatbázis-kötet nem törölhető ($DB_KOTET) – a régi adatfájlok másolata: $hova"
-        AKT_MUVELET=""
+        muvelet ""
         return 1
     fi
     SERULT_DB_MASOLAT="$hova"
     ELSO_INDITAS=1
     figy "A MySQL nem indult el (sérült adatfájlok?) – a régi adatfájlokat félretettem ($hova), az adatbázist újra létrehozom, és a legfrissebb mentésből visszaállítom."
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # A séma egyeztetése a kóddal: egy ideiglenes adatbázisba betölti a sql/schema.sql-t, és összeveti a valódival. Ami a
@@ -2657,14 +2769,15 @@ adatbazis_ujraepites() {
 SEMA_MINTA="baninapro_sema_minta"
 sema_egyeztetes() {
     local kimenet sor n=0 kesz=0
-    AKT_MUVELET="az adatbázis-séma egyeztetése a kóddal"
+    muvelet "adatbázis-séma: a minta betöltése (1/2)"
     if ! printf 'DROP DATABASE IF EXISTS `%s`;\nCREATE DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n' "$SEMA_MINTA" "$SEMA_MINTA" | db_sql \
         || ! timeout 600 docker exec -i "$DB_KONTENER" sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$1"' _ "$SEMA_MINTA" < "$SEMA"; then
         figy "A séma egyeztetése nem sikerült (a sql/schema.sql nem tölthető be egy ideiglenes adatbázisba)."
         printf 'DROP DATABASE IF EXISTS `%s`;\n' "$SEMA_MINTA" | db_sql >/dev/null 2>&1 || true
-        AKT_MUVELET=""
+        muvelet ""
         return 1
     fi
+    muvelet "adatbázis-séma: összevetés a kóddal (2/2)"
     kimenet="$(sema_osszevetes 2>&1 || true)"
     printf '%s\n' "$kimenet"   # (a naplóba)
     printf 'DROP DATABASE IF EXISTS `%s`;\n' "$SEMA_MINTA" | db_sql >/dev/null 2>&1 || true
@@ -2676,7 +2789,7 @@ sema_egyeztetes() {
             VEGE)     kesz=1 ;;
         esac
     done <<<"$kimenet"
-    AKT_MUVELET=""
+    muvelet ""
     if (( ! kesz )); then
         figy "A séma egyeztetése nem futott le végig – a napló végén látszik, miért."
         return 1
@@ -2894,13 +3007,13 @@ EOF
     chmod 644 /etc/cron.d/baninapro
     ok "Éjszakai adatbázis-mentés: minden nap 03:00, az eredményről push-értesítés (napló: /var/log/baninapro-mentes.log)"
     # a meglévő mentések másolata a gép saját lemezére (a Dockeren kívül)
-    AKT_MUVELET="a mentések másolása a gép saját lemezére"
+    muvelet "a mentések másolása a gép saját lemezére"
     if fut "$MENTO" masol; then
         ok "Mentések a gép saját lemezén is: $GEP_MENTES ($(find "$GEP_MENTES" -maxdepth 1 -name '*.sql' 2>/dev/null | wc -l) db, a legutóbbi $GEP_MENTES_DB marad meg)"
     else
         figy "A mentések nem másolhatók a gép saját lemezére ($GEP_MENTES): $(tail -n 1 "$NAPLO")"
     fi
-    AKT_MUVELET=""
+    muvelet ""
 }
 
 # A mentő segéd: az éjszakai mentés (cron), és a mentések másolata a gép saját lemezére
@@ -3943,7 +4056,7 @@ lepes_ellenorzes() {
     # kevés a tárhely: a telepítéshez letöltött csomagfájlok törlése (a telepített programok maradnak)
     apt-get clean >/dev/null 2>&1 || true
     ok "Letöltött csomagfájlok törölve – szabad hely: $(szabad_gb) GB"
-    AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul"
+    muvelet "várakozás, amíg a BaninaPRO teljesen elindul"
     for i in $(seq 1 60); do
         fut ellenorzo_lekeres || true
         kod="$(cat "$TMPD/kod" 2>/dev/null || true)"
@@ -3956,10 +4069,10 @@ lepes_ellenorzes() {
             fut timeout 180 docker restart "$APP_KONTENER" || true
             adatbazis_rendbe || true
         fi
-        AKT_MUVELET="várakozás, amíg a BaninaPRO teljesen elindul ($i. próba)"
+        muvelet "várakozás, amíg a BaninaPRO teljesen elindul ($i. próba)"
         varj 3
     done
-    AKT_MUVELET=""
+    muvelet ""
 
     if [[ $kod != 200 ]]; then
         kontener_naplok
@@ -4069,7 +4182,7 @@ lepes_ellenorzes() {
 
     # az e-mail most lett beállítva: próba-jelentés – ha nem megy el, a beállítást törli, és a következő futás újra kérdez
     if (( EMAIL_UJ )); then
-        AKT_MUVELET="próba-jelentés küldése e-mailben"
+        muvelet "próba-jelentés küldése e-mailben"
         if fut "$JELENTO" proba; then
             ok "Próba-jelentés elküldve: $JELENTES_CIMZETT (feladó: $JELENTES_FELADO)"
         else
@@ -4077,7 +4190,7 @@ lepes_ellenorzes() {
             JELENTES_FELADO=""
             figy "A próba-e-mail nem ment el (a feladó-postafiók címe, jelszava vagy SMTP-szervere hibás?) – a beállítást töröltem, a script következő futása újra megkérdezi."
         fi
-        AKT_MUVELET=""
+        muvelet ""
     fi
 }
 
@@ -4126,17 +4239,18 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     AKT_LEPES="összegzés" AKT_ROVID="összegzés"
     if (( rc == 0 )); then
         if command -v anydesk >/dev/null; then
-            AKT_MUVELET="AnyDesk azonosító lekérése"
+            muvelet "AnyDesk azonosító lekérése"
             for i in 1 2 3; do
                 fut sh -c 'timeout 15 anydesk --get-id > "$1" 2>/dev/null' _ "$TMPD/anydesk_id" || true
                 id="$(tr -dc '0-9' < "$TMPD/anydesk_id" 2>/dev/null || true)"
                 if [[ -n $id && $id != 0 ]]; then break; fi
                 varj 5
             done
-            AKT_MUVELET=""
+            muvelet ""
         fi
         kesz_sav
     fi
+    eletjel_le   # (innentől csak az összegzés és az esetleges kérdés jön)
 
     cim "ÖSSZEGZÉS"
     i=0
@@ -4239,9 +4353,9 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     if (( UJRAINDITAS )); then
         ki ""
         ki "  Újraindítás kell: utána indul az asztal, a magyar nyelv és az automatikus belépés."
-        if [[ -t 0 ]]; then
+        if [[ -t 6 ]]; then
             printf '  Újraindítsam most? [I/n] (60 mp múlva magától igen): ' >&3
-            read -r -t 60 v || true
+            read -r -t 60 -u 6 v || true
             printf '\n' >&3
             if [[ ! $v =~ ^[nN] ]]; then
                 info "Újraindítás…"
@@ -4282,6 +4396,7 @@ kilepeskor() {
     local rc=$?
     set +eu
     trap - ERR
+    eletjel_le
     torol
     if (( rc != 0 && ! OSSZEGZES_KESZ && AKT_I > 0 )); then osszegzes "$rc"; fi
     rm -rf "$TMPD"
@@ -4310,11 +4425,13 @@ main() {
         exit 1
     fi
     naplo_inditas
+    billentyuzet_beallitas
     kepernyo_beallitas
     TMPD="$(mktemp -d)"
     APT_ALLAPOT="$TMPD/apt_allapot"
     trap kilepeskor EXIT
     LEPES_KEZDET=$SECONDS
+    eletjel_indit
     printf '\n\n######## %s – futás indul ########\n' "$(date '+%Y-%m-%d %H:%M:%S')"
     printf '\n%sBaninaPRO szerver – telepítés és frissítés%s  (%s)\n' "$C_F" "$C_N" "$(date '+%Y-%m-%d %H:%M')" >&3
     # Amíg a telepítő dolgozik, az őrszem ne avatkozzon be (ugyanezt a zárat fogja). Ha épp most dolgozik – egy
@@ -4329,7 +4446,9 @@ main() {
 
     elofeltetelek
     frissites_elokeszites "$@"
+    eletjel_le      # (a kérdések alatt ne rajzoljon a beírt szöveg sorába)
     kerdesek
+    eletjel_indit
     lepesek_listaja
     futtat_lepesek
     osszegzes 0
