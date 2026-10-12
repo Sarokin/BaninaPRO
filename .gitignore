@@ -31,6 +31,9 @@ BaninaPRO_WEB/
 tests/
 docker-compose.teszt.yml
 
+# A könyvelőprogram (IB System) Excel-exportjai (éles üzleti adatok: partnerek, összegek) – csak helyben, teszteléshez
+SERVER SETUP AND UPDATE/*.xlsx
+
 # SQL-mentések / exportok (éles adatok!) – a repó nyilvános, ilyen fájl soha nem kerülhet bele.
 # (Az egyetlen kivétel a séma: sql/schema.sql – lásd fent.)
 *.sql

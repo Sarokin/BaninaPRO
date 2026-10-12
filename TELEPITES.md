@@ -36,7 +36,7 @@ baninapro/
 │   ├── pdf.php            – saját PDF-író (A4, beágyazott TrueType betűk, táblázatok oldaltöréssel) – nincs külső könyvtár
 │   ├── backup.php         – adatbázis-mentés / visszaállítás (mysqldump nélkül, tiszta PHP)
 │   ├── xlsx.php           – saját .xlsx olvasó (zip-bővítmény sem kell)
-│   ├── import.php         – Excel import: formátum-felismerés, elemzés, felügyelt cégegyeztetés (≥ 55 %), ütközések, rögzítés
+│   ├── import.php         – Excel import: formátum-felismerés, elemzés, felügyelt cégegyeztetés (≥ 55 %), megfeleltetés a meglévő számláknak, eltérések javítása, ütközések, rögzítés
 │   ├── api_import.php     – import API (cégcsoportok, adagolt rögzítés) + archív számlák kötésbe helyezése + régi kötés ID ellenőrzés
 │   ├── api_kereses.php    – a főoldali kereső (azonosító, számlaszám, cég, régi K, összeg, dátum – töredékre is)
 │   ├── api_reszteljesites.php – részteljesítések (nyitott bejövő/kimenő számlára érkezett részfizetések, hátralék)
@@ -467,7 +467,7 @@ minden művelet előtt (`includes/jogok.php`), a felület csak azt mutatja, amit
 | Szerepkör | Mit tehet |
 |---|---|
 | **Admin** | Mindent láthat és módosíthat, minden adminjoggal rendelkezik: felhasználók, eszközök, beállítások, napló, DB-mentés / visszaállítás, cron-kulcs. |
-| **Irodavezető** | Minden adatművelet: felvitel, szerkesztés, **törlés** is, utalás visszanyitása, fizetés visszavonása, Excel import. Adminjoga nincs: nem adhat hozzá felhasználót, nem végezhet biztonsági műveletet (más eszközeinek törlése, regisztrációs kód), DB-visszaállítást, beállítás-módosítást. |
+| **Irodavezető** | Minden adatművelet: felvitel, szerkesztés, **törlés** is, utalás visszanyitása, fizetés visszavonása, Excel import – a meglévő számlák Excel szerinti javításával együtt (1.22). Adminjoga nincs: nem adhat hozzá felhasználót, nem végezhet biztonsági műveletet (más eszközeinek törlése, regisztrációs kód), DB-visszaállítást, beállítás-módosítást. |
 | **Rögzítő** | Új adatot felvihet (cég, kötés, számla, utalás, részteljesítés, import), a meglévőket szerkesztheti, utaláshoz adhat, utalást teljesíthet, kimenő számlát fizetve-re állíthat. **Semmit nem törölhet** (számla, kötés, utalás, részteljesítés, visszavonások). A más által írt megjegyzést nem írhatja át és nem törölheti, csak hozzáfűzhet. Csak a saját eszközeit és jelszavát kezelheti. |
 | **Üzletkötő** | Mindent lát és megnézhet, szűrhet, keres, PDF-et készít bármiről. **Nem vihet fel, nem módosít, nem töröl** semmit. Két kivétel: a bejövő számla **BESZÁM** mezőjét beírhatja, ha üres, és módosíthatja, de üresre nem állíthatja; a **megjegyzés** rovatokhoz (cég, kötés, számla, utalás) hozzáfűzhet – a más által írt szöveg érintetlen marad. A ceruza gomb nála csak ezt a két mezőt nyitja meg. |
 
@@ -593,6 +593,20 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.21.2-ről 1.22.0-ra (az Excel import a meglévő számlákat is egyezteti, és kapcsolóval javítja):** adatbázis-módosítás nincs.
+A könyvelőprogram (IB System) „Számla napló” exportja naponta többször is feltölthető: a rendszer megfelelteti a
+sorokat a meglévő számláknak (kimenőnél a számlaszám, bejövőnél a számlaszám + cég), és ha a rendszerben lévő számla
+**összege vagy dátuma eltér**, az import oldalán lévő **„Eltérés esetén melyik a mérvadó?” kapcsoló** dönt:
+*Adatbázis* (alap) – a meglévő számla marad, csak az újak kerülnek be; *Import* – Irodavezető / Admin számára a meglévő
+számla az Excel szerinti értéket kapja (összeg, teljesítés, fizetési határidő, kelt – a 2. lépésben szűkíthető); a régi
+érték a változásnaplóban megmarad. Az új sor figyelmeztetést kap, ha ugyanannál a cégnél azonos összegű és dátumú
+számla már van más számlaszámmal. A cégeket a rendszer a már meglévő
+számláik és az adószám (EU adószám is) alapján is felismeri, a párosítást megjegyzi. Javítva: az ép adatbázis-mentést
+az ellenőrzés időnként „csonkának” látta (ékezetes karakter a fájlvég határán), ettől az éjszakai mentés vagy az
+import előtti mentés hibával megállt. Részletek: 9. fejezet. Töltsd fel a frissített `includes/import.php`,
+`includes/api_import.php`, `includes/backup.php`, `import.php`, `assets/app.js`, `assets/app.css`,
+`includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.21.1-ről 1.21.2-re (a főoldalon látszik a futó verzió száma):** adatbázis-módosítás nincs.
 A főoldalon a kereső tájékoztató szövege alatt apró, szürke betűvel mindig ott a futó verzió (pl. „BaninaPRO 1.21.2”).
@@ -826,15 +840,23 @@ a tárhelyen megvannak. Ha a tárhely is odaveszett: az admin felületről rends
 * Minden mentés, letöltés, feltöltés, törlés és visszaállítás naplózódik (`DB_MENTES`, `DB_VISSZAALLITAS`, …).
 * Jó szokás: havonta egyszer tölts le egy mentést a saját gépedre is (a tárhely hibája ellen).
 
-## 9. Régi adatok felvitele Excelből (import)
+## 9. Számlák felvitele és egyeztetése Excelből (import)
 
-Menü → **Excel import (régi adatok)**. Kétféle .xlsx fájlt fogad el, a felépítést **magától felismeri** (az első
-adatot tartalmazó munkalapot olvassa; a diagram-lapokat átugorja). Minden felhasználó importálhat.
+Menü → **Excel import (számlák)**. Kétféle .xlsx fájlt fogad el, a felépítést **magától felismeri** (az első
+adatot tartalmazó munkalapot olvassa; a diagram-lapokat átugorja). Rögzítő, Irodavezető és Admin importálhat; a
+rendszerben már meglévő számlát az Excel alapján csak **Irodavezető vagy Admin** javíthat.
 
-**A) Számlanapló** – a könyvelőprogram „Számla napló” exportja; egy fájlban lehet bejövő és kimenő, EUR és HUF sor is.
+**Napi egyeztetés a könyvelőprogramból (1.22):** az IB System „Számla napló” exportja akárhányszor feltölthető –
+pl. minden nap elején és végén; bejövő (BE / BH) és kimenő (KE / KH) sorokat is. A rendszer minden sorhoz **megkeresi
+a már meglévő számlát**: ami megvan és egyezik, kimarad; ami új, bekerül; ami megvan, de **más az összege vagy a
+dátuma**, annál az import oldalán lévő **kapcsoló** dönt (lásd lent: *Eltérés esetén melyik a mérvadó?*). Így a régi
+(DOS-ból átvett) adatok pontatlanságai és a reggel még elírt, estére a könyvelőprogramban kijavított számlák is
+helyreállnak – ha a kapcsoló az *Import* oldalon áll.
+
+**A) Számlanapló** – a könyvelőprogram (IB System) „Számla napló” exportja; egy fájlban lehet bejövő és kimenő, EUR és HUF sor is.
 Oszlopok: **A** irány (BE = bejövő EUR, BH = bejövő HUF, KE = kimenő EUR, KH = kimenő HUF) ·
 **B** tárgyév · **C** sorszám · **D** bejövő számlaszám (szabadkezes) · **J** kelt · **K** teljesítés · **M** fizetési határidő ·
-**N** partnerkód · **O** cég neve · **P** adószám (ha van) · **Z** bruttó összeg devizában · **AA** deviza (ellenőrzés) ·
+**N** partnerkód · **O** cég neve · **P** adószám · **Q** EU adószám (ha van) · **Z** bruttó összeg devizában · **AA** deviza (ellenőrzés) ·
 **AB** megjegyzés. Kimenő számla számlaszáma: **A-C/B** (pl. `KE-41/2026`). A fejléc- és összesítő sorok (ahol az A
 oszlop nem BE/BH/KE/KH) automatikusan kimaradnak. Dátum lehet `2026.01.06` vagy Excel-dátum is.
 
@@ -845,34 +867,83 @@ Fizetési határidő a kötéskönyvben nincs: a 2. lépésben megadható, hogy 
 FIZETENDŐ-ként importált számláknál számít). A fejléc, az üres és a csak sorszámot tartalmazó sorok kimaradnak; ha az
 F oszlop nem dátum, a kelt kerül a teljesítésbe (figyelmeztetéssel); ha az I oszlopban szöveg van, az a megjegyzésbe kerül.
 
-**1. lépés – elemzés (semmi nem íródik):** minden sor státuszt kap:
-*új* (importálható) · *már megvan* (ugyanez a számlaszám ugyanannál a cégnél már a rendszerben van → kimarad, ezért
-a fájl bármikor újra feltölthető) · *máshol szerepel* (ugyanaz a számlaszám másik cégnél / másik irányban – 1.9-től
-alapból változatlanul importálható, mert csak kötésen belül egyedi a számlaszám) · *dupla* (ugyanaz a sor kétszer a fájlban) · *hibás* (hiányzó dátum/összeg/cég, eltérő deviza).
+**1. lépés – elemzés (számla, cég nem íródik és nem módosul):** minden sor státuszt kap:
+*új* (importálható) · *már megvan* (a számla már a rendszerben van, és egyezik az Excellel → kimarad, ezért
+a fájl bármikor újra feltölthető) · *eltér* (a számla megvan, de az összege, a teljesítés, a fizetési határidő vagy a
+kelt más, mint az Excelben – a sor mutatja a régi és az új értéket) · *máshol szerepel* (ugyanaz a bejövő számlaszám
+másik cégnél, vagy a másik irányban – 1.9-től alapból változatlanul importálható, mert csak kötésen belül egyedi a
+számlaszám) · *dupla* (ugyanaz a sor kétszer a fájlban) · *hibás* (hiányzó dátum/összeg/cég, eltérő deviza).
+**A megfeleltetés:** a *kimenő* számlát a számlaszáma azonosítja (`KE-41/2026` – a kimenők között egyedi), bármelyik
+cégnél van; ha a rendszerben másik cégnél szerepel, mint az Excelben, a sor figyelmeztetést kap (a cég nem íródik
+át). A *bejövő* számlát a számlaszám **és** a cég együtt azonosítja. A toldalékkal rögzített számlaszám
+(`2026/0004 [10081]`) a toldalék nélküli számra is megtalálható. Ha több számla is illik egy sorra (pl. ugyanaz a
+bejövő számlaszám a cég két kötésében), a rendszer nem javít, csak jelez. Ha egy *új* sorhoz ugyanannál a cégnél
+**azonos összegű és dátumú** (teljesítés vagy kelt) számla már van a rendszerben más számlaszámmal, amelyet a fájl
+egyetlen sora sem talált meg: ha pontosan egy ilyen van, és a számlaszáma csak a **bevezető nullákban** tér el
+(a DOS-ból `26/0001`, `000232`; az Excelben `26/001`, `232`), az **ugyanaz a számla** – a sor „már megvan” / „eltér”
+lesz (a számlaszám írásmódja javítható eltérésként jelenik meg); különben a sor figyelmeztetést kap („lehet, hogy
+már megvan más számlaszámmal: …”) – pl. a DOS-ból `4/2026`, az Excelben `4/26`; ilyenkor nézd meg, és ha ugyanaz,
+vedd ki a pipát.
 Legfeljebb 20 000 adatsor egy fájlban; az elemzés 2 óráig él (utána újra fel kell tölteni).
 
 **Cégek egyeztetése (felügyelet, hogy ne jöjjön létre kétszer ugyanaz a cég):** a fájl cégneveit a rendszer a
-meglévő cégekhez párosítja, sorrendben: **partnerkód** (N) → **pontos név** → **hasonló név**. A hasonlóságot
+meglévő cégekhez párosítja, sorrendben: **a számlái** (ha legalább 90 %-uk egy cégnél van) → **megjegyzett
+párosítás** → **partnerkód** (N) → **a számlái** (60–89 %) → **adószám** (P / Q) → **pontos név** → **hasonló név**.
+*A számlái:* ha a fájlbeli cég számlái már a rendszerben vannak, az a cég az övé, amelyiknél vannak – ez akkor is
+működik, ha a könyvelőprogram partnerkódja és névírása más, mint a rendszerben (a DOS-ból átvett cégeknél jellemzően
+az), és ez a legerősebb bizonyíték. Az így biztosan (≥ 90 %) felismert, valamint az importtal jóváhagyott párosítást a
+rendszer **megjegyzi** (partnerkód → cég; kód nélküli partnernél a név) – **irányonként külön**, mert a DOS-ból átvett
+cégek között ugyanaz a partner a bejövő és a kimenő oldalon két külön cég lehet (pl. *Sawari Fresh Int.bv.* a bejövő,
+*SAWARI FRESH INTERNATIONAL B.V.* a kimenő számlákkal) –, ezért a partner későbbi, még ismeretlen számlái is a jó
+céghez kerülnek. Ha a megjegyzett párosítás / kód / adószám szerinti cég nem az, amelyiknél a számlák vannak, a
+csoport „bizonytalan” jelzést kap, és a másik cég a legördülő elején áll. (Biztonsági háló: ha egy bejövő számlaszám
+ugyanazzal az összeggel és dátummal egy másik cégnél már megvan – pl. a DOS-ban az alvállalkozó, a könyvelőprogramban
+a számlázó cég neve alatt –, a sor „már megvan” / „eltér” lesz, figyelmeztetéssel, a cég nem íródik át – nem kerül be
+duplán.) A hasonlóságot
 normalizált névvel számolja (kis/nagybetű, ékezet, írásjel, cégforma – Kft., Zrt., B.V., s.r.o., d.o.o., GmbH… –
 nem számít, a „sped / trans / fresh / logisztika”-féle általános szavak kevesebbet nyomnak), és ha az egyezés
 **eléri az 55 %-ot**, a névváltozatot **a meglévő céghez javasolja** (pl. `ASICA` → *Asica Group B.V.*), nem hoz
 létre új céget. A fájlon belüli hasonló írásmódokat (`Dole Europe`, `DOLE EUROPE B.V.`) is **egy csoportba** vonja.
 A „Cégek egyeztetése” kártya minden csoportnál mutatja a névváltozatokat (chipek), a sorok számát, a párosítás
-alapját és százalékát (✓ zöld = egyértelmű: partnerkód vagy pontos név; **? sárga = bizonytalan**: csak hasonló
-név alapján párosítva, vagy a fájlon belül 95 % alatti egyezéssel összevonva), és egy legördülőt:
+alapját és százalékát (✓ zöld = egyértelmű: megjegyzett párosítás, partnerkód, a számlái, adószám vagy pontos név;
+**? sárga = bizonytalan**: csak hasonló név alapján párosítva, a számlái 90 %-nál kisebb arányban vannak egy cégnél,
+vagy a fájlon belül 95 % alatti egyezéssel összevonva), és egy legördülőt:
 *Új cég létrehozása* (a név átírható) · *Hasonló meglévő cégek* (százalékkal) · *Minden meglévő cég* ·
 *Ugyanaz, mint a fájl másik csoportja* (két csoport összevonása). Egy tévesen összevont névváltozat a chip **×**
 jelével leválasztható külön csoportba. A szűrők (*Bizonytalan / Új cég / Meglévő / Mind*) segítik az átnézést; a
 kézi döntés után a sorok státusza azonnal újraszámolódik. Az indításkor a rendszer figyelmeztet, ha maradt
 bizonytalan csoport. A nem talált cég a jóváhagyott néven létrejön (partnerkóddal, adószámmal, ha van).
 
-**2. lépés – jóváhagyás:** a sorok pipálhatók (alapból az „új” sorok), szűrhetők; beállítások: bejövő számlák
+**2. lépés – jóváhagyás:** a sorok pipálhatók (alapból az „új” sorok és – Irodavezetőnél / Adminnál – a javítható
+„eltér” sorok), szűrhetők; beállítások: bejövő számlák
 státusza (FIZETENDŐ vagy FIZETVE – régi, rendezett tételekhez), kimenő státusza (NYITOTT vagy FIZETVE – ekkor
 `IMPORT-dátum` banki azonosítót kapnak), kötéskönyvnél a határidő napok száma, a máshol már szereplő számlaszámok
 kezelése (alapból **importálás változatlanul** – 1.9-től másik kötésben ugyanaz a számlaszám megengedett; vagy
 kihagyás; vagy importálás toldalékkal: a számlaszám végére kerül a partnerkód – ha nincs, a cégnév eleje –
 szögletes zárójelben, pl. `2026/0004 [10081]`). Egy kötésen belül (ARCHÍV kötés cégenként / régi ID szerinti kötés)
 egy számlaszám csak egyszer kerülhet be – az ilyen sort az import kihagyja, és jelzi.
+**Eltérés esetén melyik a mérvadó? (1.22, kapcsoló):** az import oldalán – már az 1. lépésben, a fájl kiválasztása
+előtt, és a 2. lépés Beállításai között is – egy **csúszka** áll a két választás között:
+* **Adatbázis** (alapállás): ami már megvan a rendszerben, az **változatlan marad** akkor is, ha az Excelben más az
+  összege vagy a dátuma; az import csak az új számlákat viszi be. Az „eltér” sorok ilyenkor csak tájékoztatnak (a régi
+  és az új értéket mutatják), nem pipálhatók.
+* **Import**: a meglévő számla **az Excel szerinti értéket kapja**. Alatta pipálható, mit írjon át az import (alapból
+  mind): **Összeg**, **Teljesítés**, **Fizetési határidő**, **Számla kelte**, **Számlaszám írásmódja** (a lazán
+  megtalált számlánál, lásd fent: `26/0001` → `26/001`) – a számok mutatják, hány számla tér el az adott adatban. Amit
+  nem pipálsz be, abban az eltérés nem számít (a sor „már megvan” marad).
+
+A kapcsoló állása és a pipák a böngészőben megmaradnak, így a napi egyeztetéshez elég egyszer *Import*-ra állítani.
+Csak **Irodavezető / Admin** kapcsolhat *Import*-ra; Rögzítőnél a kapcsoló tiltva, mindig az adatbázis a mérvadó
+(nála az „eltér” sorok kimaradnak). A javítás a számla státuszától függetlenül megtörténik – a már rendezett (FIZETVE
+/ BESZÁMÍTVA) számlán is, amelynek az összegét a kézi szerkesztés nem engedi átírni; az indítás előtti ablak kiírja a
+kapcsoló állását és azt, hány rendezett számla érintett. Minden javítás bekerül a számla **változásnaplójába**
+(„Excel import” – régi → új érték) és a tevékenységnaplóba (`EXCEL_JAVITAS`). Nem javít automatikusan, hanem a sorban
+jelzi az okot, ha: az új összeg nem nagyobb a számlára már felvezetett részteljesítéseknél; bejövő számlánál az előjel
+is más (a státusz ettől függ); a fájlból hiányzó, pótolt dátumot nem veti össze. A megjegyzést és a céget az import
+meglévő számlán nem írja át.
+*Tudnivaló a DOS-ból átvett kimenő számlákról:* ezeknél a „kelt” a teljesítés napja (a DOS-ban nem volt külön kelt),
+ezért a könyvelőprogram exportjával összevetve szinte mindegyiken eltér a **Számla kelte** – a valódi kelt az
+Excelben van; a „Számla kelte” pipával egyszerre átírható.
 **Az import indításakor automatikusan teljes adatbázis-mentés készül** (`…_import_elott.sql` a DBBCKP mappában) –
 ezt csak az admin kapcsolhatja ki (Admin → Excel import kapcsoló), a felhasználók nem. A rögzítés **400 soros
 adagokban**, adagonként egy tranzakcióban történik (folyamatjelzővel), így egy több ezer soros kötéskönyv is
@@ -896,7 +967,7 @@ már használtad egy másik kötésnél, mentéskor felugró ablak sorolja fel, 
 **Mégse** (mindig aktív) és **Igen** (csak 5 másodperc után aktív) gombokkal. Ugyanez a mező az „Új kötés” /
 „Kötés szerkesztése” űrlapon is elérhető.
 
-Napló: `EXCEL_ELEMZES`, `EXCEL_IMPORT` (adagonként), `ARCHIV_ATHELYEZ`, `BEJOVO_IDOSZAK` (időszak-szűrés a cég
+Napló: `EXCEL_ELEMZES`, `EXCEL_IMPORT` (adagonként), `EXCEL_JAVITAS` (javított számlánként: mező, régi → új érték), `ARCHIV_ATHELYEZ`, `BEJOVO_IDOSZAK` (időszak-szűrés a cég
 oldalán – dátummező, -tól–ig, fül), `RESZTELJESITES` / `RESZTELJESITES_TOROL` (részteljesítés felvezetése / törlése – összeg, dátum, bank,
 hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 
@@ -923,6 +994,10 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| Excel import: az „eltér” sor nem pipálható | a mérvadó kapcsoló az **Adatbázis** oldalon áll (állítsd Import-ra) · Rögzítőként vagy: meglévő számlát csak Irodavezető / Admin javíthat · a sor eltérése olyan mezőben van, amely nincs bepipálva a „Mit írjon át az import” résznél · vagy a sor kézi javítást igényel (az okát kiírja: részteljesítés, előjel) |
+| Excel import: „lehet, hogy már megvan más számlaszámmal” figyelmeztetés egy új soron | ugyanannál a cégnél van egy azonos összegű és dátumú számla, amelyet a fájl egyetlen sora sem talált meg – nézd meg; ha ugyanaz a számla (pl. `4/2026` ↔ `4/26`), vedd ki a pipát, különben kétszer lesz bent |
+| Excel import: „a rendszerben másik cégnél szerepel” figyelmeztetés | a kimenő számla megvan, de nem annál a cégnél, ahová az Excel sorolja – az összegét az import így is javítja, a céget nem írja át; nézd meg, melyik a helyes |
+| „A mentésfájl ellenőrzése sikertelen (csonka fájl)” – éjszakai mentésnél vagy import előtt, pedig van hely | 1.22 előtti hiba: az ép mentést is csonkának látta, ha a fájl utolsó 4096 bájtja egy ékezetes betű közepén kezdődött – frissíts 1.22-re (`includes/backup.php`) |
 | „A részteljesítés nem lehet nagyobb vagy egyenlő a számla hátralékánál” | részteljesítés csak a hátraléknál kisebb összeg lehet; a teljes hátralékot a rendes úton rögzítsd (kimenő: bankkivonati azonosító, bejövő: utalás teljesítése) |
 | Részteljesítés nem vezethető fel / nincs + gomb | csak nyitott számlára lehet (bejövő FIZETENDŐ, kimenő NYITOTT) és csak pozitív összegűre; az utalásban lévő számlát előbb vedd ki az utalásból |
 | „Duplicate column name 'fizetve_datum'” a frissítő SQL-nél | a frissites_1.8.sql már lefutott – nem kell újra (a részteljesítés tábla `CREATE TABLE IF NOT EXISTS`, az nem hibázik) |
@@ -957,4 +1032,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.21.2 (2026-10-11)
+Verzió: 1.22.0 (2026-10-12)

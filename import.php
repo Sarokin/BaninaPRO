@@ -1,8 +1,8 @@
 <?php
 /**
- * BaninaPRO – Excel (.xlsx) számlanapló feltöltése és elemzése (régi adatok importja)
+ * BaninaPRO – Excel (.xlsx) számlanapló feltöltése és elemzése (számlák importja és egyeztetése)
  *   POST multipart: fajl=<xlsx>, fejléc: X-CSRF-Token   (bejelentkezve)
- *   Válasz: {ok, adat: {token, elemzes}} – az elemzés még semmit nem ír az adatbázisba.
+ *   Válasz: {ok, adat: {token, elemzes}} – az elemzés számlát, céget még nem ír és nem módosít.
  */
 declare(strict_types=1);
 
@@ -41,10 +41,11 @@ try {
     }
     $t0 = microtime(true);
     $el = import_elemez($f['tmp_name'], mb_substr($nev, 0, 120, 'UTF-8'));
+    import_parositas_ment($el['parositas_biztos']);   // a számlák alapján felismert partnerkód → cég párosítások (üzleti adat nem változik)
     $token = import_ment($el);
     $teljes = import_sorok_allapot($el);
     $o = $teljes['osszesites'];
-    naplo('EXCEL_ELEMZES', "$nev ({$el['formatum']}): " . count($teljes['sorok']) . " adatsor (új {$o['uj']}, meglévő {$o['letezik']}, ütköző {$o['utkozik']}, dupla {$o['dupla']}, hibás {$o['hiba']}; cégcsoportok: " . count($el['csoportok']) . ', új ' . $teljes['ceg_osszesites']['uj'] . ', bizonytalan ' . $teljes['ceg_osszesites']['bizonytalan'] . '), ' . round((microtime(true) - $t0) * 1000) . ' ms');
+    naplo('EXCEL_ELEMZES', "$nev ({$el['formatum']}): " . count($teljes['sorok']) . " adatsor (új {$o['uj']}, meglévő {$o['letezik']}, eltérő {$o['elter']}, ütköző {$o['utkozik']}, dupla {$o['dupla']}, hibás {$o['hiba']}; cégcsoportok: " . count($el['csoportok']) . ', új ' . $teljes['ceg_osszesites']['uj'] . ', bizonytalan ' . $teljes['ceg_osszesites']['bizonytalan'] . '), ' . round((microtime(true) - $t0) * 1000) . ' ms');
     ok(['token' => $token, 'elemzes' => import_kliens_nezet($teljes), 'mentes_kell' => import_mentes_kell()], ['csrf' => csrf_token()]);
 } catch (ApiError $e) {
     json_valasz(['ok' => false, 'hiba' => $e->getMessage(), 'kod' => $e->kod, 'extra' => $e->extra, 'csrf' => session_status() === PHP_SESSION_ACTIVE ? csrf_token() : ''], $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400);

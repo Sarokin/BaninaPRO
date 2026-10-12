@@ -700,6 +700,41 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .import-sor .alsor.uzenet.utkozik { color: var(--sarga-szoveg); }
 .import-sor .alsor.uzenet.hiba { color: var(--piros-2); }
 .import-sor .alsor.uzenet.figy { color: var(--narancs-2); font-weight: 500; }
+.import-sor .alsor.uzenet.elter { color: var(--sarga-szoveg); align-items: center; }
+/* eltérés a meglévő számlától: régi (a rendszerben) → új (az Excelben) */
+.import-sor .alsor.elteres { align-items: baseline; font-size: 13.5px; color: var(--tinta); font-variant-numeric: tabular-nums; }
+.import-sor .alsor.elteres .mezo-nev { font-weight: 700; color: var(--szoveg-2); }
+.import-sor .alsor.elteres s { color: var(--piros-2); }
+.import-sor .alsor.elteres b { color: var(--zold); white-space: nowrap; }
+.import-sor .alsor.elteres .nyil { color: var(--halvany); }
+.import-sor .alsor.elteres .akadaly { color: var(--narancs-2); font-weight: 600; }
+.import-sor .alsor.elteres.inaktiv s, .import-sor .alsor.elteres.inaktiv b { color: var(--halvany); font-weight: 600; }
+.import-javit { display: flex; flex-wrap: wrap; gap: 0 20px; }
+.import-javit .jelolo { display: flex; margin: 0; font-size: 14.5px; font-weight: 600; color: var(--tinta); text-transform: none; letter-spacing: 0; }
+.import-javit .jelolo b { font-variant-numeric: tabular-nums; }
+.info-doboz.import-egyezik { display: flex; gap: 8px; align-items: center; background: var(--zold-tint); border-color: rgba(1,127,1,.3); }
+.info-doboz.import-egyezik svg { flex: none; width: 20px; height: 20px; color: var(--zold); }
+/* „Mérvadó” kapcsoló (1.22): csúszka, két oldalán a két választás – Adatbázis (szürke) ⟷ Import (zöld) */
+.mervado { border: 1.5px solid var(--vonal); border-radius: var(--radius-sm); padding: 12px 14px; margin: 12px 0; background: var(--felulet-2); }
+.mervado.import { border-color: rgba(1,127,1,.35); background: var(--zold-tint); }
+.mervado-cim { font-weight: 800; font-size: 15px; margin-bottom: 8px; text-align: center; }
+.mervado-kapcsolo { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.mervado-kapcsolo .oldal { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 999px; border: 0; background: none; font: inherit; font-size: 15px; font-weight: 700; color: var(--halvany); cursor: pointer; transition: color var(--gyors), transform var(--gyors); }
+.mervado-kapcsolo .oldal svg { width: 18px; height: 18px; }
+.mervado-kapcsolo .oldal.aktiv { color: var(--tinta); font-weight: 900; }
+.mervado.import .oldal.aktiv { color: var(--zold); }
+.mervado-kapcsolo .oldal:active { transform: scale(.96); }
+.mervado-kapcsolo .oldal:disabled { cursor: not-allowed; }
+.csuszka { position: relative; display: inline-flex; flex: none; width: 60px; height: 34px; cursor: pointer; }
+.csuszka input { position: absolute; opacity: 0; width: 0; height: 0; }
+.csuszka .palya { position: absolute; inset: 0; border-radius: 999px; background: var(--halvany); transition: background var(--gyors); }
+.csuszka .golyo { position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,.25); transition: transform var(--kozepes) var(--ease); }
+.csuszka input:checked + .palya { background: var(--gr-kiemelt); }
+.csuszka input:checked + .palya .golyo { transform: translateX(26px); }
+.csuszka input:focus-visible + .palya { outline: 3px solid rgba(1,127,1,.35); outline-offset: 2px; }
+.csuszka.tiltott { opacity: .45; cursor: not-allowed; }
+.mervado .segit { margin-top: 8px; }
+.import-opciok .mervado { margin-top: 0; }
 .import-sor .osszeg { font-weight: 900; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
 .import-sor .osszeg.negativ { color: var(--piros); }
 .kijelolo.tiltott { opacity: .3; cursor: not-allowed; }

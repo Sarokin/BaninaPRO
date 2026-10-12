@@ -6,14 +6,14 @@ require_once __DIR__ . '/audit.php';
 require_once __DIR__ . '/backup.php';
 
 // ---------------------------------------------------------------------------
-//  EXCEL IMPORT (régi adatok) + archív kötések kezelése
+//  EXCEL IMPORT (számlák felvitele és egyeztetése) + archív kötések kezelése
 // ---------------------------------------------------------------------------
 
 /** Import oldal állapota: kell-e import előtti mentés, korlátok */
 function act_import_allapot(array $be): array
 {
     $u = csak_bejelentkezve();
-    return ['mentes_kell' => import_mentes_kell(), 'admin' => $u['szerep'] === 'admin', 'max_sor' => IMP_MAX_SOR,
+    return ['mentes_kell' => import_mentes_kell(), 'admin' => $u['szerep'] === 'admin', 'javithat' => jog_van('torol', $u), 'max_sor' => IMP_MAX_SOR,
             'max_feltoltes' => ini_get('upload_max_filesize'), 'lejarat_perc' => (int)(IMP_LEJARAT_MP / 60)];
 }
 
@@ -39,7 +39,7 @@ function act_import_csoportok(array $be): array
 }
 
 /**
- * A kiválasztott sorok rögzítése – adagokban (a kliens több kérésben küldi a sorokat).
+ * A kiválasztott sorok rögzítése és az eltérő meglévő számlák javítása – adagokban (a kliens több kérésben küldi a sorokat).
  *   elso = true: előtte (ha be van kapcsolva) teljes DB-mentés; utolso = true: az elemzés törlése.
  * Minden adag külön tranzakció.
  */
@@ -74,6 +74,7 @@ function act_import_vegrehajt(array $be): array
     $r['fajl'] = $el['fajl'];
     $r['uj_kotesek_db'] = count($r['uj_kotesek']);
     $r['uj_kotesek'] = array_slice($r['uj_kotesek'], 0, 30);
+    $r['javitasok'] = array_slice($r['javitasok'], 0, 30);
     return $r;
 }
 

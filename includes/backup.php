@@ -294,17 +294,19 @@ function db_mentes_info(string $ut): array
     $tablak = null;
     $sorok = null;
     $teljes = false;
-    if (preg_match('/^' . preg_quote(BK_LABLEC, '/') . ': (\d+) tábla, (\d+) sor/mu', $vege, $m)) {
+    // A minták bájtonként illesztenek (nincs „u” módosító): a fájl eleje / vége egy ékezetes karakter közepén is
+    // elvágódhat, és az érvénytelen UTF-8 miatt a teljes, ép mentés is „csonkának” látszott (1.22-ig).
+    if (preg_match('/^' . preg_quote(BK_LABLEC, '/') . ': (\d+) tábla, (\d+) sor/m', $vege, $m)) {
         $teljes = true;
         $tablak = (int)$m[1];
         $sorok = (int)$m[2];
     }
     $keszult = null;
-    if (preg_match('/^-- Készült: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/mu', $eleje, $m)) {
+    if (preg_match('/^-- Készült: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/m', $eleje, $m)) {
         $keszult = $m[1];
     }
     $verzio = null;
-    if (preg_match('/^-- Alkalmazás: BaninaPRO ([0-9.]+)/mu', $eleje, $m)) {
+    if (preg_match('/^-- Alkalmazás: BaninaPRO ([0-9.]+)/m', $eleje, $m)) {
         $verzio = $m[1];
     }
     return ['sajat' => $sajat, 'teljes' => $teljes, 'tablak' => $tablak, 'sorok' => $sorok, 'keszult' => $keszult, 'verzio' => $verzio, 'meret' => $meret];
