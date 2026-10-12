@@ -1046,7 +1046,7 @@ frissites_elokeszites() {
     local elotte utana
     if docker_valaszol && [[ $(timeout 30 docker inspect -f '{{.State.Running}}' "$APP_KONTENER" 2>/dev/null || true) == true ]]; then
         muvelet "adatbázis-mentés"
-        if fut timeout 1800 docker exec "$APP_KONTENER" php -q cron_mentes.php; then
+        if fut timeout 1800 docker exec -u "$WWW_UID" "$APP_KONTENER" php -q cron_mentes.php; then
             ok "Adatbázis-mentés a frissítés előtt: $(tail -n 1 "$NAPLO")"
             # (egy korábbi telepítés mentő-segédje: a mentés a gép saját lemezére is)
             if [[ -x $MENTO ]]; then fut "$MENTO" masol || true; fi
@@ -2706,7 +2706,7 @@ mentesbol_visszaallitas() {
     info "Az adatbázis üres, de van korábbi mentés: $nev ($sorok sor) – visszaállítom…"
     muvelet "az adatbázis visszaállítása a mentésből ($nev)"
     kezdet="$(naplo_meret)"
-    if fut timeout 3600 docker exec "$APP_KONTENER" php -q cron_mentes.php vissza "$nev"; then
+    if fut timeout 3600 docker exec -u "$WWW_UID" "$APP_KONTENER" php -q cron_mentes.php vissza "$nev"; then
         VISSZAALLITVA="$nev"
         figy "Az adatbázis üres volt – visszaállítottam a legfrissebb mentésből: $nev (${ido:0:4}-${ido:4:2}-${ido:6:2} ${ido:9:2}:${ido:11:2}, $sorok sor). Ha üres adatbázissal akartál indulni: sudo bash $(basename "$SCRIPT") --nincs-visszaallitas"
     else
@@ -2999,13 +2999,14 @@ lepes_mentes_cron() {
     cat > /etc/cron.d/baninapro <<EOF
 # BaninaPRO – napi teljes adatbázis-mentés, mint az éles cron (a szerver_beallitas.sh írta).
 # A mentések a Docker-kötetben vannak (lista: docker exec $APP_KONTENER php -q cron_mentes.php lista),
-# a legutóbbi $GEP_MENTES_DB a gép saját lemezén is: $GEP_MENTES
+# a legutóbbi $GEP_MENTES_DB a gép saját lemezén is: $GEP_MENTES – és ha írható pendrive van a gépben, azon is
+# (BaninaPRO-mentesek mappa; a másolást a BaninaPRO mappa DB_MENTES.sh scriptje végzi).
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 $MENTES_CRON root $MENTO
 EOF
     chmod 644 /etc/cron.d/baninapro
-    ok "Éjszakai adatbázis-mentés: minden nap 03:00, az eredményről push-értesítés (napló: /var/log/baninapro-mentes.log)"
+    ok "Éjszakai adatbázis-mentés: minden nap 03:00, másolat a gép lemezére és a bedugott pendrive-ra, push-értesítés (napló: /var/log/baninapro-mentes.log)"
     # a meglévő mentések másolata a gép saját lemezére (a Dockeren kívül)
     muvelet "a mentések másolása a gép saját lemezére"
     if fut "$MENTO" masol; then
@@ -3016,19 +3017,31 @@ EOF
     muvelet ""
 }
 
-# A mentő segéd: az éjszakai mentés (cron), és a mentések másolata a gép saját lemezére
+# A mentő segéd: az éjszakai mentés (cron), a mentések másolata a gép saját lemezére és a bedugott pendrive-ra.
+# A pendrive-másolást a repó DB_MENTES.sh scriptje végzi (egy helyen van a leírása; a gyors frissítéssel is frissül).
 mento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO adatbázis-mentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nERTESITO=%q\nKOTET=%q\nGEP_MENTES=%q\nGEP_MENTES_DB=%q\n' \
-            "$APP_KONTENER" "$ERTESITO" "$ADATOK_KOTET" "$GEP_MENTES" "$GEP_MENTES_DB"
+        printf 'APP_KONTENER=%q\nERTESITO=%q\nKOTET=%q\nGEP_MENTES=%q\nGEP_MENTES_DB=%q\nWWW_UID=%q\nPENDRIVE_SCRIPT=%q\n' \
+            "$APP_KONTENER" "$ERTESITO" "$ADATOK_KOTET" "$GEP_MENTES" "$GEP_MENTES_DB" "$WWW_UID" "$REPO/SERVER SETUP AND UPDATE/DB_MENTES.sh"
         cat <<'EOF'
-#   baninapro-mentes          éjszakai mentés (a cron hívja 03:00-kor): mentés, másolat a gép saját lemezére, értesítés
-#   baninapro-mentes masol    csak a másolat: a kötet legújabb mentései a gép saját lemezére (az őrszem 2 percenként hívja)
+#   baninapro-mentes          éjszakai mentés (a cron hívja 03:00-kor): mentés, másolat a gép saját lemezére és a
+#                             bedugott, írható pendrive-ra, értesítés
+#   baninapro-mentes masol    csak a másolatok: a kötet legújabb mentései a gép saját lemezére, és – ha van új mentés
+#                             vagy új meghajtó – a pendrive-ra (az őrszem 2 percenként hívja)
 set -u
 export LC_ALL=C.UTF-8
 shopt -s nullglob
 NAPLO=/var/log/baninapro-mentes.log
+# A pendrive-másolat (DB_MENTES.sh --pendrive): egy összefoglaló sort ad; $1 = --ha-uj: csak ha van új mentés / új meghajtó
+pendrive() {
+    if [[ -f $PENDRIVE_SCRIPT ]]; then
+        bash "$PENDRIVE_SCRIPT" --pendrive "$@" 2>&1 </dev/null | tail -n 1
+        return "${PIPESTATUS[0]}"
+    fi
+    echo "Pendrive: a DB_MENTES.sh nincs a BaninaPRO mappában – a pendrive-másolat kimarad (frissítsd a BaninaPRO-t)."
+    return 0
+}
 # A legújabb mentések másolata a gép saját lemezén, a Dockeren kívül: ha a Docker tárhelye (és vele az adatbázis meg a
 # mentései) elveszne, a telepítő innen állítja vissza. Csak a teljes (lezárt) mentéseket másolja, csak ha van elég
 # hely, és a legújabb GEP_MENTES_DB marad meg. Az utolsó kiírt sora az összefoglaló.
@@ -3059,16 +3072,20 @@ masol() {
     echo "Másolat a gép saját lemezén: $uj új, összesen ${#fajlok[@]} mentés ($GEP_MENTES)"
 }
 if [[ ${1:-} == masol ]]; then
-    masol
-    exit $?
+    m="$(masol 2>&1 | tail -n 1)"; mrc=$?
+    p="$(pendrive --ha-uj)"; prc=$?
+    echo "$m | $p"
+    exit $(( mrc || prc ))
 fi
-kimenet="$(timeout 1800 docker exec "$APP_KONTENER" php -q cron_mentes.php 2>&1)"
+# www-data-ként, mint a weboldal: így a mentés fájljait, zárját, jelzőjét és a napi naplófájlt a weboldal is tudja írni
+kimenet="$(timeout 1800 docker exec -u "$WWW_UID" "$APP_KONTENER" php -q cron_mentes.php 2>&1)"
 rc=$?
 printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${kimenet//$'\n'/ | }" >> "$NAPLO"
 if (( rc == 0 )) && [[ $kimenet == OK* ]]; then
     masolat="$(masol 2>&1 | tail -n 1)"
-    printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$masolat" >> "$NAPLO"
-    "$ERTESITO" -p 2 -t floppy_disk "Éjszakai mentés kész" "$(tail -n 1 <<<"$kimenet") · $masolat" >/dev/null 2>&1 || true
+    pen="$(pendrive)"
+    printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$masolat | $pen" >> "$NAPLO"
+    "$ERTESITO" -p 2 -t floppy_disk "Éjszakai mentés kész" "$(tail -n 1 <<<"$kimenet") · $masolat · $pen" >/dev/null 2>&1 || true
 else
     "$ERTESITO" -p 4 -t x,floppy_disk "Az éjszakai mentés NEM sikerült" "Kilépési kód: $rc – $(tail -n 3 <<<"$kimenet")" >/dev/null 2>&1 || true
 fi
@@ -3768,9 +3785,9 @@ EOF
     if [[ -f "$REPO/SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh" ]]; then
         muvelet "asztali ikonok"
         if fut bash "$REPO/SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh" --ikonok; then
-            ok "Asztali ikonok: „BaninaPro App Updater” (a weboldal gyors frissítése) és „SQL IMPORT” (SQL-mentés betöltése) – kattintásra indulnak"
+            ok "Asztali ikonok: „BaninaPro App Updater” (a weboldal gyors frissítése), „SQL IMPORT” (SQL-mentés betöltése) és „DB MENTÉS” (mentés most, pendrive-ra is) – kattintásra indulnak"
         else
-            figy "A gyors frissítő és az SQL-betöltő asztali ikonja nem készült el – a napló végén látszik, miért."
+            figy "A gyors frissítő, az SQL-betöltő és a DB mentés asztali ikonja nem készült el – a napló végén látszik, miért."
         fi
         muvelet ""
     fi

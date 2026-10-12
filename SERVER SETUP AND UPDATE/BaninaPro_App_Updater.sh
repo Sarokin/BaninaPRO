@@ -8,8 +8,8 @@
 #
 #  Futtatás:   az asztali „BaninaPro App Updater” ikonnal (kattintásra terminálablakban indul), vagy terminálból:
 #                  bash BaninaPro_App_Updater.sh      (a rendszergazdai jelszót kéri)
-#  Az asztali ikonokat – a sajátját és az SQL_IMPORT.sh-ét – ez a script készíti el minden futásakor (és a teljes
-#  telepítő is ezt hívja: --ikonok).
+#  Az asztali ikonokat – a sajátját, az SQL_IMPORT.sh-ét és a DB_MENTES.sh-ét – ez a script készíti el minden futásakor
+#  (és a teljes telepítő is ezt hívja: --ikonok).
 #
 #  Amit elvégez:
 #   - a BaninaPRO mappa frissítése a GitHub main ágára (a szerveren kézzel módosított fájlokat előbb félreteszi:
@@ -27,7 +27,7 @@
 
 set -uo pipefail
 
-VALTOZAT=2   # ha a scriptet módosítod, növeld: egy másolat (pl. az asztalon) ebből tudja, hogy a BaninaPRO mappában újabb van
+VALTOZAT=3   # ha a scriptet módosítod, növeld: egy másolat (pl. az asztalon) ebből tudja, hogy a BaninaPRO mappában újabb van
 REPO_AG="main"
 TITOK_MAPPA="/etc/baninapro"
 ORSZEM="/usr/local/sbin/baninapro-orszem"       # a telepítő írja: ebből tudja, hol a BaninaPRO mappa és melyik a port
@@ -36,6 +36,7 @@ NAPLO="/var/log/baninapro-frissites.log"
 TELEPITO_NEV="SERVER SETUP AND UPDATE/szerver_beallitas.sh"
 SAJAT_NEV="SERVER SETUP AND UPDATE/BaninaPro_App_Updater.sh"
 IMPORT_NEV="SERVER SETUP AND UPDATE/SQL_IMPORT.sh"
+MENTES_NEV="SERVER SETUP AND UPDATE/DB_MENTES.sh"
 # ezek változásához a teljes telepítő kell
 NEHEZ_FAJLOK=("sql/schema.sql" "docker-compose.yml" "docker/Dockerfile")
 
@@ -188,8 +189,9 @@ ikon_keszit() {   # $1 = az indító fájlja, $2 = név, $3 = leírás, $4 = a s
     fi
 }
 
-# A két asztali ikon: „BaninaPro App Updater” (ez a script) és „SQL IMPORT” (SQL_IMPORT.sh) – mindkettő a BaninaPRO
-# mappában lévő példányt indítja, így a frissítésekkel együtt maguk is frissülnek.
+# A három asztali ikon: „BaninaPro App Updater” (ez a script), „SQL IMPORT” (SQL_IMPORT.sh) és „DB MENTÉS” (DB_MENTES.sh)
+# – mind a BaninaPRO mappában lévő példányt indítja, így a frissítésekkel együtt maguk is frissülnek.
+IKONOK_SZAMA=3
 asztali_ikonok() {
     local asztal db=0
     asztal="$(asztal_mappa)"
@@ -198,13 +200,15 @@ asztali_ikonok() {
         "A weboldal gyors frissítése a GitHubról (néhány másodperc)" "$REPO/$SAJAT_NEV"; then db=$(( db + 1 )); fi
     if [[ -f $REPO/$IMPORT_NEV ]] && ikon_keszit "$asztal/SQL_IMPORT.desktop" "SQL IMPORT" \
         "Egy SQL-mentés (pl. az éles oldal phpMyAdmin-exportja) betöltése az adatbázisba" "$REPO/$IMPORT_NEV"; then db=$(( db + 1 )); fi
+    if [[ -f $REPO/$MENTES_NEV ]] && ikon_keszit "$asztal/DB_MENTES.desktop" "DB MENTÉS" \
+        "Az adatbázis teljes mentése most – a gép lemezére és a bedugott pendrive-ra is" "$REPO/$MENTES_NEV"; then db=$(( db + 1 )); fi
     # az asztalra letöltött .sh másolat helyett mostantól az ikon indítja (a BaninaPRO mappában lévő példányt)
-    if (( db == 2 )) && [[ $(dirname "$SCRIPT") == "$asztal" && $SCRIPT == *.sh && -f $REPO/$SAJAT_NEV ]]; then
+    if (( db == IKONOK_SZAMA )) && [[ $(dirname "$SCRIPT") == "$asztal" && $SCRIPT == *.sh && -f $REPO/$SAJAT_NEV ]]; then
         if rm -f -- "$SCRIPT"; then info "Az asztalra letöltött $(basename "$SCRIPT") fájlt töröltem: helyette az ikonra kattints."; fi
     fi
     IKONOK_DB=$db
     IKONOK_HELYE="$asztal"
-    (( db == 2 ))
+    (( db == IKONOK_SZAMA ))
 }
 
 main() {
@@ -242,8 +246,8 @@ main() {
     TULAJ_HOME="$(getent passwd "$TULAJ" | cut -d: -f6)"
     [[ -n $TULAJ_HOME ]] || TULAJ_HOME=/root
     if (( csak_ikonok )); then
-        asztali_ikonok || { echo "Az asztali ikonok nem készültek el ($IKONOK_DB/2, $IKONOK_HELYE)."; exit 1; }
-        echo "Asztali ikonok: BaninaPro App Updater, SQL IMPORT ($IKONOK_HELYE)"
+        asztali_ikonok || { echo "Az asztali ikonok nem készültek el ($IKONOK_DB/$IKONOK_SZAMA, $IKONOK_HELYE)."; exit 1; }
+        echo "Asztali ikonok: BaninaPro App Updater, SQL IMPORT, DB MENTÉS ($IKONOK_HELYE)"
         exit 0
     fi
     f="$(orszem_ertek APP_PORT)"
@@ -275,7 +279,7 @@ main() {
         if (( rc == 10 )); then ok "A szerver beállítófájlja frissítve"; fi
         if (( rc == 1 )); then figy "A szerver beállítófájlja nem frissíthető – futtasd a teljes telepítőt."; fi
         ok "Nincs új változás: a szerveren már a legfrissebb kód van (BaninaPRO ${verzio_elotte:-?}, ${regi:0:7})"
-        if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT"; fi
+        if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT, DB MENTÉS"; fi
         if oldal_ellenorzes "$verzio_elotte"; then
             ok "Az oldal működik"
         else
@@ -334,7 +338,7 @@ main() {
         fi
     done
 
-    if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT (kattintásra indulnak)"; fi
+    if asztali_ikonok; then ok "Asztali ikonok rendben: BaninaPro App Updater, SQL IMPORT, DB MENTÉS (kattintásra indulnak)"; fi
 
     if [[ $verzio_elotte != "$verzio" ]]; then ertesites="BaninaPRO ${verzio_elotte:-?} → ${verzio:-?}"; else ertesites="BaninaPRO ${verzio:-?}"; fi
     naploz "Frissítve: $ertesites, ${#valtozott[@]} fájl (${regi:0:7} → ${uj:0:7})"

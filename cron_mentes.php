@@ -10,6 +10,7 @@
  * A mentés a DBBCKP mappába kerül: ÉÉÉÉHHNN_ÓÓPP.sql (pl. 20260929_0300.sql).
  *
  * Csak parancssorból (vészhelyzeti visszaállítás, ha a webes felület nem elérhető):
+ *     php -q cron_mentes.php kezi [KÉRTE]                – kézi teljes mentés most (nem törlődik automatikusan)
  *     php -q cron_mentes.php lista                       – a mentések listája
  *     php -q cron_mentes.php vissza 20260929_0300.sql    – visszaállítás (előtte automatikus mentés készül)
  */
@@ -61,7 +62,13 @@ if ($cli && !empty($argv[1])) {
             printf("KÉSZ: %d utasítás, %d tábla, %s mp. A visszaállítás előtti állapot mentése: %s\n", $r['utasitasok'], $r['tablak'], $r['masodperc'], $r['elotte']);
             exit(0);
         }
-        echo "Használat: php -q cron_mentes.php [lista | vissza FÁJLNÉV.sql]\n";
+        if ($argv[1] === 'kezi') {
+            // kézi teljes mentés (pl. a szerver asztali DB_MENTES.sh scriptje): soha nem törlődik automatikusan; $argv[2] = ki kérte (napló)
+            $r = db_mentes('kezi', isset($argv[2]) && $argv[2] !== '' ? mb_substr((string)$argv[2], 0, 60) : 'cli');
+            printf("OK: %s (%d kB, %d tábla, %d sor, %s mp)\n", $r['fajl'], (int)round($r['meret'] / 1024), $r['tablak'], $r['sorok'], $r['masodperc']);
+            exit(0);
+        }
+        echo "Használat: php -q cron_mentes.php [kezi [KÉRTE] | lista | vissza FÁJLNÉV.sql]\n";
         exit(1);
     } catch (Throwable $e) {
         echo 'HIBA: ' . $e->getMessage() . "\n";

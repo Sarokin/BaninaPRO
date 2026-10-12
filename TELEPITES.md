@@ -594,6 +594,17 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.22.0-ról 1.22.1-re (az Admin „Adatbázis mentése” gomb hibája; mentés pendrive-ra a belső szerveren):**
+adatbázis-módosítás nincs. Javítva: ha a mentések mappájában a zárfájlt (`.zar`) vagy a napi naplófájlt egy másik
+felhasználó hozta létre – a belső szerveren a root-ként futó éjszakai cron –, a weboldal (www-data) mentése „Váratlan
+szerverhiba” üzenettel elhasalt, pedig a cron mentései rendben elkészültek; a zárfájl és a `.utolso.json` jelző mostantól
+mindkettőnek írható, az éjjel 3-kor létrejövő naplófájl is. Az Admin gomb a mentés valódi hibaokát írja ki („A mentés nem
+készült el: …”), nem „váratlan szerverhibát”. Új parancssori mód: `php -q cron_mentes.php kezi [KÉRTE]` (kézi mentés, nem
+törlődik automatikusan) – ezt használja a belső szerver asztali „DB MENTÉS” ikonja (`SERVER SETUP AND UPDATE/DB_MENTES.sh`),
+amely a mentést a gép lemezére és a csatlakoztatott, írható pendrive-ra is kimásolja; az éjszakai mentés és az őrszem is
+másol a pendrive-ra, ha van. Töltsd fel a frissített `includes/backup.php`, `includes/logger.php`, `includes/api_admin.php`,
+`cron_mentes.php`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
+
 **Frissítés 1.21.2-ről 1.22.0-ra (az Excel import a meglévő számlákat is egyezteti, és kapcsolóval javítja):** adatbázis-módosítás nincs.
 A könyvelőprogram (IB System) „Számla napló” exportja naponta többször is feltölthető: a rendszer megfelelteti a
 sorokat a meglévő számláknak (kimenőnél a számlaszám, bejövőnél a számlaszám + cég), és ha a rendszerben lévő számla
@@ -997,6 +1008,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: az „eltér” sor nem pipálható | a mérvadó kapcsoló az **Adatbázis** oldalon áll (állítsd Import-ra) · Rögzítőként vagy: meglévő számlát csak Irodavezető / Admin javíthat · a sor eltérése olyan mezőben van, amely nincs bepipálva a „Mit írjon át az import” résznél · vagy a sor kézi javítást igényel (az okát kiírja: részteljesítés, előjel) |
 | Excel import: „lehet, hogy már megvan más számlaszámmal” figyelmeztetés egy új soron | ugyanannál a cégnél van egy azonos összegű és dátumú számla, amelyet a fájl egyetlen sora sem talált meg – nézd meg; ha ugyanaz a számla (pl. `4/2026` ↔ `4/26`), vedd ki a pipát, különben kétszer lesz bent |
 | Excel import: „a rendszerben másik cégnél szerepel” figyelmeztetés | a kimenő számla megvan, de nem annál a cégnél, ahová az Excel sorolja – az összegét az import így is javítja, a céget nem írja át; nézd meg, melyik a helyes |
+| Admin → „Adatbázis mentése”: „Váratlan szerverhiba”, pedig az éjszakai mentés elkészül | 1.22.1 előtti hiba a belső szerveren: a root-ként futó cron hozta létre a mentések zárfájlját (`.zar`), amit a weboldal (www-data) nem tudott megnyitni – frissíts 1.22.1-re (a zárfájl és a naplófájl mindkettőnek írható lesz), és a hibaok a gombnál megjelenik („A mentés nem készült el: …”); a részletek a tevékenységnaplóban: `DB_MENTES | HIBA` és `API:admin_mentes_most` sorok |
 | „A mentésfájl ellenőrzése sikertelen (csonka fájl)” – éjszakai mentésnél vagy import előtt, pedig van hely | 1.22 előtti hiba: az ép mentést is csonkának látta, ha a fájl utolsó 4096 bájtja egy ékezetes betű közepén kezdődött – frissíts 1.22-re (`includes/backup.php`) |
 | „A részteljesítés nem lehet nagyobb vagy egyenlő a számla hátralékánál” | részteljesítés csak a hátraléknál kisebb összeg lehet; a teljes hátralékot a rendes úton rögzítsd (kimenő: bankkivonati azonosító, bejövő: utalás teljesítése) |
 | Részteljesítés nem vezethető fel / nincs + gomb | csak nyitott számlára lehet (bejövő FIZETENDŐ, kimenő NYITOTT) és csak pozitív összegűre; az utalásban lévő számlát előbb vedd ki az utalásból |
@@ -1032,4 +1044,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.22.0 (2026-10-12)
+Verzió: 1.22.1 (2026-10-12)

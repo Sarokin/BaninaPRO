@@ -37,7 +37,12 @@ function naplo(string $muvelet, string $reszletek = '', string $eredmeny = 'OK',
             $eredmeny,
             $reszletek
         );
-        @file_put_contents(naplo_fajl(), $sor, FILE_APPEND | LOCK_EX);
+        $f = naplo_fajl();
+        $uj = !is_file($f);
+        @file_put_contents($f, $sor, FILE_APPEND | LOCK_EX);
+        if ($uj && is_file($f)) {
+            @chmod($f, 0666);   // a napi fájlt a szerveren a root-ként futó cron is létrehozhatja (éjjel 3-kor) – a weboldal (www-data) is írja
+        }
     } catch (Throwable $e) {
         // a naplózás hibája soha ne törje meg a fő műveletet
     }

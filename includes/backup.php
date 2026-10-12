@@ -69,9 +69,18 @@ function backup_fajl_utvonal(string $nev, bool $letezzen = true): string
 /** Zárolás: egyszerre csak egy mentés/visszaállítás futhat */
 function backup_zar()
 {
-    $f = @fopen(backup_dir() . '/.zar', 'c');
+    $ut = backup_dir() . '/.zar';
+    $uj = !is_file($ut);
+    $f = @fopen($ut, 'c');
+    if (!$f && is_file($ut)) {
+        // a zárfájlt más felhasználó hozta létre (a szerveren a root-ként futó éjszakai cron) – a zároláshoz olvasásra nyitva is jó
+        $f = @fopen($ut, 'r');
+    }
     if (!$f) {
         throw new RuntimeException('A mentések mappája nem írható (DBBCKP).');
+    }
+    if ($uj) {
+        @chmod($ut, 0666);   // a cron (root) és a weboldal (www-data) is használja
     }
     if (!flock($f, LOCK_EX | LOCK_NB)) {
         fclose($f);
@@ -243,7 +252,7 @@ function db_mentes(string $mod = 'auto', string $ki = 'cron', bool $zarol = true
         $jelzo = utolso_jelzo();
         $jelzo = ['ido' => time(), 'fajl' => $nev, 'mod' => $mod, 'ki' => $ki, 'meret' => $meret, 'tablak' => count($tablak), 'sorok' => $osszSor,
                   'auto_ido' => ($mod === 'auto' || $mod === 'potlas') ? time() : (int)($jelzo['auto_ido'] ?? 0)];
-        @file_put_contents("$dir/.utolso.json", json_encode($jelzo, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        jelzo_ir($dir, $jelzo);
         naplo('DB_MENTES', "$nev – " . count($tablak) . " tábla, $osszSor sor, " . round($meret / 1024) . " kB, $mp mp (" . BK_MODOK[$mod] . ')', 'OK', $ki);
         if ($mod === 'auto' || $mod === 'potlas') {
             mentesek_takaritas($ki);
@@ -262,6 +271,22 @@ function db_mentes(string $mod = 'auto', string $ki = 'cron', bool $zarol = true
         throw $e;
     } finally {
         backup_zar_felold($zar);
+    }
+}
+
+/**
+ * Az utolsó mentés jelzőfájlja (.utolso.json) – átmeneti fájlba írva, majd átnevezve: így akkor is frissül, ha a meglévőt
+ * más felhasználó írta (a szerveren a root-ként futó cron, a weben a www-data), és a végén mindkettő írhatja.
+ */
+function jelzo_ir(string $dir, array $jelzo): void
+{
+    $tmp = "$dir/.utolso.json." . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, json_encode($jelzo, JSON_UNESCAPED_UNICODE), LOCK_EX) === false) {
+        return;
+    }
+    @chmod($tmp, 0666);
+    if (!@rename($tmp, "$dir/.utolso.json")) {
+        @unlink($tmp);
     }
 }
 

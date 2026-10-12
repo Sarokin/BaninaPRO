@@ -204,7 +204,13 @@ function act_admin_mentesek(array $be): array
 function act_admin_mentes_most(array $be): array
 {
     $admin = csak_admin();
-    $r = db_mentes('kezi', $admin['felhasznalonev']);
+    try {
+        $r = db_mentes('kezi', $admin['felhasznalonev']);
+    } catch (RuntimeException $e) {
+        // a mentés saját hibái (nem írható mappa vagy zárfájl, csonka fájl, foglalt zár…): a felhasználó az okát lássa, ne „váratlan szerverhibát”
+        $foglalt = $e instanceof MentesFoglalt;
+        hiba('A mentés nem készült el: ' . $e->getMessage(), $foglalt ? 'MENTES_FOGLALT' : 'MENTES_HIBA', [], $foglalt ? 409 : 500);
+    }
     unset($r['utvonal']);
     return $r;
 }
