@@ -1758,10 +1758,10 @@
         ${harmasKapcsolo('kikuldve', SZAMLAK_KIKULDVE, sz.kikuldve)}
         <div class="muveletek szamlak-gombok">
           ${jog('ir') ? `<button class="btn btn-fekete" type="button" data-act="szamlak-fogomb" data-szamlak-fogomb>${I.check} Mindet kijelöl</button>` : ''}
-          <button class="btn" type="button" data-act="szamlak-kosarba" title="A leszűrt lista minden számlája a nyomtatási kosárba">${I.print} Mind a nyomtatókosárba</button>
+          <button class="btn" type="button" data-act="szamlak-kosarba" data-szamlak-kosar title="Kijelölés nélkül a leszűrt lista minden számlája, kijelöléssel csak a kijelöltek kerülnek a nyomtatási kosárba">${I.print} Mind a nyomtatókosárba</button>
           <button class="csip" type="button" data-act="szamlak-kijeloles-torol" data-szamlak-torol>Kijelölés törlése</button>
         </div>
-        <div class="segit">A <b>fekete gomb</b> két lépés: először a lista minden számláját kijelöli, aztán a kijelölteket <b>könyvelésnek kiküldve</b> jelzésre állítja (dátummal, a te neveddel). Egy-egy számlát a sor eleji körrel is kijelölhetsz. A számla adatai, státusza nem változnak – ez csak a könyveléssel való egyeztetés nyilvántartása.${jog('torol') ? ' Ha csak már kiküldött számlákat jelölsz ki, a gomb a kiküldést vonja vissza.' : ''}</div>
+        <div class="segit">A <b>fekete gomb</b> két lépés: először a lista minden számláját kijelöli, aztán a kijelölteket <b>könyvelésnek kiküldve</b> jelzésre állítja (dátummal, a te neveddel). Egy-egy számlát a sor eleji körrel is kijelölhetsz. A <b>nyomtatókosár gomb</b> kijelölés nélkül a leszűrt lista minden számláját, kijelöléssel csak a kijelölteket teszi a kosárba. A számla adatai, státusza nem változnak – ez csak a könyveléssel való egyeztetés nyilvántartása.${jog('torol') ? ' Ha csak már kiküldött számlákat jelölsz ki, a gomb a kiküldést vonja vissza.' : ''}</div>
       </div>
       <div class="lista-fej"><span class="cim">Számlák</span><span class="darab" data-szamlak-darab></span></div>
       <div class="csipek" data-szamlak-osszegzo></div>
@@ -1826,6 +1826,8 @@
       else { g.innerHTML = `${I.x} <span class="btn-szoveg">Kiküldés visszavonása <small>${kij.length} számla</small></span>`; g.disabled = !jog('torol'); g.classList.add('btn-piros'); g.classList.remove('btn-zold'); }
     }
     const t = $('[data-szamlak-torol]'); if (t) t.classList.toggle('rejtett', !k.size);
+    const kg = $('[data-szamlak-kosar]');
+    if (kg) { kg.innerHTML = k.size ? `${I.print} <span class="btn-szoveg">Kijelöltek a nyomtatókosárba <small>${k.size} számla</small></span>` : `${I.print} Mind a nyomtatókosárba${d.sorok.length ? ` <small>(${d.sorok.length})</small>` : ''}`; kg.disabled = !d.sorok.length; }
   }
   /** A fekete gomb: 1) mindet kijelöl → 2) a kijelölteket könyvelésnek kiküldve jelzésre (vagy csak kiküldöttekből: visszavonás) */
   async function szamlakFogomb() {
@@ -1853,12 +1855,14 @@
       await szamlakBetolt();
     } catch (e) { hibaToast(e); }
   }
+  /** Nyomtatókosár: kijelölés nélkül a leszűrt lista minden számlája, kijelöléssel csak a kijelöltek (1.24.1) */
   function szamlakKosarba() {
-    const d = App.szamlakAdat;
+    const d = App.szamlakAdat, k = App.szamlakKijel;
     if (!d) return;
     const sz = App.szamlakSzuro;
-    idoszakKosarba(d.sorok.map((s) => ({ t: s.irany === 'BEJOVO' ? 'bejovo' : 'kimeno', id: s.id, cimke: `${s.kod} · „${s.szamlaszam}”` })),
-      `Minden számla · ${SZAMLAK_IRANY.find(([v]) => v === sz.irany)[1]} · ${SZAMLAK_KIKULDVE.find(([v]) => v === sz.kikuldve)[1]}${sz.tol || sz.ig ? ` · ${fmtDatum(sz.tol) || '…'} – ${fmtDatum(sz.ig) || '…'}` : ''}`);
+    const sorok = k.size ? d.sorok.filter((s) => k.has(s.irany + ':' + s.id)) : d.sorok;
+    idoszakKosarba(sorok.map((s) => ({ t: s.irany === 'BEJOVO' ? 'bejovo' : 'kimeno', id: s.id, cimke: `${s.kod} · „${s.szamlaszam}”` })),
+      `Minden számla${k.size ? ` · ${sorok.length} kijelölt` : ''} · ${SZAMLAK_IRANY.find(([v]) => v === sz.irany)[1]} · ${SZAMLAK_KIKULDVE.find(([v]) => v === sz.kikuldve)[1]}${sz.tol || sz.ig ? ` · ${fmtDatum(sz.tol) || '…'} – ${fmtDatum(sz.ig) || '…'}` : ''}`);
   }
   function szamlakSzuroValt(nev, v) {
     const sz = App.szamlakSzuro;

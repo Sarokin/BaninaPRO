@@ -594,6 +594,11 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.24.0-ról 1.24.1-re (Minden számla: a nyomtatókosár gomb a kijelölést követi):** adatbázis-módosítás nincs. A
+„Minden számla” oldalon a nyomtatókosár gomb kijelölés nélkül a leszűrt lista minden számláját, kijelöléssel csak a
+kijelölteket (1 vagy akár 10 darabot) teszi a kosárba; a gomb felirata mutatja, melyik. Töltsd fel a frissített
+`assets/app.js`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
+
 **Frissítés 1.23.0-ról 1.24.0-ra („Minden számla” oldal – könyvelésnek kiküldve):** **adatbázis-módosítás van**, futtasd le
 phpMyAdminban (SQL fül, egyben beilleszthető; ha „Duplicate column name” hibát ad, már lefutott):
 
@@ -823,7 +828,8 @@ egyeztetésre**.
   kijelölhető, a „Kijelölés törlése” mindet elengedi. Ha csak már kiküldött számlák vannak kijelölve, a gomb a kiküldést **vonja
   vissza** (Irodavezető / Admin). A számla adatai és státusza nem változnak; a jelzés a számla változásnaplójába („Könyvelésnek
   kiküldve: – → dátum”) és a tevékenységnaplóba (`KONYVELES_KIKULD`, `KONYVELES_VISSZAVON`) kerül.
-* **„Mind a nyomtatókosárba”:** a leszűrt lista minden számlája a nyomtatási kosárba kerül (pl. a könyvelésnek küldendő PDF-hez).
+* **Nyomtatókosár gomb:** kijelölés nélkül a leszűrt lista **minden** számlája a nyomtatási kosárba kerül (pl. a könyvelésnek
+  küldendő PDF-hez); ha van kijelölés, **csak a kijelöltek** (egy vagy több) – a gomb felirata mutatja, melyik (1.24.1).
 * A még nem kiküldött számla fehér, mint máshol; a kiküldött **zöldes háttérrel**, „KIKÜLDVE” jelzéssel és a kiküldés
   idejével / nevével látszik. A sor a számlához (kötéshez / céghez) ugrik.
 
@@ -1120,4 +1126,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.24.0 (2026-10-13)
+Verzió: 1.24.1 (2026-10-13)
