@@ -594,6 +594,10 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.24.1-ről 1.24.2-re (Minden számla: pénznem-csúszka):** adatbázis-módosítás nincs. A „Minden számla” oldalon
+harmadik hármas csúszka: **Összes / EUR / HUF** – alapból a középső, **EUR**. Töltsd fel a frissített `includes/api_konyveles.php`,
+`assets/app.js`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
+
 **Frissítés 1.24.0-ról 1.24.1-re (Minden számla: a nyomtatókosár gomb a kijelölést követi):** adatbázis-módosítás nincs. A
 „Minden számla” oldalon a nyomtatókosár gomb kijelölés nélkül a leszűrt lista minden számláját, kijelöléssel csak a
 kijelölteket (1 vagy akár 10 darabot) teszi a kosárba; a gomb felirata mutatja, melyik. Töltsd fel a frissített
@@ -821,7 +825,7 @@ egyeztetésre**.
 
 * **Szűrők:** dátummező (számla kelte / teljesítés / fizetési határidő) és **-tól / -ig** (alapból az aktuális hónap; üresen nincs
   határ); egy hármas csúszka **Bejövő / Összes / Kimenő** (alapból Bejövő), egy másik **Kiküldendő / Összes / Elküldött** (alapból
-  Összes). A szűrő böngészőnként megmarad. A lista legfeljebb 3000 számlát mutat, az összesítő chipek (összesen, kiküldve,
+  Összes), és egy harmadik **Összes / EUR / HUF** (alapból EUR, 1.24.2). A szűrő böngészőnként megmarad. A lista legfeljebb 3000 számlát mutat, az összesítő chipek (összesen, kiküldve,
   kiküldendő, összegek pénznemenként) a teljes találatra vonatkoznak.
 * **A fekete gomb két lépés** (Rögzítőtől): először a lista minden számláját kijelöli, majd – mivel van kijelölés – a kijelölt
   számlákat **könyvelésnek kiküldve** jelzésre állítja (dátum, idő és a kiküldő neve). Egy-egy számla a sor eleji körrel is
@@ -1126,4 +1130,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.24.1 (2026-10-13)
+Verzió: 1.24.2 (2026-10-13)

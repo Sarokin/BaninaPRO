@@ -12,6 +12,7 @@ const KONYV_MAX_SOR = 3000;   // ennyi sort ad vissza a lista egyszerre (a több
 /**
  * A számlák listája (bejövő és kimenő egyben, csak számlák): irány, kiküldve-szűrő, dátummező + -tól/-ig.
  *   irany: BEJOVO | KIMENO | MIND · kikuldve: nincs (még nem kiküldött) | mind | kikuldve · mezo: kelt | teljesites_datum | fizetesi_hatarido
+ *   penznem: MIND | EUR | HUF (alapból EUR – 1.24.2)
  */
 function act_szamlak_lista(array $be): array
 {
@@ -19,6 +20,7 @@ function act_szamlak_lista(array $be): array
     $irany = be_valaszt($be, 'irany', ['BEJOVO', 'KIMENO', 'MIND'], 'BEJOVO');
     $kikuldve = be_valaszt($be, 'kikuldve', ['nincs', 'mind', 'kikuldve'], 'mind');
     $mezo = be_valaszt($be, 'mezo', ['kelt', 'teljesites_datum', 'fizetesi_hatarido'], 'kelt');
+    $penznem = be_valaszt($be, 'penznem', ['MIND', 'EUR', 'HUF'], 'EUR');
     $tol = be_datum($be, 'tol', false);
     $ig = be_datum($be, 'ig', false);
     if ($tol && $ig && $tol > $ig) {
@@ -30,6 +32,9 @@ function act_szamlak_lista(array $be): array
         $kikuldve === 'nincs' ? "$a.konyveles_kikuldve IS NULL" : ($kikuldve === 'kikuldve' ? "$a.konyveles_kikuldve IS NOT NULL" : ''),
     ])) ?: '1=1';
     $p = array_values(array_filter([$tol, $ig], fn($v) => $v !== null));
+    // a pénznem bejövőnél a kötésen (k), kimenőnél a számlán (s) van
+    $pnz = fn(string $a) => $penznem === 'MIND' ? '' : " AND $a.penznem = ?";
+    $pp = $penznem === 'MIND' ? [] : [$penznem];
     $reszek = [];
     $params = [];
     if ($irany !== 'KIMENO') {
@@ -39,8 +44,8 @@ function act_szamlak_lista(array $be): array
                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id
                        LEFT JOIN utalasok u ON u.id = b.utalas_id LEFT JOIN felhasznalok f ON f.id = b.konyveles_kikuldte
                        LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) r ON r.szamla_id = b.id
-                      WHERE ' . $felt('b');
-        $params = array_merge($params, $p);
+                      WHERE ' . $felt('b') . $pnz('k');
+        $params = array_merge($params, $p, $pp);
     }
     if ($irany !== 'BEJOVO') {
         // (az oszlopnevek itt is ki vannak írva: csak kimenő iránynál ez az egyetlen SELECT, és abból lesznek a mezőnevek)
@@ -50,8 +55,8 @@ function act_szamlak_lista(array $be): array
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id
                        LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id LEFT JOIN felhasznalok f ON f.id = s.konyveles_kikuldte
                        LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" GROUP BY szamla_id) r ON r.szamla_id = s.id
-                      WHERE ' . $felt('s');
-        $params = array_merge($params, $p);
+                      WHERE ' . $felt('s') . $pnz('s');
+        $params = array_merge($params, $p, $pp);
     }
     $sql = 'SELECT * FROM (' . implode(' UNION ALL ', $reszek) . ') x ORDER BY irany, kod LIMIT ' . (KONYV_MAX_SOR + 1);
     $sorok = db_all($sql, $params);
@@ -65,10 +70,10 @@ function act_szamlak_lista(array $be): array
     $osszegek = [];
     $szamlalo = [];
     if ($irany !== 'KIMENO') {
-        $szamlalo[] = ['SELECT COUNT(*) AS db, SUM(b.konyveles_kikuldve IS NOT NULL) AS kik, k.penznem, "BEJOVO" AS irany, SUM(b.osszeg) AS osszeg FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id WHERE ' . $felt('b') . ' GROUP BY k.penznem', $p];
+        $szamlalo[] = ['SELECT COUNT(*) AS db, SUM(b.konyveles_kikuldve IS NOT NULL) AS kik, k.penznem, "BEJOVO" AS irany, SUM(b.osszeg) AS osszeg FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id WHERE ' . $felt('b') . $pnz('k') . ' GROUP BY k.penznem', array_merge($p, $pp)];
     }
     if ($irany !== 'BEJOVO') {
-        $szamlalo[] = ['SELECT COUNT(*) AS db, SUM(s.konyveles_kikuldve IS NOT NULL) AS kik, s.penznem, "KIMENO" AS irany, SUM(s.osszeg) AS osszeg FROM kimeno_szamlak s WHERE ' . $felt('s') . ' GROUP BY s.penznem', $p];
+        $szamlalo[] = ['SELECT COUNT(*) AS db, SUM(s.konyveles_kikuldve IS NOT NULL) AS kik, s.penznem, "KIMENO" AS irany, SUM(s.osszeg) AS osszeg FROM kimeno_szamlak s WHERE ' . $felt('s') . $pnz('s') . ' GROUP BY s.penznem', array_merge($p, $pp)];
     }
     foreach ($szamlalo as [$q, $qp]) {
         foreach (db_all($q, $qp) as $r) {
@@ -85,7 +90,7 @@ function act_szamlak_lista(array $be): array
     }
     unset($s);
     return ['sorok' => $sorok, 'osszes' => $osszes, 'kikuldve_db' => $kikuldveDb, 'csonka' => $csonka, 'max' => KONYV_MAX_SOR, 'osszegek' => $osszegek,
-            'szuro' => ['irany' => $irany, 'kikuldve' => $kikuldve, 'mezo' => $mezo, 'tol' => $tol, 'ig' => $ig]];
+            'szuro' => ['irany' => $irany, 'kikuldve' => $kikuldve, 'penznem' => $penznem, 'mezo' => $mezo, 'tol' => $tol, 'ig' => $ig]];
 }
 
 /**
