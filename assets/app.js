@@ -1988,8 +1988,28 @@
     }
   }
   function importAllapotInit(token, elemzes, mentesKell) {
-    App.importAllapot = { token, elemzes, mentesKell, kivalasztott: new Set(), opciok: { bejovo_statusz: 'FIZETENDO', kimeno_statusz: 'NYITOTT', utkozes: 'enged', hatarido_nap: 30, mervado: ImportMervado.get(), javit: ImportJavit.get() }, szuro: 'mind', cegSzuro: 'bizonytalan' };
-    elemzes.sorok.forEach((s) => { if (importSorValaszthato(s)) App.importAllapot.kivalasztott.add(s.i); });
+    App.importAllapot = { token, elemzes, mentesKell, kivalasztott: new Set(), felulir: new Set(), osszevon: {}, nyitottFelesleg: false,
+      opciok: { bejovo_statusz: 'FIZETENDO', kimeno_statusz: 'NYITOTT', utkozes: 'enged', hatarido_nap: 30, mervado: ImportMervado.get(), javit: ImportJavit.get(), ceg_frissit: true }, szuro: 'mind', cegSzuro: 'bizonytalan' };
+    elemzes.sorok.forEach((s) => { if (importAlapKijelolt(s)) App.importAllapot.kivalasztott.add(s.i); });
+  }
+  /** A sorhoz választott összevonási jelölt (több egyformán hasonló rendszerbeli számla közül) */
+  function importValasztottJelolt(s) {
+    const st = App.importAllapot, id = st.osszevon[s.i];
+    return id && s.osszevon_jeloltek ? s.osszevon_jeloltek.find((j) => j.id === id) || null : null;
+  }
+  /** Utalásban lévő számlát érint-e a sor (a megtalált vagy a választott jelölt): az utalás azonosítója, különben null */
+  function importVedett(s) {
+    if (s.vedett) return s.vedett;
+    const j = importValasztottJelolt(s);
+    return j && j.utalas_id ? j.utalas_uid || ('#' + j.utalas_id) : null;
+  }
+  /** Összevonás-e a sor (egyértelmű jelölt, vagy a felhasználó választott egyet) */
+  function importOsszevonas(s) {
+    return !!(s.osszevon || importValasztottJelolt(s));
+  }
+  /** Alapból kijelölt-e a sor: ami kijelölhető, kivéve a döntést váró sort (több jelölt, még nincs választás) */
+  function importAlapKijelolt(s) {
+    return importSorValaszthato(s) && !(s.allapot === 'uj' && s.osszevon_jeloltek && s.osszevon_jeloltek.length && !importValasztottJelolt(s));
   }
   /** Az eltérő (meglévő) számlán van-e a bekapcsolt mezők között automatikusan javítható eltérés */
   function importJavitando(s) {
@@ -2007,14 +2027,18 @@
   }
   /** Kijelölhető-e a sor: új számla, a beállítás szerint importálható ütköző, vagy – ha az import a mérvadó – javítható eltérés (Irodavezető / Admin) */
   function importSorValaszthato(s) {
-    if (s.allapot === 'uj') return true;
+    const st = App.importAllapot;
+    if (s.allapot === 'uj') {
+      // választott összevonás: ugyanúgy a meglévő számla módosul, mint az eltérő sornál (Import-mérvadó, utalás-védelem)
+      return importValasztottJelolt(s) ? importMervado() === 'import' && (!importVedett(s) || st.felulir.has(s.i)) : true;
+    }
     if (s.allapot === 'utkozik') return utkozoValaszthato(s);
-    return importMervado() === 'import' && importJavitando(s);
+    return importMervado() === 'import' && importJavitando(s) && (!s.vedett || st.felulir.has(s.i));
   }
-  /** A javítandó mezők átállítása után: az eltérő sorok kijelölése a javíthatóság szerint */
+  /** A javítandó mezők / a felülírás / a mérvadó átállítása után: a meglévő számlát érintő sorok kijelölése a javíthatóság szerint */
   function importJavitAlap() {
     const st = App.importAllapot;
-    st.elemzes.sorok.forEach((s) => { if (s.allapot === 'elter') { if (importSorValaszthato(s)) st.kivalasztott.add(s.i); else st.kivalasztott.delete(s.i); } });
+    st.elemzes.sorok.forEach((s) => { if (s.allapot === 'elter' || importValasztottJelolt(s)) { if (importSorValaszthato(s)) st.kivalasztott.add(s.i); else st.kivalasztott.delete(s.i); } });
   }
   /** Máshol már szereplő (ütköző) számlaszámú sor importálható-e a beállítás szerint */
   function utkozoValaszthato(s) {
@@ -2061,6 +2085,7 @@
         <div class="csipek" style="margin-top:10px">${tipusok}</div>
         <div class="csipek" data-import-chipek></div>
       </div>
+      <div class="kartya import-felesleg rejtett" data-import-felesleg></div>
       <div class="kartya import-cegek">
         <div class="fejsor"><div><div class="cim" style="font-weight:800;font-size:15px">Cégek egyeztetése <span class="szurke" data-import-cegdb></span></div>
           <div class="alsor"><span>A fájlban szereplő cégneveket a rendszer partnerkód, a rendszerben már meglévő számláik, adószám, majd pontos vagy hasonló név (≥ 55%) alapján párosította a meglévő cégekhez, a hasonló írásmódú neveket összevonta. <b>Nézd át a bizonytalan (?) sorokat</b> – a legördülőből bármelyik céget választhatod, az új cég nevét átírhatod, egy névváltozatot a × jellel leválaszthatsz.</span></div></div></div>
@@ -2080,7 +2105,7 @@
       </div>
       <div class="lista-fej"><span class="cim">Sorok</span><span class="darab" data-import-darab></span></div>
       <div class="csipek import-szurok">
-        ${[['mind', 'Mind'], ['uj', 'Új'], ['elter', 'Eltér'], ['utkozik', 'Máshol szerepel'], ['letezik', 'Már megvan'], ['hiba', 'Hibás / dupla'], ['figy', 'Figyelmeztetés']].map(([v, f]) => `<button type="button" class="csip ${st.szuro === v ? 'aktiv' : ''}" data-act="import-szuro" data-v="${v}">${f}</button>`).join('')}
+        ${[['mind', 'Mind'], ['uj', 'Új'], ['elter', 'Eltér'], ['osszevon', 'Összevonás'], ['vedett', 'Utalásban'], ['dontes', 'Döntést vár'], ['utkozik', 'Máshol szerepel'], ['letezik', 'Már megvan'], ['hiba', 'Hibás / dupla'], ['figy', 'Figyelmeztetés']].map(([v, f]) => `<button type="button" class="csip ${st.szuro === v ? 'aktiv' : ''}" data-act="import-szuro" data-v="${v}">${f}</button>`).join('')}
         <span class="tolt"></span>
         <button type="button" class="csip" data-act="import-jelol-mind" data-mod="mind">Összes kijelölése</button>
         <button type="button" class="csip" data-act="import-jelol-mind" data-mod="semmi">Kijelölés törlése</button>
@@ -2108,26 +2133,49 @@
     const elter = el.sorok.filter((s) => importHatasos(s) === 'elter').length;
     const megvan = o.letezik + o.elter - elter;
     const chip = $('[data-import-chipek]');
-    if (chip) chip.innerHTML = `<span class="csip zold">új: <b>${o.uj}</b></span>${megvan ? `<span class="csip">már megvan: <b>${megvan}</b></span>` : ''}${elter ? `<span class="csip sarga">megvan, de eltér: <b>${elter}</b>${imp ? '' : ' <small>(marad)</small>'}</span>` : ''}${o.utkozik ? `<span class="csip sarga">máshol szerepel: <b>${o.utkozik}</b></span>` : ''}${o.dupla ? `<span class="csip">dupla a fájlban: <b>${o.dupla}</b></span>` : ''}${o.hiba ? `<span class="csip piros">hibás: <b>${o.hiba}</b></span>` : ''}${o.figyelmeztetes ? `<span class="csip">figyelmeztetés: <b>${o.figyelmeztetes}</b></span>` : ''}`;
+    const ov = el.sorok.filter((s) => importOsszevonas(s)).length;
+    const vedett = el.sorok.filter((s) => importVedett(s)).length;
+    const dontes = el.sorok.filter((s) => s.allapot === 'uj' && s.osszevon_jeloltek && s.osszevon_jeloltek.length && !importValasztottJelolt(s)).length;
+    if (chip) chip.innerHTML = `<span class="csip zold">új: <b>${o.uj - (ov - (o.osszevon || 0))}</b></span>${megvan ? `<span class="csip">már megvan: <b>${megvan}</b></span>` : ''}${elter ? `<span class="csip sarga">megvan, de eltér: <b>${elter}</b>${imp ? '' : ' <small>(marad)</small>'}</span>` : ''}${ov ? `<span class="csip sarga">összevonás: <b>${ov}</b></span>` : ''}${vedett ? `<span class="csip narancs">utalásban: <b>${vedett}</b></span>` : ''}${dontes ? `<span class="csip narancs">döntést vár: <b>${dontes}</b></span>` : ''}${o.utkozik ? `<span class="csip sarga">máshol szerepel: <b>${o.utkozik}</b></span>` : ''}${o.dupla ? `<span class="csip">dupla a fájlban: <b>${o.dupla}</b></span>` : ''}${o.hiba ? `<span class="csip piros">hibás: <b>${o.hiba}</b></span>` : ''}${o.figyelmeztetes ? `<span class="csip">figyelmeztetés: <b>${o.figyelmeztetes}</b></span>` : ''}`;
+    importFeleslegRajzol();
     const figyelt = IMP_JAVIT.filter(([m]) => st.opciok.javit.includes(m)).map(([, f]) => f.toLowerCase());
     const nt = $('[data-import-nincs-teendo]');
     // teendő: új, ütköző, hibás sor, és – ha az import a mérvadó – a javítandó eltérés
     const teendo = o.uj + o.utkozik + o.dupla + o.hiba + (imp ? elter : 0);
     if (nt) nt.innerHTML = teendo === 0 && o.letezik + o.elter ? `<div class="info-doboz import-egyezik">${I.check} <span><b>Minden sor megvan a rendszerben${imp && figyelt.length ? `, és egyezik az Excellel (${figyelt.join(', ')})` : ''}</b> – nincs teendő.${o.elter ? ` <span class="kicsi">${imp ? `A nem figyelt adatokban ${o.elter} számla eltér – a „Mit írjon át az import” résznél látod, miben, és ott bekapcsolhatod.` : `${o.elter} számla adata eltér az Exceltől; az <b>adatbázis a mérvadó</b>, ezért nem módosul${jog('torol') ? ' – a kapcsolót Import oldalra állítva javítható' : ''}.`}</span>` : ''}</span></div>` : '';
   }
-  /** A mérvadó kapcsoló alatti blokk: mezőnként hány meglévő számla tér el, és – ha az import a mérvadó – mit írjon át az import */
+  /** A mérvadó kapcsoló alatti blokk: mezőnként hány meglévő számla tér el, és – ha az import a mérvadó – mit írjon át az import, utalás-felülírás, cégadatok */
   function importJavitRajzol() {
     const st = App.importAllapot, el = st.elemzes, o = el.osszesites, d = el.elteres_db || {};
     const box = $('[data-import-javit]');
     if (!box) return;
-    box.classList.toggle('rejtett', !o.elter);
-    if (!o.elter) { box.innerHTML = ''; return; }
+    const imp = importMervado() === 'import';
+    box.classList.toggle('rejtett', !o.elter && !imp);
+    if (!o.elter && !imp) { box.innerHTML = ''; return; }
     const kezi = el.sorok.filter((s) => s.allapot === 'elter' && s.elteresek.some((e) => e.akadaly)).length;
+    const vedett = el.sorok.filter((s) => importVedett(s)).length;
+    const felul = el.sorok.filter((s) => importVedett(s) && st.felulir.has(s.i)).length;
     const mezok = IMP_JAVIT.filter(([m]) => d[m]).map(([m, f]) => `${f.toLowerCase()} ${d[m]}`).join(', ');
-    box.innerHTML = importMervado() === 'import' ? `<label>Mit írjon át az import a meglévő számlákon? (${o.elter} számla tér el)</label>
+    box.innerHTML = imp ? `${o.elter ? `<label>Mit írjon át az import a meglévő számlákon? (${o.elter} számla tér el${o.osszevon ? `, ebből ${o.osszevon} összevonás` : ''})</label>
       <div class="import-javit">${IMP_JAVIT.map(([m, f]) => `<label class="jelolo"><input type="checkbox" name="${m}" data-act="import-javit" ${st.opciok.javit.includes(m) ? 'checked' : ''}> <span>${f} <b class="${d[m] ? '' : 'szurke'}">${d[m] || 0}</b></span></label>`).join('')}</div>
-      <div class="segit">A számok azt mutatják, hány meglévő számlán tér el az adott adat az Exceltől. A pipált adatokat az import a rendszerben lévő számlán <b>az Excel szerinti értékre írja át</b> – a rendezett (FIZETVE) számlákon is; a régi és az új értéket lent, a soroknál látod, a javítás a számla változásnaplójába is bekerül. Amit nem pipálsz be, abban az eltérés nem számít (a sor „már megvan” marad). A választásod ebben a böngészőben megmarad.${kezi ? ` <b>${kezi} számla kézi javítást igényel</b> (az okát a sornál látod).` : ''}</div>`
+      <div class="segit">A számok azt mutatják, hány meglévő számlán tér el az adott adat az Exceltől. A pipált adatokat az import a rendszerben lévő számlán <b>az Excel szerinti értékre írja át</b> – a rendezett (FIZETVE) számlákon is; a régi és az új értéket lent, a soroknál látod, a javítás a számla változásnaplójába is bekerül. <b>Összevonás:</b> ha egy sor számlaszáma nincs meg, de ugyanannál a cégnél azonos összegű és dátumú számla van, az import azt tekinti ugyanannak, és az Excel számlaszámát adja neki. A státuszt, a fizetés és az utalás adatait az import sosem írja át. Amit nem pipálsz be, abban az eltérés nem számít. A választásod ebben a böngészőben megmarad.${kezi ? ` <b>${kezi} számla kézi javítást igényel</b> (az okát a sornál látod).` : ''}</div>` : ''}
+      ${vedett ? `<label class="jelolo kapcsolo" style="margin-top:8px"><input type="checkbox" data-act="import-felulir-mind" ${felul === vedett ? 'checked' : ''}> <span><b>Utalásban lévő számlák módosítása is</b> (${vedett} számla${felul && felul !== vedett ? `, ebből ${felul} soronként felülírva` : ''}) – alapból <b>nem módosulnak</b>, mert az összegük az utalás összegét, a számlaszámuk az utalás tételét változtatná. Bepipálva mindet felülírod; egy-egy sornál a „Mégis módosítom” gombbal is lehet.</span></label>` : ''}
+      <label class="jelolo kapcsolo" style="margin-top:4px"><input type="checkbox" name="ceg_frissit" data-act="import-opcio-bool" ${st.opciok.ceg_frissit ? 'checked' : ''}> <span><b>Cégadatok frissítése az Excelből</b> – a párosított cégek a könyvelőprogram partnerkódját kapják (a régi kód a megjegyzésbe kerül), az üres adószám kitöltődik. Így a következő import már kód szerint, biztosan ismeri fel őket.</span></label>`
       : `<div class="info-doboz" style="margin:0"><b>${o.elter} meglévő számla</b> adata eltér az Exceltől (${mezok}). ${jog('torol') ? 'Az <b>adatbázis a mérvadó</b>, ezért ezek változatlanok maradnak, az import csak az új sorokat viszi be. Ha az Excel a helyes, állítsd a kapcsolót <b>Import</b> oldalra.' : `Nálad ezek a sorok kimaradnak: meglévő számlát csak <b>Irodavezető vagy Admin</b> javíthat az Excel alapján (a te szereped: ${esc(szerepNev())}).`} Az eltéréseket lent, a soroknál látod.</div>`;
+  }
+  /** „Az adatbázisban van, a fájlban nincs” kártya: a fájl cégeinek olyan számlái a fájl időszakából, amelyeket egy sor sem talált meg */
+  function importFeleslegRajzol() {
+    const st = App.importAllapot, el = st.elemzes, f = el.felesleg;
+    const box = $('[data-import-felesleg]');
+    if (!box) return;
+    box.classList.toggle('rejtett', !f || !f.db);
+    if (!f || !f.db) { box.innerHTML = ''; return; }
+    const idoszak = Object.keys(f.idoszak || {}).map((ir) => `${ir === 'BEJOVO' ? 'bejövő' : 'kimenő'}: ${fmtDatum(f.idoszak[ir].tol)} – ${fmtDatum(f.idoszak[ir].ig)}, ${f.idoszak[ir].cegek} cég`).join(' · ');
+    const link = (x) => (x.irany === 'BEJOVO' ? `#/bejovo/ceg/${x.ceg_id}/kotes/${x.kotes_id}?szamla=${x.id}` : `#/kimeno/ceg/${x.ceg_id}?szamla=${x.id}`);
+    box.innerHTML = `<div class="fejsor"><div><div class="cim" style="font-weight:800;font-size:15px">Az adatbázisban van, a fájlban nincs <span class="szurke">· ${f.db} számla</span></div>
+        <div class="alsor"><span>A fájlban szereplő cégek számlái a fájl időszakából (${esc(idoszak)}), amelyeket a fájl egyetlen sora sem talált meg. Ha a könyvelőprogram exportja az egész időszakot tartalmazza, ezek gyanúsak: dupla, elírt vagy téves számla a rendszerben – <b>nézd meg kézzel</b>, az import nem nyúl hozzájuk. (Részleges exportnál ez a lista természetes.)</span></div></div>
+        <button type="button" class="csip ${st.nyitottFelesleg ? 'aktiv' : ''}" data-act="import-felesleg-nyit">${st.nyitottFelesleg ? 'Elrejt' : 'Mutasd'}</button></div>
+      <div class="import-felesleg-lista ${st.nyitottFelesleg ? '' : 'rejtett'}">${(f.lista || []).map((x) => `<div class="import-felesleg-sor"><a href="${link(x)}" class="mono">${esc(x.kod)}</a> <b>„${esc(x.szamlaszam)}”</b> <span>${esc(x.ceg_nev)}</span> <span class="mono">${fmtOsszeg(Number(x.osszeg), x.penznem)}</span> <span>kelt ${fmtDatum(x.kelt)}</span> ${badge(x.statusz)}${x.utalas_uid ? ` <span class="szurke">utalás ${esc(x.utalas_uid)}</span>` : ''}</div>`).join('')}${f.db > (f.lista || []).length ? `<div class="alcim-sor">… és még ${f.db - f.lista.length} számla</div>` : ''}</div>`;
   }
   function importCsoportokRajzol() {
     const st = App.importAllapot, el = st.elemzes;
@@ -2169,7 +2217,7 @@
         st.elemzes = d.elemzes;
         // kijelölés megtartása, ahol lehet; ami most lett új vagy eltérő, az kijelölve
         const kiv = new Set();
-        d.elemzes.sorok.forEach((s) => { const r = regi.sorok[s.i]; if (importSorValaszthato(s) && (st.kivalasztott.has(s.i) || (r && r.allapot !== s.allapot && (s.allapot === 'uj' || s.allapot === 'elter')))) kiv.add(s.i); });
+        d.elemzes.sorok.forEach((s) => { const r = regi.sorok[s.i]; if (importSorValaszthato(s) && (st.kivalasztott.has(s.i) || (r && r.allapot !== s.allapot && importAlapKijelolt(s)))) kiv.add(s.i); });
         st.kivalasztott = kiv;
         importOsszegzokRajzol(); importCsoportokRajzol(); importSorokRajzol();
       } catch (e) { hibaToast(e); }
@@ -2216,6 +2264,10 @@
     if (sz === 'mind') return true;
     if (sz === 'hiba') return s.allapot === 'hiba' || s.allapot === 'dupla';
     if (sz === 'figy') return s.figyelmeztetes.length > 0;
+    if (sz === 'osszevon') return importOsszevonas(s);
+    if (sz === 'vedett') return !!importVedett(s);
+    if (sz === 'dontes') return s.allapot === 'uj' && !!(s.osszevon_jeloltek && s.osszevon_jeloltek.length) && !importValasztottJelolt(s);
+    if (sz === 'uj') return s.allapot === 'uj' && !importValasztottJelolt(s);
     return importHatasos(s) === sz;
   }
   function importSorokRajzol() {
@@ -2230,7 +2282,12 @@
     const MAX = 500;
     box.innerHTML = (sorok.length ? sorok.slice(0, MAX).map((s) => {
       const hat = importHatasos(s);
-      const [cimke, oszt] = IMP_ALLAPOT[hat];
+      const valasztott = importValasztottJelolt(s);
+      const osszevon = s.osszevon || valasztott;
+      const vedett = importVedett(s);
+      const felulirva = vedett && st.felulir.has(s.i);
+      let [cimke, oszt] = IMP_ALLAPOT[hat];
+      if (osszevon && (hat === 'elter' || valasztott)) { cimke = 'ÖSSZEVONÁS'; oszt = 'hamarosan'; }
       const valaszthato = importSorValaszthato(s);
       const cs = s.csoport_id != null ? csMap[s.csoport_id] : null;
       const cn = celNev(cs);
@@ -2240,12 +2297,14 @@
       return `<div class="import-sor ${hat} ${bejelolt ? 'bejelolt' : ''}">
         <label class="kijelolo ${bejelolt ? 'bejelolt' : ''} ${valaszthato ? '' : 'tiltott'}"><input type="checkbox" data-act="import-sor" data-i="${s.i}" ${bejelolt ? 'checked' : ''} ${valaszthato ? '' : 'disabled'}>${I.check}</label>
         <div class="kozep">
-          <div class="cim"><span class="badge ${s.irany === 'BEJOVO' ? 'BE' : 'KI'}">${s.tipus}</span> <b>„${esc(szsz)}”</b> <span class="badge ${oszt}">${cimke}</span>${s.figyelmeztetes.length ? ' <span class="badge hamarosan" title="' + esc(s.figyelmeztetes.join('; ')) + '">!</span>' : ''}</div>
+          <div class="cim"><span class="badge ${s.irany === 'BEJOVO' ? 'BE' : 'KI'}">${s.tipus}</span> <b>„${esc(szsz)}”</b> <span class="badge ${oszt}">${cimke}</span>${vedett ? ` <span class="badge UTALASHOZ_ADVA" title="utalásban szerepel: ${esc(vedett)}">UTALÁSBAN${felulirva ? ' · FELÜLÍRVA' : ''}</span>` : ''}${s.figyelmeztetes.length ? ' <span class="badge hamarosan" title="' + esc(s.figyelmeztetes.join('; ')) + '">!</span>' : ''}</div>
           <div class="alsor"><span>${esc(s.ceg_nev)}${cn && cn !== s.ceg_nev ? ` <span class="szurke">→ ${esc(cn)}</span>` : ''}${s.partnerkod ? ` <span class="mono">P${esc(s.partnerkod)}</span>` : ''}${ujCeg ? ' <span class="badge FIZETENDO">ÚJ CÉG</span>' : ''}</span><span>kelt ${fmtDatum(s.kelt)}</span><span>telj. ${fmtDatum(s.teljesites)}</span>${s.hatarido ? `<span>határidő <b>${fmtDatum(s.hatarido)}</b></span>` : ''}<span class="szurke">Excel ${s.sor}. sor</span></div>
           ${s.regi_kotes || s.regi_k || s.kotes_cel ? `<div class="alsor"><span class="mono">${s.regi_kotes ? 'régi kötés ' + esc(s.regi_kotes) : ''}${s.regi_k ? ' · K ' + esc(s.regi_k) : ''}</span>${s.kotes_cel ? `<span>→ ${esc(s.kotes_cel)}</span>` : ''}${s.beszam ? `<span>BESZÁM: <b>${esc(s.beszam)}</b></span>` : ''}${s.kotes_megnevezes ? `<span class="szurke">${esc(s.kotes_megnevezes)}</span>` : ''}</div>` : ''}
-          ${s.uzenet ? `<div class="alsor uzenet ${hat}">${s.allapot === 'elter' ? `már a rendszerben van: <span class="mono">${esc(s.letezo.kod)}</span> ${badge(s.letezo.statusz)}` : esc(s.uzenet)}</div>` : ''}
+          ${s.uzenet ? `<div class="alsor uzenet ${hat}">${s.allapot === 'elter' ? `${s.osszevon ? 'összevonás a rendszerben lévő számlával' : 'már a rendszerben van'}: <span class="mono">${esc(s.letezo.kod)}</span>${s.osszevon ? ` <b>„${esc(s.letezo.szamlaszam)}”</b>` : ''} ${badge(s.letezo.statusz)}${s.osszevon ? ` <span class="szurke">(azonos cég, összeg és dátum${s.osszevon.fok >= 2 ? '; a számlaszám számjegyei egyeznek' : s.osszevon.fok === 1 ? '; a számlaszám az évszámon kívül egyezik' : '; a számlaszám más'})</span>` : ''}` : esc(s.uzenet)}</div>` : ''}
           ${s.elteresek.map((e) => importElteresHtml(s, e)).join('')}
-          ${s.figyelmeztetes.length ? `<div class="alsor uzenet figy">${esc(s.figyelmeztetes.join(' · '))}</div>` : ''}
+          ${s.osszevon_jeloltek && s.osszevon_jeloltek.length ? `<div class="alsor osszevon-valasztas"><span>${valasztott ? 'Összevonás ezzel:' : '<b>Döntést vár:</b> több rendszerbeli számla is lehet ugyanez –'}</span> <select class="osszevon-valaszto" data-act="import-osszevon" data-i="${s.i}"><option value="">válassz… (vagy maradjon új számla)</option>${s.osszevon_jeloltek.map((j) => `<option value="${j.id}" ${valasztott && valasztott.id === j.id ? 'selected' : ''}>${esc(j.kod)} „${esc(j.szamlaszam)}” · ${esc(STATUSZ[j.statusz] || j.statusz)} · kelt ${fmtDatum(j.kelt)}${j.utalas_uid ? ' · utalásban ' + esc(j.utalas_uid) : ''}</option>`).join('')}</select>${valasztott ? ` <span class="szurke">a rendszerbeli számla ezt a számlaszámot kapja: <b>„${esc(s.szamlaszam)}”</b></span>` : ''}</div>` : ''}
+          ${vedett ? `<div class="alsor uzenet figy"><span>utalásban szerepel (<span class="mono">${esc(vedett)}</span>): ${felulirva ? '<b>felülírva</b> – az import módosítja, bár az utalást is érinti.' : 'alapból <b>nem módosul</b>, mert befolyásolná az utalást.'}</span> ${jog('torol') && importMervado() === 'import' ? `<button type="button" class="csip kicsi ${felulirva ? 'aktiv' : ''}" data-act="import-felulir" data-i="${s.i}">${felulirva ? 'Mégsem módosítom' : 'Mégis módosítom'}</button>` : ''}</div>` : ''}
+          ${s.figyelmeztetes.filter((f) => !f.startsWith('utalásban szerepel')).length ? `<div class="alsor uzenet figy">${esc(s.figyelmeztetes.filter((f) => !f.startsWith('utalásban szerepel')).join(' · '))}</div>` : ''}
           ${s.megjegyzes ? `<div class="alsor"><span class="szurke">${esc(s.megjegyzes.length > 120 ? s.megjegyzes.slice(0, 120) + '…' : s.megjegyzes)}</span></div>` : ''}
         </div>
         <div class="osszeg${s.osszeg && Number(s.osszeg) < 0 ? ' negativ' : ''}">${s.osszeg ? fmtOsszeg(Number(s.osszeg), s.penznem) : '–'}</div>
@@ -2256,12 +2315,12 @@
   function importOsszegzoFrissit() {
     const st = App.importAllapot;
     const n = st.kivalasztott.size;
-    let be = 0, ki = 0, jav = 0;   // új bejövő / új kimenő / javítandó meglévő számla
+    let be = 0, ki = 0, jav = 0, ov = 0;   // új bejövő / új kimenő / javítandó meglévő számla / összevonás
     const ossz = {};
-    st.elemzes.sorok.forEach((s) => { if (st.kivalasztott.has(s.i)) { if (s.allapot === 'elter') { jav++; return; } if (s.irany === 'BEJOVO') be++; else ki++; const k = (s.irany === 'BEJOVO' ? 'bejövő ' : 'kimenő ') + s.penznem; ossz[k] = (ossz[k] || 0) + Number(s.osszeg || 0); } });
+    st.elemzes.sorok.forEach((s) => { if (st.kivalasztott.has(s.i)) { if (s.allapot === 'elter' || importValasztottJelolt(s)) { if (importOsszevonas(s)) ov++; else jav++; return; } if (s.irany === 'BEJOVO') be++; else ki++; const k = (s.irany === 'BEJOVO' ? 'bejövő ' : 'kimenő ') + s.penznem; ossz[k] = (ossz[k] || 0) + Number(s.osszeg || 0); } });
     const d = $('[data-import-darab]'); if (d) d.textContent = `${n} kijelölve / ${st.elemzes.sorok.length}`;
     const g = $('[data-import-gomb]');
-    const reszek = [be ? be + ' új bejövő' : '', ki ? ki + ' új kimenő' : '', jav ? jav + ' javítás' : ''].filter(Boolean).concat(Object.keys(ossz).map((k) => k.split(' ')[1] + ' ' + fmtOsszeg(ossz[k])));
+    const reszek = [be ? be + ' új bejövő' : '', ki ? ki + ' új kimenő' : '', jav ? jav + ' javítás' : '', ov ? ov + ' összevonás' : ''].filter(Boolean).concat(Object.keys(ossz).map((k) => k.split(' ')[1] + ' ' + fmtOsszeg(ossz[k])));
     if (g) { g.disabled = n === 0; g.innerHTML = `${I.check} <span class="btn-szoveg">Importálás – ${n} sor${n ? `<small>${reszek.join(' · ')}</small>` : ''}</span>`; }
     $$('.import-sor').forEach((row) => { const cb = $('input[data-act=import-sor]', row); if (cb) { const on = st.kivalasztott.has(Number(cb.dataset.i)); row.classList.toggle('bejelolt', on); cb.closest('.kijelolo').classList.toggle('bejelolt', on); cb.checked = on; } });
   }
@@ -2281,16 +2340,21 @@
       const ok = await confirmModal('Bizonytalan cégpárosítások', `<p>A cégek egyeztetésénél <b>${el.ceg_osszesites.bizonytalan} bizonytalan</b> párosítás van (hasonló, de nem azonos nevek). Ha nem nézted át őket, a számlák rossz céghez kerülhetnek.</p><p class="kicsi">A „Bizonytalan” szűrővel a Cégek egyeztetése részben látod őket; egy csoport legördülőjének átállítása megerősítésnek számít.</p>`, { ok: 'Mégis importálom', megse: 'Átnézem előbb', okOsztaly: 'btn-piros' });
       if (!ok) { st.cegSzuro = 'bizonytalan'; $$('.import-cegszurok .csip').forEach((c) => c.classList.toggle('aktiv', c.dataset.v === 'bizonytalan')); importCsoportokRajzol(); $('.import-cegek').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     }
-    let be = 0, ki = 0, told = 0, jav = 0, javRendezett = 0, javBe = 0;
+    let be = 0, ki = 0, told = 0, jav = 0, javRendezett = 0, javBe = 0, ov = 0, felul = 0;
     const csMap = {}; el.csoportok.forEach((c) => { csMap[c.id] = c; });
     const ujCegek = new Set();
     const javMezok = new Set();
     el.sorok.forEach((s) => {
       if (!st.kivalasztott.has(s.i)) return;
-      if (s.allapot === 'elter') {   // meglévő számla javítása: nem jön létre semmi
+      const valasztott = importValasztottJelolt(s);
+      if (s.allapot === 'elter' || valasztott) {   // meglévő számla javítása / összevonása: nem jön létre semmi
         jav++; if (s.irany === 'BEJOVO') javBe++;
-        if (['FIZETVE', 'BESZAMITVA'].includes(s.letezo.statusz)) javRendezett++;
-        s.elteresek.forEach((e) => { if (!e.akadaly && st.opciok.javit.includes(e.mezo)) javMezok.add(e.cimke.toLowerCase()); });
+        if (importOsszevonas(s)) ov++;
+        if (importVedett(s)) felul++;
+        const letezo = s.letezo || valasztott;
+        if (letezo && ['FIZETVE', 'BESZAMITVA'].includes(letezo.statusz)) javRendezett++;
+        (s.elteresek || []).forEach((e) => { if (!e.akadaly && st.opciok.javit.includes(e.mezo)) javMezok.add(e.cimke.toLowerCase()); });
+        if (valasztott) javMezok.add('számlaszám');
         return;
       }
       if (s.irany === 'BEJOVO') be++; else ki++;
@@ -2299,20 +2363,21 @@
       if (cs) { const c = cs.cel.tipus === 'csoport' ? csMap[cs.cel.id] || cs : cs; if (c.cel.tipus !== 'db') ujCegek.add(c.id); }
     });
     const ok = await confirmModal('Import indítása', `${be + ki ? `<p><b>${be + ki} új sor</b> kerül az adatbázisba: ${be ? `${be} bejövő számla (${el.formatum === 'koteskonyv' ? 'régi kötés ID szerinti kötésekbe' : 'ARCHÍV kötésekbe'}, ${st.opciok.bejovo_statusz === 'FIZETVE' ? 'FIZETVE' : 'FIZETENDŐ'} státusszal)` : ''}${be && ki ? ', ' : ''}${ki ? `${ki} kimenő számla (${st.opciok.kimeno_statusz})` : ''}.${ujCegek.size ? ` <b>${ujCegek.size} új cég</b> jön létre.` : ''}${told ? ` ${told} máshol is szereplő számlaszám ${st.opciok.utkozes === 'toldalek' ? 'toldalékkal' : 'változatlanul'} kerül be.` : ''}</p>` : ''}
-      ${jav ? `<p data-import-javit-osszegzo><b>${jav} meglévő számla</b> adata az Excel szerinti értékre módosul (${Array.from(javMezok).join(', ')})${javRendezett ? ` – ebből <b>${javRendezett} már rendezett</b> (FIZETVE / BESZÁMÍTVA) számla` : ''}. A régi értékek a számlák változásnaplójában megmaradnak.</p>` : ''}
+      ${jav ? `<p data-import-javit-osszegzo><b>${jav} meglévő számla</b> adata az Excel szerinti értékre módosul (${Array.from(javMezok).join(', ')})${ov ? ` – ebből <b>${ov} összevonás</b>: a rendszerbeli, más számlaszámú számla az Excel számlaszámát kapja` : ''}${javRendezett ? ` – ${ov ? 'és ' : 'ebből '}<b>${javRendezett} már rendezett</b> (FIZETVE / BESZÁMÍTVA) számla` : ''}. A státusz, a fizetés és az utalás adatai nem változnak; a régi értékek a számlák változásnaplójában megmaradnak.${felul ? ` <b class="negativ">${felul} utalásban lévő számla felülírással módosul</b> – ez az utalás összegét / tételeit is érinti.` : ''}</p>` : ''}
+      ${importMervado() === 'import' && st.opciok.ceg_frissit ? '<p class="kicsi">A párosított cégek partnerkódja (és üres adószáma) az Excel szerint frissül.</p>' : ''}
       <p class="kicsi">Eltérés esetén a mérvadó: <b>${importMervado() === 'import' ? 'Import (az Excel)' : 'Adatbázis'}</b>${importMervado() !== 'import' && el.osszesites.elter ? ` – ${el.osszesites.elter} meglévő számla eltér az Exceltől, ezek változatlanok maradnak` : ''}.</p>
       <p class="kicsi">${st.mentesKell ? `${I.db} Előtte automatikusan teljes adatbázis-mentés készül a DBBCKP mappába.` : '<b>Import előtti mentés nélkül</b> (admin kikapcsolta).'} A sorok ${ids.length > 400 ? 'adagokban, adagonként egy-egy tranzakcióban' : 'egyetlen tranzakcióban'} kerülnek be.</p>`, { ok: 'Importálás', okOsztaly: 'btn-zold' });
     if (!ok) return;
     const ADAG = 400;
     const adagok = []; for (let i = 0; i < ids.length; i += ADAG) adagok.push(ids.slice(i, i + ADAG));
     const m = modal({ bezarhato: false, osztaly: 'nagy-uzenet', html: `<div class="toltes"></div><div class="fo">Importálás…</div><div class="kis" data-import-halad>${st.mentesKell ? 'Előbb az adatbázis mentése, majd ' : ''}${ids.length} sor rögzítése. Ne zárd be az oldalt!</div><div class="halad" style="margin-top:14px"><span data-import-halad-sav style="width:0"></span></div>` });
-    const ossz = { bejovo: 0, kimeno: 0, uj_ceg: 0, uj_kotes: 0, uj_archiv: 0, kihagyott: 0, toldalekos: 0, fizetve: 0, javitva: 0 };
-    let ujKotesek = [], ujKotesekDb = 0, kihagyva = [], javitasok = [], mentes = null, kesz = 0;
+    const ossz = { bejovo: 0, kimeno: 0, uj_ceg: 0, uj_kotes: 0, uj_archiv: 0, kihagyott: 0, toldalekos: 0, fizetve: 0, javitva: 0, osszevont: 0, vedett: 0, ceg_frissitve: 0 };
+    let ujKotesek = [], ujKotesekDb = 0, kihagyva = [], javitasok = [], cegValt = [], mentes = null, kesz = 0;
     try {
       for (let a = 0; a < adagok.length; a++) {
-        const r = await api('import_vegrehajt', { token: st.token, sorok: adagok[a], opciok: st.opciok, elso: a === 0, utolso: a === adagok.length - 1 });
+        const r = await api('import_vegrehajt', { token: st.token, sorok: adagok[a], opciok: Object.assign({}, st.opciok, { felulir: Array.from(st.felulir), osszevon: st.osszevon }), elso: a === 0, utolso: a === adagok.length - 1 });
         Object.keys(ossz).forEach((k) => { ossz[k] += r.stat[k] || 0; });
-        ujKotesek = ujKotesek.concat(r.uj_kotesek || []); ujKotesekDb += r.uj_kotesek_db || 0; kihagyva = kihagyva.concat(r.kihagyva || []); javitasok = javitasok.concat(r.javitasok || []);
+        ujKotesek = ujKotesek.concat(r.uj_kotesek || []); ujKotesekDb += r.uj_kotesek_db || 0; kihagyva = kihagyva.concat(r.kihagyva || []); javitasok = javitasok.concat(r.javitasok || []); cegValt = cegValt.concat(r.ceg_valtozasok || []);
         if (r.mentes) mentes = r.mentes;
         kesz += adagok[a].length;
         const h = $('[data-import-halad]'); if (h) h.textContent = `${kesz} / ${ids.length} sor kész…`;
@@ -2324,8 +2389,9 @@
         <div class="import-eredmeny">
           <div><span>Bejövő számla</span><b>${ossz.bejovo}</b></div><div><span>Kimenő számla</span><b>${ossz.kimeno}</b></div>
           <div><span>Új cég</span><b>${ossz.uj_ceg}</b></div><div><span>Új kötés</span><b>${ossz.uj_kotes + ossz.uj_archiv}</b></div>
-          ${ossz.javitva ? `<div data-import-javitva><span>Javított számla</span><b>${ossz.javitva}</b></div>` : ''}${ossz.toldalekos ? `<div><span>Toldalékos számlaszám</span><b>${ossz.toldalekos}</b></div>` : ''}${ossz.kihagyott ? `<div><span>Kihagyva</span><b>${ossz.kihagyott}</b></div>` : ''}
+          ${ossz.javitva ? `<div data-import-javitva><span>Javított számla</span><b>${ossz.javitva}</b></div>` : ''}${ossz.osszevont ? `<div><span>Ebből összevonás</span><b>${ossz.osszevont}</b></div>` : ''}${ossz.vedett ? `<div><span>Utalásban – nem módosult</span><b>${ossz.vedett}</b></div>` : ''}${ossz.ceg_frissitve ? `<div><span>Cégadat frissítve</span><b>${ossz.ceg_frissitve}</b></div>` : ''}${ossz.toldalekos ? `<div><span>Toldalékos számlaszám</span><b>${ossz.toldalekos}</b></div>` : ''}${ossz.kihagyott ? `<div><span>Kihagyva</span><b>${ossz.kihagyott}</b></div>` : ''}
         </div>
+        ${cegValt.length ? `<p class="kicsi" style="text-align:left">Cégadatok: ${cegValt.slice(0, 15).map((c) => `<b>${esc(c.nev)}</b> – ${esc(c.valtozas)}`).join('; ')}${cegValt.length > 15 ? ' …' : ''}</p>` : ''}
         ${javitasok.length ? `<p class="kicsi" style="text-align:left">${ossz.javitva > 20 ? `Az első 20 javítás (összesen ${ossz.javitva}): ` : 'Javítások: '}${javitasok.slice(0, 20).map((j) => `<b>„${esc(j.szamlaszam)}”</b> – ${j.valtozasok.map((v) => `${esc(v.m.toLowerCase())} ${esc(v.r)} → ${esc(v.u)}`).join(', ')}`).join('; ')}${ossz.javitva > 20 ? ' …' : ''}</p>` : ''}
         ${ujKotesek.length ? `<p class="kicsi" style="text-align:left">${ujKotesekDb > ujKotesek.length ? `Az első ${ujKotesek.length} új kötés (összesen ${ujKotesekDb}): ` : 'Új kötések: '}${ujKotesek.map((k) => `<a href="#/bejovo/ceg/${k.ceg_id}/kotes/${k.id}" class="mono">${esc(k.kod)}</a>${k.regi_kod ? ` (régi ${esc(k.regi_kod)})` : ''}`).join(', ')}</p>` : ''}
         ${kihagyva.length ? `<p class="kicsi" style="text-align:left">Kihagyott sorok: ${kihagyva.slice(0, 20).map((x) => `${x.sor}. sor „${esc(x.szamlaszam)}” – ${esc(x.ok)}`).join('; ')}${kihagyva.length > 20 ? ' …' : ''}</p>` : ''}
@@ -3215,6 +3281,12 @@
     'import-fajl-gomb': () => { const i = $('[data-act=import-fajl]'); if (i) i.click(); },
     'import-uj': () => { App.importAllapot = null; nav('#/import'); },
     'import-mervado-oldal': (el) => importMervadoValt(el.dataset.v),
+    'import-felulir': (el) => {   // utalásban lévő számla módosításának felülírása egy sornál
+      const st = App.importAllapot, i = Number(el.dataset.i);
+      if (st.felulir.has(i)) st.felulir.delete(i); else st.felulir.add(i);
+      importJavitAlap(); importChipekRajzol(); importJavitRajzol(); importSorokRajzol();
+    },
+    'import-felesleg-nyit': () => { const st = App.importAllapot; st.nyitottFelesleg = !st.nyitottFelesleg; importFeleslegRajzol(); },
     'import-szuro': (el) => { App.importAllapot.szuro = el.dataset.v; importSorokRajzol(); },
     'import-jelol-mind': (el) => { importJelolMind(el.dataset.mod); },
     'import-inditas': () => importInditas(),
@@ -3351,6 +3423,18 @@
       if (el.name !== 'hatarido_nap') importSorokRajzol();
     } else if (el.matches('[data-act=import-mervado]')) {
       importMervadoValt(el.checked ? 'import' : 'db');
+    } else if (el.matches('[data-act=import-opcio-bool]')) {
+      App.importAllapot.opciok[el.name] = el.checked;
+    } else if (el.matches('[data-act=import-felulir-mind]')) {
+      const st = App.importAllapot;
+      st.elemzes.sorok.forEach((s) => { if (importVedett(s)) { if (el.checked) st.felulir.add(s.i); else st.felulir.delete(s.i); } });
+      importJavitAlap(); importChipekRajzol(); importJavitRajzol(); importSorokRajzol();
+    } else if (el.matches('[data-act=import-osszevon]')) {
+      const st = App.importAllapot, i = Number(el.dataset.i), id = Number(el.value);
+      if (id) st.osszevon[i] = id; else delete st.osszevon[i];
+      const s = st.elemzes.sorok[i];
+      if (s) { if (id && importSorValaszthato(s)) st.kivalasztott.add(s.i); else st.kivalasztott.delete(s.i); }
+      importChipekRajzol(); importJavitRajzol(); importSorokRajzol();
     } else if (el.matches('[data-act=import-javit]')) {
       const st = App.importAllapot;
       st.opciok.javit = IMP_JAVIT.map((m) => m[0]).filter((m) => (m === el.name ? el.checked : st.opciok.javit.includes(m)));

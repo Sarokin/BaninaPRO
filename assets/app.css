@@ -712,6 +712,7 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .import-javit { display: flex; flex-wrap: wrap; gap: 0 20px; }
 .import-javit .jelolo { display: flex; margin: 0; font-size: 14.5px; font-weight: 600; color: var(--tinta); text-transform: none; letter-spacing: 0; }
 .import-javit .jelolo b { font-variant-numeric: tabular-nums; }
+[data-import-javit] > .jelolo.kapcsolo { font-size: 14px; font-weight: 500; color: var(--tinta); text-transform: none; letter-spacing: 0; line-height: 1.4; }
 .info-doboz.import-egyezik { display: flex; gap: 8px; align-items: center; background: var(--zold-tint); border-color: rgba(1,127,1,.3); }
 .info-doboz.import-egyezik svg { flex: none; width: 20px; height: 20px; color: var(--zold); }
 /* „Mérvadó” kapcsoló (1.22): csúszka, két oldalán a két választás – Adatbázis (szürke) ⟷ Import (zöld) */
@@ -735,6 +736,15 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .csuszka.tiltott { opacity: .45; cursor: not-allowed; }
 .mervado .segit { margin-top: 8px; }
 .import-opciok .mervado { margin-top: 0; }
+/* összevonás: jelöltválasztó a sorban; utalás-felülírás gomb; „az adatbázisban van, a fájlban nincs” lista */
+.import-sor .osszevon-valasztas { align-items: center; }
+.import-sor .osszevon-valaszto { font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; border: 1.5px solid var(--vonal); background: var(--mezo-bg); color: var(--tinta); max-width: 100%; }
+.import-sor .csip.kicsi { padding: 4px 10px; font-size: 12px; box-shadow: none; }
+.import-felesleg .fejsor { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.import-felesleg .fejsor .csip { flex: none; }
+.import-felesleg-lista { margin-top: 10px; max-height: 50vh; overflow: auto; }
+.import-felesleg-sor { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13.5px; padding: 6px 0; border-bottom: 1px solid var(--vonal-2); }
+.import-felesleg-sor a.mono { font-weight: 700; }
 .import-sor .osszeg { font-weight: 900; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
 .import-sor .osszeg.negativ { color: var(--piros); }
 .kijelolo.tiltott { opacity: .3; cursor: not-allowed; }

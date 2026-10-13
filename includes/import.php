@@ -153,6 +153,52 @@ function imp_laza_kulcs(string $szamlaszam): string
     return norm_azonosito(preg_replace_callback('/\d+/', fn($m) => ltrim($m[0], '0') === '' ? '0' : ltrim($m[0], '0'), $szamlaszam) ?? '');
 }
 
+/**
+ * Két számlaszám rokonsága (0–3) az összevonáshoz – azonos cég, összeg és dátum mellett dönti el, melyik rendszerbeli számla
+ * ugyanaz, mint az Excel sora:
+ *   3 = csak a bevezető nullákban tér el („26/0001” ↔ „26/001”);
+ *   2 = a számjegycsoportjai egyeznek – a betűk, írásjelek, bevezető nullák nem számítanak, a kétjegyű év a négyjegyűvel azonos
+ *       („4/26” ↔ „4/2026”, „KI-97” ↔ „97”, „K-1787/2026” ↔ „KE-1787/2026”, „EK-1820/2026” ↔ „KE-1820/2026”);
+ *   1 = az évszámcsoportot elhagyva egyeznek („2025/0007” ↔ „2026/0007” – elírt év);
+ *   0 = a számjegyek nem rokonok (pl. „KE-3971/2026” ↔ „KE-3791/2026” betűcsere, „020043” ↔ „861”).
+ */
+function imp_szam_rokonsag(string $a, string $b, int $ev): int
+{
+    if ($a === '' || $b === '') {
+        return 0;
+    }
+    if (imp_laza_kulcs($a) === imp_laza_kulcs($b)) {
+        return 3;
+    }
+    $csoportok = function (string $s, bool $evNelkul) use ($ev): string {
+        preg_match_all('/\d+/', $s, $m);
+        $ki = [];
+        foreach ($m[0] as $d) {
+            $d = ltrim($d, '0');
+            if ($d === '') {
+                $d = '0';
+            }
+            if (strlen($d) === 2 && (int)$d === $ev % 100) {
+                $d = (string)$ev;   // kétjegyű év → négyjegyű
+            }
+            if ($evNelkul && strlen($d) === 4 && (int)$d >= 2000 && (int)$d <= 2099) {
+                continue;
+            }
+            $ki[] = $d;
+        }
+        return implode('|', $ki);
+    };
+    $ca = $csoportok($a, false);
+    if ($ca !== '' && $ca === $csoportok($b, false)) {
+        return 2;
+    }
+    $ca = $csoportok($a, true);
+    if ($ca !== '' && $ca === $csoportok($b, true)) {
+        return 1;
+    }
+    return 0;
+}
+
 function import_tmp_dir(): string
 {
     $d = sys_get_temp_dir();
@@ -626,12 +672,13 @@ function import_db_szamlak(): array
     $ki = ['BEJOVO' => [], 'KIMENO' => []];
     $lekerdezesek = [
         'BEJOVO' => 'SELECT b.id, b.kod, b.szamlaszam, b.szamlaszam_norm AS n, b.osszeg, b.kelt, b.teljesites_datum, b.fizetesi_hatarido, b.statusz, b.kotes_id,
-                            k.ceg_id, k.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt
+                            k.ceg_id, k.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt, b.utalas_id, ut.uid AS utalas_uid
                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id
+                       LEFT JOIN utalasok ut ON ut.id = b.utalas_id
                        LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) r ON r.szamla_id = b.id
                       ORDER BY b.id',
         'KIMENO' => 'SELECT s.id, s.kod, s.szamlaszam, s.szamlaszam_norm AS n, s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, NULL AS kotes_id,
-                            s.ceg_id, s.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt
+                            s.ceg_id, s.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt, NULL AS utalas_id, NULL AS utalas_uid
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id
                        LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" GROUP BY szamla_id) r ON r.szamla_id = s.id
                       ORDER BY s.id',
@@ -658,7 +705,9 @@ function import_db_szamlak(): array
 function import_letezo_nezet(array $f): array
 {
     return ['irany' => $f['irany'], 'id' => $f['id'], 'kod' => $f['kod'], 'szamlaszam' => $f['szamlaszam'], 'ceg_id' => $f['ceg_id'], 'ceg_nev' => $f['ceg_nev'],
-            'statusz' => $f['statusz'], 'penznem' => $f['penznem'], 'osszeg' => $f['osszeg'], 'reszt' => $f['reszt']];
+            'statusz' => $f['statusz'], 'penznem' => $f['penznem'], 'osszeg' => $f['osszeg'], 'reszt' => $f['reszt'], 'kotes_id' => $f['kotes_id'] ?? null,
+            'kelt' => $f['kelt'], 'teljesites_datum' => $f['teljesites_datum'], 'fizetesi_hatarido' => $f['fizetesi_hatarido'],
+            'utalas_id' => isset($f['utalas_id']) ? (int)$f['utalas_id'] : null, 'utalas_uid' => $f['utalas_uid'] ?? null];
 }
 
 /**
@@ -737,20 +786,23 @@ function import_parositas_ment(array $uj): void
  * A számlát zárolja és újra összeveti – időközben változhatott. Visszaad: null, ha nincs mit javítani,
  * különben ['id', 'szulo', 'kod', 'szamlaszam', 'ceg_id', 'ceg_nev', 'penznem', 'statusz', 'valtozasok' => [{m, r, u}]].
  */
-function import_szamla_javit(array $s, array $mezok, array $u): ?array
+function import_szamla_javit(array $s, array $mezok, array $u, bool $felulir = false): ?array
 {
     $id = (int)($s['letezo']['id'] ?? 0);
     if ($s['irany'] === 'BEJOVO') {
         $db = db_row('SELECT b.id, b.kod, b.szamlaszam, b.osszeg, b.kelt, b.teljesites_datum, b.fizetesi_hatarido, b.statusz, b.kotes_id, k.ceg_id, k.penznem, c.nev AS ceg_nev,
-                             COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id), 0) AS reszt
+                             b.utalas_id, COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id), 0) AS reszt
                         FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id WHERE b.id = ? FOR UPDATE', [$id]);
     } else {
         $db = db_row('SELECT s.id, s.kod, s.szamlaszam, s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, NULL AS kotes_id, s.ceg_id, s.penznem, c.nev AS ceg_nev,
-                             COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0) AS reszt
+                             NULL AS utalas_id, COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0) AS reszt
                         FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id WHERE s.id = ? FOR UPDATE', [$id]);
     }
     if (!$db || $db['penznem'] !== $s['penznem']) {
         return null;
+    }
+    if ($db['utalas_id'] !== null && !$felulir) {
+        return ['vedett' => true];   // időközben (vagy az elemzés óta) utalásba került – felülírás nélkül nem nyúlunk hozzá
     }
     $set = [];
     $p = [];
@@ -1033,7 +1085,7 @@ function import_sorok_allapot(array $el): array
     }
     $sorok = [];
     $fajlNorm = [];
-    $ossz = ['uj' => 0, 'letezik' => 0, 'elter' => 0, 'utkozik' => 0, 'dupla' => 0, 'hiba' => 0, 'figyelmeztetes' => 0, 'mas_ceg' => 0, 'hasonlo' => 0];
+    $ossz = ['uj' => 0, 'letezik' => 0, 'elter' => 0, 'utkozik' => 0, 'dupla' => 0, 'hiba' => 0, 'figyelmeztetes' => 0, 'mas_ceg' => 0, 'hasonlo' => 0, 'osszevon' => 0, 'vedett' => 0];
     $eltDb = array_fill_keys(array_keys(IMP_JAVITHATO), 0);
     $kotesek = [];   // kötéskönyv: régi ID|identitás|pénznem → info
     foreach ($el['nyers'] as $ny) {
@@ -1045,6 +1097,9 @@ function import_sorok_allapot(array $el): array
         $s['letezo'] = null;
         $s['elteresek'] = [];
         $s['mas_ceg'] = false;
+        $s['osszevon'] = null;            // összevonás egy más számlaszámú rendszerbeli számlával: ['fok' => rokonság 0–3, 'regi_szamlaszam']
+        $s['osszevon_jeloltek'] = [];     // több egyformán hasonló jelölt – a felhasználó választ
+        $s['vedett'] = null;              // a megtalált számla utalásban van (az utalás uid-ja): alapból nem módosul
         $csId = $nevCsoport[$s['ceg_nev']] ?? null;
         $s['csoport_id'] = $csId;
         $ident = $csId !== null ? $identitas[$csId] : null;
@@ -1186,54 +1241,86 @@ function import_sorok_allapot(array $el): array
         }
         $sorok[] = $s;
     }
-    // új sor, de a cégnek van ugyanilyen összegű és dátumú számlája, amelyet a fájl egyetlen sora sem talált meg:
-    //   – ha pontosan egy ilyen van, és a számlaszáma lazán egyezik („26/0001” ↔ „26/001”), az ugyanaz a számla: megtalált
-    //     (letezik / elter, a számlaszám írásmódja javítható eltérés);
-    //   – különben (pl. a DOS-ból „4/2026”, az Excelben „4/26”) csak figyelmeztetés, a sor új marad
+    // Új sor, de a cégnek van ugyanilyen összegű és dátumú (teljesítés vagy kelt) számlája, amelyet a fájl egyetlen sora sem
+    // talált meg: majdnem biztosan ugyanaz a számla más (elírt vagy máshogy írt) számlaszámmal – a DOS-ból átvett adatoknál ez
+    // gyakori („26/0001” ↔ „26/001”, „4/2026” ↔ „4/26”, „K-1787/2026” ↔ „KE-1787/2026”, „KE-3971” ↔ „KE-3791”).
+    //   – egyetlen (vagy a számjegyei szerint egyértelműen legjobban hasonló) jelölt → ÖSSZEVONÁS: a sor „elter” lesz, osszevon
+    //     jelzéssel; Import-mérvadónál a rendszerbeli számla az Excel számlaszámát és adatait kapja (státusza, utalása nem változik);
+    //   – több egyformán hasonló jelölt → a sor új marad, a jelölteket felkínálja: a felhasználó választ (összevonás vagy új számla).
     foreach ($sorok as &$s) {
         if ($s['allapot'] !== 'uj' || $s['ceg_id'] === null) {
             continue;
         }
         $jeloltek = [];
-        $laza = [];
-        $lk = imp_laza_kulcs($s['szamlaszam']);
         foreach ($cegSzamlak[$s['irany']][$s['ceg_id']] ?? [] as $f) {
             if (isset($talaltId[$f['irany'] . ':' . $f['id']]) || $f['penznem'] !== $s['penznem'] || abs((float)$f['osszeg'] - (float)$s['osszeg']) >= 0.005) {
                 continue;
             }
-            if ($f['teljesites_datum'] === $s['teljesites'] || $f['kelt'] === $s['kelt'] || $f['kelt'] === $s['teljesites']) {
+            // erős dátumegyezés: a teljesítés egyezik (a DOS-ban a kelt a teljesítés napja volt); gyenge: csak a kelt egyezik
+            $eros = $f['teljesites_datum'] === $s['teljesites'] || $f['kelt'] === $s['teljesites'];
+            if ($eros || $f['kelt'] === $s['kelt']) {
+                $f['rokonsag'] = imp_szam_rokonsag($s['szamlaszam'], imp_szamlaszam_alap($f['szamlaszam']), (int)$s['ev']);
+                $f['datum_eros'] = $eros;
                 $jeloltek[] = $f;
-                if ($lk !== '' && imp_laza_kulcs(imp_szamlaszam_alap($f['szamlaszam'])) === $lk) {
-                    $laza[] = $f;
-                }
             }
         }
         if (!$jeloltek) {
             continue;
         }
-        if (!$s['figyelmeztetes']) {
-            $ossz['figyelmeztetes']++;
-        }
-        if (count($laza) === 1) {
-            $f = $laza[0];
+        $max = max(array_column($jeloltek, 'rokonsag'));
+        $legjobb = array_values(array_filter($jeloltek, fn($f) => $f['rokonsag'] === $max));
+        // automatikus összevonás csak elég bizonyítékkal: egyetlen legjobb jelölt, és vagy rokon a számlaszám, vagy a teljesítés
+        // napja is egyezik – ha a számlaszámok nem rokonok és csak a kelt egyezik, a felhasználó dönt (jelölt)
+        if (count($legjobb) === 1 && ($max >= 1 || $legjobb[0]['datum_eros'])) {
+            $f = $legjobb[0];
             $talaltId[$f['irany'] . ':' . $f['id']] = true;
             $ossz['uj']--;
             $s['letezo'] = import_letezo_nezet($f);
-            $s['figyelmeztetes'][] = 'a számlaszám írásmódja más, mint a rendszerben („' . $f['szamlaszam'] . '”) – azonos cég, összeg és dátum alapján ugyanaz a számla';
+            $s['osszevon'] = ['fok' => $max, 'regi_szamlaszam' => $f['szamlaszam']];
             $s['elteresek'] = import_elteresek($s, $f);
             $s['allapot'] = $s['elteresek'] ? 'elter' : 'letezik';
             $ossz[$s['allapot']]++;
-            $s['uzenet'] = 'már a rendszerben van: ' . $f['kod'] . ($s['elteresek'] ? ' – eltér: ' . implode(', ', array_map(fn($e) => mb_strtolower($e['cimke'], 'UTF-8'), $s['elteresek'])) : '');
+            $ossz['osszevon']++;
+            $s['uzenet'] = 'összevonás a rendszerben lévő számlával: ' . $f['kod'] . ' „' . $f['szamlaszam'] . '” – azonos cég, összeg és dátum'
+                . ($max >= 2 ? ', a számlaszám számjegyei egyeznek' : ($max === 1 ? ', a számlaszám az évszámon kívül egyezik' : ', a számlaszám más'));
+            if ($max === 0) {
+                if (!$s['figyelmeztetes']) {
+                    $ossz['figyelmeztetes']++;
+                }
+                $s['figyelmeztetes'][] = 'a két számlaszám nem hasonlít („' . $s['szamlaszam'] . '” ↔ „' . $f['szamlaszam'] . '”) – csak a cég, az összeg és a dátum egyezik; nézd meg, mielőtt összevonod';
+            }
             foreach ($s['elteresek'] as $e) {
                 $eltDb[$e['mezo']]++;
             }
             continue;
         }
+        // több egyformán hasonló jelölt: a felhasználó dönt
+        $s['osszevon_jeloltek'] = array_map(fn($f) => import_letezo_nezet($f) + ['rokonsag' => $f['rokonsag']], array_slice($legjobb, 0, 6));
         $ossz['hasonlo']++;
-        $s['figyelmeztetes'][] = 'lehet, hogy már megvan más számlaszámmal: ' . implode(', ', array_map(fn($f) => $f['kod'] . ' „' . $f['szamlaszam'] . '”', array_slice($jeloltek, 0, 3)))
-            . (count($jeloltek) > 3 ? ' …' : '') . ' (ugyanannál a cégnél azonos összeggel és dátummal) – ellenőrizd, mielőtt importálod';
+        if (!$s['figyelmeztetes']) {
+            $ossz['figyelmeztetes']++;
+        }
+        $s['figyelmeztetes'][] = 'több rendszerbeli számla is lehet ugyanez (azonos cég, összeg és dátum): ' . implode(', ', array_map(fn($f) => $f['kod'] . ' „' . $f['szamlaszam'] . '”', array_slice($legjobb, 0, 4)))
+            . (count($legjobb) > 4 ? ' …' : '') . ' – válaszd ki a sornál, melyikkel vonja össze, vagy maradjon új számla';
     }
     unset($s);
+    // Utalásban lévő számla (bejövő): alapból nem módosul – az összege az utalás összegét, a számlaszáma az utalás tételét
+    // változtatná. A felhasználó sorban (vagy egyben) felülírhatja; a végrehajtás a felulir listát nézi.
+    foreach ($sorok as &$s) {
+        if ($s['allapot'] === 'elter' && !empty($s['letezo']['utalas_id'])) {
+            $s['vedett'] = (string)($s['letezo']['utalas_uid'] ?: ('#' . $s['letezo']['utalas_id']));
+            $ossz['vedett']++;
+            if (!$s['figyelmeztetes']) {
+                $ossz['figyelmeztetes']++;
+            }
+            $s['figyelmeztetes'][] = 'utalásban szerepel (' . $s['vedett'] . '): alapból nem módosul, mert befolyásolná az utalást – a sornál felülírható';
+        }
+    }
+    unset($s);
+    // Az adatbázisban van, a fájlban nincs: a fájl cégeinek számlái (irányonként, a fájl keltezési időszakában), amelyeket
+    // egyetlen sor sem talált meg – a könyvelőprogram exportja teljes, ezért ezek gyanúsak (dupla, elírt vagy téves számla).
+    // Csak tájékoztatás, az import nem nyúl hozzájuk.
+    $felesleg = import_felesleg($sorok, $cegSzamlak, $talaltId);
     $cegOssz = ['uj' => 0, 'letezik' => 0, 'bizonytalan' => 0];
     foreach ($el['csoportok'] as $cs) {
         $cegOssz[str_starts_with($identitas[$cs['id']], 'db:') ? 'letezik' : 'uj']++;
@@ -1244,9 +1331,48 @@ function import_sorok_allapot(array $el): array
     $el['sorok'] = $sorok;
     $el['osszesites'] = $ossz;
     $el['elteres_db'] = $eltDb;
+    $el['felesleg'] = $felesleg;
     $el['ceg_osszesites'] = $cegOssz;
     $el['kotesek_osszesites'] = ['db' => count($kotesek), 'meglevo' => count(array_filter($kotesek, fn($k) => $k['meglevo'] !== null))];
     return $el;
+}
+
+/**
+ * „Az adatbázisban van, a fájlban nincs”: a fájlban szereplő cégek számlái (irányonként, a fájl sorainak keltezési
+ * időszakában), amelyeket a fájl egyetlen sora sem talált meg. Legfeljebb IMP_FELESLEG_MAX tételt ad vissza.
+ */
+const IMP_FELESLEG_MAX = 300;
+function import_felesleg(array $sorok, array $cegSzamlak, array $talaltId): array
+{
+    $hatar = [];   // irány → ['cegek' => [id => 1], 'tol' => ..., 'ig' => ...]
+    foreach ($sorok as $s) {
+        if ($s['allapot'] === 'hiba' || $s['ceg_id'] === null || !$s['kelt']) {
+            continue;
+        }
+        $h = &$hatar[$s['irany']];
+        $h['cegek'][$s['ceg_id']] = 1;
+        $napok = array_filter([$s['kelt'], $s['teljesites']]);
+        $h['tol'] = isset($h['tol']) ? min($h['tol'], min($napok)) : min($napok);
+        $h['ig'] = isset($h['ig']) ? max($h['ig'], max($napok)) : max($napok);
+        unset($h);
+    }
+    $lista = [];
+    $db = 0;
+    foreach ($hatar as $irany => $h) {
+        foreach ($h['cegek'] as $cid => $_) {
+            foreach ($cegSzamlak[$irany][$cid] ?? [] as $f) {
+                if (isset($talaltId[$f['irany'] . ':' . $f['id']]) || $f['kelt'] < $h['tol'] || $f['kelt'] > $h['ig']) {
+                    continue;
+                }
+                $db++;
+                if (count($lista) < IMP_FELESLEG_MAX) {
+                    $lista[] = import_letezo_nezet($f);
+                }
+            }
+        }
+    }
+    usort($lista, fn($a, $b) => [$a['ceg_nev'], $a['kelt']] <=> [$b['ceg_nev'], $b['kelt']]);
+    return ['db' => $db, 'lista' => $lista, 'idoszak' => array_map(fn($h) => ['tol' => $h['tol'], 'ig' => $h['ig'], 'cegek' => count($h['cegek'])], $hatar)];
 }
 
 /** A kliensnek küldött elemzés (a nyers sorok nélkül, azok a szerveren maradnak) */
@@ -1265,13 +1391,38 @@ function import_kliens_nezet(array $el): array
  * $opciok: bejovo_statusz FIZETENDO|FIZETVE, kimeno_statusz NYITOTT|FIZETVE, utkozes kihagy|toldalek, hatarido_nap (kötéskönyv),
  *          mervado: eltérés esetén melyik adat a mérvadó – 'db' (alap: a meglévő számla nem módosul, csak az új sorok kerülnek be)
  *                   vagy 'import' (a meglévő számla az Excel szerinti értéket kapja),
- *          javit: 'import' mérvadónál a meglévő számlákon javítandó mezők (IMP_JAVITHATO kulcsai; alapból mind)
+ *          javit: 'import' mérvadónál a meglévő számlákon javítandó mezők (IMP_JAVITHATO kulcsai; alapból mind),
+ *          felulir: azoknak a soroknak az indexei (i), amelyeknél az utalásban lévő számla is módosulhat (alapból nem),
+ *          osszevon: {i: számla id} – több jelölt közül melyikkel vonja össze a sort (osszevon_jeloltek),
+ *          ceg_frissit: a párosított cégek partnerkódja (és üres adószáma) az Excel szerint frissüljön (alapból igen)
  * Meglévő számlát csak Irodavezető / Admin javíthat – és bármilyen státuszban (a kézi szerkesztés a rendezett
- * számla összegét nem engedi átírni; itt a könyvelőprogram adata a mérvadó).
+ * számla összegét nem engedi átírni; itt a könyvelőprogram adata a mérvadó). A státuszt, az utalást, a fizetés adatait
+ * az import sosem írja át.
  */
 function import_vegrehajt(array $el, array $kivalasztott, array $opciok, array $u): array
 {
     $el = import_sorok_allapot($el);
+    $felulir = array_fill_keys(array_map('intval', is_array($opciok['felulir'] ?? null) ? $opciok['felulir'] : []), true);
+    $osszevonValasztas = is_array($opciok['osszevon'] ?? null) ? $opciok['osszevon'] : [];
+    $cegFrissit = !isset($opciok['ceg_frissit']) || !empty($opciok['ceg_frissit']);
+    // a felhasználó által választott összevonások (több jelölt közül): a sor ettől „elter” lesz az adott számlával
+    foreach ($el['sorok'] as &$s) {
+        if ($s['allapot'] !== 'uj' || !$s['osszevon_jeloltek'] || !isset($osszevonValasztas[$s['i']])) {
+            continue;
+        }
+        $valasztott = (int)$osszevonValasztas[$s['i']];
+        foreach ($s['osszevon_jeloltek'] as $j) {
+            if ((int)$j['id'] === $valasztott) {
+                $s['letezo'] = $j;
+                $s['osszevon'] = ['fok' => $j['rokonsag'], 'regi_szamlaszam' => $j['szamlaszam'], 'valasztott' => true];
+                $s['elteresek'] = import_elteresek($s, $j);
+                $s['allapot'] = 'elter';
+                $s['vedett'] = !empty($j['utalas_id']) ? (string)($j['utalas_uid'] ?: ('#' . $j['utalas_id'])) : null;
+                break;
+            }
+        }
+    }
+    unset($s);
     $bejovoSt = ($opciok['bejovo_statusz'] ?? 'FIZETENDO') === 'FIZETVE' ? 'FIZETVE' : 'FIZETENDO';
     $kimenoSt = ($opciok['kimeno_statusz'] ?? 'NYITOTT') === 'FIZETVE' ? 'FIZETVE' : 'NYITOTT';
     // ütköző számlaszám (más cégnél / más irányban már szerepel): enged = változatlanul rögzíti (1.9-től másik kötésben megengedett), kihagy, toldalek
@@ -1291,10 +1442,11 @@ function import_vegrehajt(array $el, array $kivalasztott, array $opciok, array $
     $importJel = 'Excel import: ' . $el['fajl'] . ' (' . date('Y.m.d. H:i') . ', ' . $u['felhasznalonev'] . ')';
     $koteskonyv = $el['formatum'] === 'koteskonyv';
 
-    $e = db_tx(function () use ($el, $valasztott, $bejovoSt, $kimenoSt, $toldalek, $utkozesMod, $hataridoNap, $mervado, $javitMezok, $javithat, $csById, $u, $ma, $importJel, $koteskonyv) {
-        $stat = ['bejovo' => 0, 'kimeno' => 0, 'uj_ceg' => 0, 'uj_kotes' => 0, 'uj_archiv' => 0, 'kihagyott' => 0, 'toldalekos' => 0, 'fizetve' => 0, 'javitva' => 0];
+    $e = db_tx(function () use ($el, $valasztott, $bejovoSt, $kimenoSt, $toldalek, $utkozesMod, $hataridoNap, $mervado, $javitMezok, $javithat, $felulir, $cegFrissit, $csById, $u, $ma, $importJel, $koteskonyv) {
+        $stat = ['bejovo' => 0, 'kimeno' => 0, 'uj_ceg' => 0, 'uj_kotes' => 0, 'uj_archiv' => 0, 'kihagyott' => 0, 'toldalekos' => 0, 'fizetve' => 0, 'javitva' => 0, 'osszevont' => 0, 'vedett' => 0, 'ceg_frissitve' => 0];
         $auditSorok = [];
         $javitasok = [];
+        $cegValt = [];
         $parositas = [];   // partnerkód (vagy név) → cég id: amit ebben az importban tényleg használtunk
         $cegId = [];       // identitás → id
         $cegNevek = [];
@@ -1312,18 +1464,34 @@ function import_vegrehajt(array $el, array $kivalasztott, array $opciok, array $
                 continue;
             }
             if ($s['allapot'] === 'elter') {
-                // meglévő számla javítása az Excel szerint – csak ha az import a mérvadó
-                $j = $javithat ? import_szamla_javit($s, $javitMezok, $u) : null;
-                if ($j === null) {
+                // meglévő számla javítása / összevonása az Excel szerint – csak ha az import a mérvadó; utalásban lévő számla csak felülírással
+                $felul = isset($felulir[$s['i']]);
+                if ($s['vedett'] !== null && !$felul) {
                     $stat['kihagyott']++;
-                    $kihagyva[] = ['sor' => $s['sor'], 'szamlaszam' => $s['szamlaszam'], 'ok' => $mervado !== 'import'
+                    $stat['vedett']++;
+                    $kihagyva[] = ['sor' => $s['sor'], 'szamlaszam' => $s['szamlaszam'], 'ok' => 'utalásban szerepel (' . $s['vedett'] . ') – felülírás nélkül nem módosul'];
+                    continue;
+                }
+                $j = $javithat ? import_szamla_javit($s, $javitMezok, $u, $felul) : null;
+                if ($j === null || isset($j['vedett'])) {
+                    $stat['kihagyott']++;
+                    if ($j !== null) {
+                        $stat['vedett']++;
+                    }
+                    $kihagyva[] = ['sor' => $s['sor'], 'szamlaszam' => $s['szamlaszam'], 'ok' => $j !== null ? 'időközben utalásba került – nem módosul' : ($mervado !== 'import'
                         ? 'az adatbázis a mérvadó – a meglévő számla nem módosul'
-                        : ($javithat ? 'nincs javítható eltérés (a kiválasztott mezőkben egyezik, vagy kézi javítást igényel)' : 'meglévő számlát csak Irodavezető vagy Admin javíthat')];
+                        : ($javithat ? 'nincs javítható eltérés (a kiválasztott mezőkben egyezik, vagy kézi javítást igényel)' : 'meglévő számlát csak Irodavezető vagy Admin javíthat'))];
                     continue;
                 }
                 $stat['javitva']++;
-                $javitasok[] = $j + ['irany' => $s['irany']];
-                $auditSorok[] = [$s['irany'], $j['id'], $j['szulo'], 'IMPORT', "Excel importból javítva: {$j['kod']} „{$j['szamlaszam']}” ({$el['fajl']})", $j['valtozasok']];
+                $osszevont = $s['osszevon'] !== null;
+                if ($osszevont) {
+                    $stat['osszevont']++;
+                }
+                $javitasok[] = $j + ['irany' => $s['irany'], 'osszevont' => $osszevont, 'felulirva' => $s['vedett'] !== null];
+                $auditSorok[] = [$s['irany'], $j['id'], $j['szulo'], 'IMPORT',
+                    ($osszevont ? "Excel importból összevonva: {$j['kod']} „{$j['szamlaszam']}” → „{$s['szamlaszam']}”" : "Excel importból javítva: {$j['kod']} „{$j['szamlaszam']}”")
+                    . ($s['vedett'] !== null ? ' – utalásban lévő számla, felülírással' : '') . " ({$el['fajl']})", $j['valtozasok']];
                 if (!$s['mas_ceg']) {
                     $parositas[imp_parositas_kulcs($s['partnerkod'], $s['ceg_nev'], $s['irany'])] = $j['ceg_id'];
                 }
@@ -1478,9 +1646,47 @@ function import_vegrehajt(array $el, array $kivalasztott, array $opciok, array $
             $ok = $s['irany'] . ' ' . $s['penznem'];
             $osszegek[$ok] = ($osszegek[$ok] ?? 0) + (float)$s['osszeg'];
         }
+        // a párosított cégek adatai az Excel szerint: a könyvelőprogram partnerkódja (a DOS-kód helyére – az a megjegyzésben marad)
+        // és az üres adószám; csak Import-mérvadónál, csak egyértelmű csoportnál, és csak ha a kódot más cég nem viseli
+        if ($javithat && $cegFrissit) {
+            foreach ($csById as $cs) {
+                if (!empty($cs['bizonytalan']) || $cs['partnerkod'] === '' || imp_csoport_identitas($cs, $csById) !== 'db:' . (int)($cs['cel']['ceg_id'] ?? 0)) {
+                    continue;
+                }
+                $cid = (int)$cs['cel']['ceg_id'];
+                $c = db_row('SELECT id, nev, partnerkod, adoszam, megjegyzes FROM cegek WHERE id = ? FOR UPDATE', [$cid]);
+                if (!$c) {
+                    continue;
+                }
+                $set = [];
+                $p = [];
+                $valt = [];
+                if ((string)$c['partnerkod'] !== $cs['partnerkod'] && !db_val('SELECT COUNT(*) FROM cegek WHERE partnerkod = ? AND id <> ?', [$cs['partnerkod'], $cid])) {
+                    $set[] = 'partnerkod = ?';
+                    $p[] = $cs['partnerkod'];
+                    $valt[] = 'partnerkód ' . ((string)$c['partnerkod'] !== '' ? $c['partnerkod'] : '–') . ' → ' . $cs['partnerkod'];
+                    if ((string)$c['partnerkod'] !== '' && !str_contains((string)$c['megjegyzes'], (string)$c['partnerkod'])) {
+                        $set[] = 'megjegyzes = ?';
+                        $p[] = trim((string)$c['megjegyzes'] . "\nRégi partnerkód: " . $c['partnerkod'] . " (Excel import, $ma)");
+                    }
+                }
+                if ((string)$c['adoszam'] === '' && $cs['adoszam'] !== '') {
+                    $set[] = 'adoszam = ?';
+                    $p[] = $cs['adoszam'];
+                    $valt[] = 'adószám – → ' . $cs['adoszam'];
+                }
+                if (!$set) {
+                    continue;
+                }
+                $p[] = $cid;
+                db_exec('UPDATE cegek SET ' . implode(', ', $set) . ' WHERE id = ?', $p);
+                $stat['ceg_frissitve']++;
+                $cegValt[] = ['ceg_id' => $cid, 'nev' => $c['nev'], 'valtozas' => implode(', ', $valt)];
+            }
+        }
         audit_ir_tobb($auditSorok, $u);
         import_parositas_ment($parositas);
-        return ['stat' => $stat, 'uj_kotesek' => $ujKotesek, 'kihagyva' => $kihagyva, 'osszegek' => $osszegek, 'cegek' => count($cegId), 'javitasok' => $javitasok];
+        return ['stat' => $stat, 'uj_kotesek' => $ujKotesek, 'kihagyva' => $kihagyva, 'osszegek' => $osszegek, 'cegek' => count($cegId), 'javitasok' => $javitasok, 'ceg_valtozasok' => $cegValt];
     });
 
     $st = $e['stat'];
@@ -1488,10 +1694,14 @@ function import_vegrehajt(array $el, array $kivalasztott, array $opciok, array $
     foreach ($e['osszegek'] as $k => $v) {
         $oss[] = "$k " . fmt_osszeg($v);
     }
-    naplo('EXCEL_IMPORT', "{$el['fajl']} ({$el['formatum']}): {$st['bejovo']} bejövő + {$st['kimeno']} kimenő számla rögzítve ({$st['uj_ceg']} új cég, {$st['uj_kotes']} új kötés régi ID-val, {$st['uj_archiv']} új archív kötés, {$st['toldalekos']} toldalékos számlaszám, {$st['javitva']} meglévő számla javítva, {$st['kihagyott']} kihagyva; mérvadó: " . ($mervado === 'import' ? 'import (' . implode(', ', $javitMezok) . ')' : 'adatbázis') . ", bejövő státusz: $bejovoSt, kimenő: $kimenoSt" . ($koteskonyv ? ", határidő: kelt + $hataridoNap nap" : '') . ')' . ($oss ? ' – ' . implode(', ', $oss) : ''));
+    naplo('EXCEL_IMPORT', "{$el['fajl']} ({$el['formatum']}): {$st['bejovo']} bejövő + {$st['kimeno']} kimenő számla rögzítve ({$st['uj_ceg']} új cég, {$st['uj_kotes']} új kötés régi ID-val, {$st['uj_archiv']} új archív kötés, {$st['toldalekos']} toldalékos számlaszám, {$st['javitva']} meglévő számla javítva (ebből {$st['osszevont']} összevonás), {$st['vedett']} utalásban lévő számla kihagyva, {$st['ceg_frissitve']} cég adata frissítve, {$st['kihagyott']} kihagyva; mérvadó: " . ($mervado === 'import' ? 'import (' . implode(', ', $javitMezok) . ')' : 'adatbázis') . ", bejövő státusz: $bejovoSt, kimenő: $kimenoSt" . ($koteskonyv ? ", határidő: kelt + $hataridoNap nap" : '') . ')' . ($oss ? ' – ' . implode(', ', $oss) : ''));
     foreach ($e['javitasok'] as $j) {
-        naplo('EXCEL_JAVITAS', ($j['irany'] === 'BEJOVO' ? 'bejövő' : 'kimenő') . " számla {$j['kod']} „{$j['szamlaszam']}” ({$j['ceg_nev']}, " . ny_statusz_nev($j['statusz']) . '): '
+        naplo('EXCEL_JAVITAS', ($j['irany'] === 'BEJOVO' ? 'bejövő' : 'kimenő') . " számla {$j['kod']} „{$j['szamlaszam']}” ({$j['ceg_nev']}, " . ny_statusz_nev($j['statusz']) . ')'
+            . (!empty($j['osszevont']) ? ' ÖSSZEVONÁS' : '') . (!empty($j['felulirva']) ? ' UTALÁSBAN, FELÜLÍRVA' : '') . ': '
             . implode('; ', array_map(fn($v) => "{$v['m']} {$v['r']} → {$v['u']}", $j['valtozasok'])) . " – {$el['fajl']}");
+    }
+    foreach ($e['ceg_valtozasok'] as $c) {
+        naplo('EXCEL_CEG', "cég #{$c['ceg_id']} {$c['nev']}: {$c['valtozas']} – {$el['fajl']}");
     }
     return $e;
 }
