@@ -15,7 +15,7 @@ define('DB_PASS', 'baninapro_helyi');    // csak a helyi Docker adatbázishoz
 
 // ---- Alkalmazás ----------------------------------------------------------
 define('APP_NAME', 'BaninaPRO');
-define('APP_VERSION', '1.24.2');
+define('APP_VERSION', '1.24.3');
 define('APP_TIMEZONE', 'Europe/Budapest');
 
 // Naplófájlok mappája (naponta új fájl, éjjel 3-kor váltva: ÉÉÉÉHHNN.txt)
@@ -54,7 +54,7 @@ define('QR_KERELEM_LIMIT', 40);        // ennyi QR-kérés / IP / 15 perc
 define('BACKUP_DIR', '/var/lib/baninapro/DBBCKP');   // Docker-kötet
 define('BACKUP_HOUR', 3);              // az éjszakai mentés esedékessége (óra) – a cron is ekkor fusson
 define('BACKUP_FALLBACK', true);       // ha a cron nem futott le, az app az első használatkor pótolja (…_potlas.sql)
-define('BACKUP_MEGORZES_NAP', 0);      // 0 = minden automatikus mentés megmarad; N = az N napnál régebbi AUTOMATIKUS
+define('BACKUP_MEGORZES_NAP', 30);     // 0 = minden automatikus mentés megmarad; N = az N napnál régebbi AUTOMATIKUS (a szerveren a mentő segéd minden mentést 30 nap után töröl)
                                        // mentéseket törli (a legfrissebb 7 mindig marad; kézi és visszaállítás előtti sosem törlődik)
 
 // Fejlesztői hibakiírás (éles környezetben legyen false!)

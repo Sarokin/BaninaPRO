@@ -594,6 +594,13 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.24.2-ről 1.24.3-ra (belső szerver: SQL_LOPO megosztás és 30 napos mentés-takarítás):** a weboldal nem
+változott (csak a Docker-beállítás alapértéke: `BACKUP_MEGORZES_NAP` 30). A belső szerveren a telepítő (`szerver_beallitas.sh`)
+létrehozza az **SQL_LOPO** megosztott mappát (`/srv/SQL_LOPO`, Samba, a belső hálózaton vendégként, jelszó nélkül olvasható:
+`\\<gépnév>\SQL_LOPO`, Mac: `smb://<gépnév>.local/SQL_LOPO`), ahová az éjszakai mentés és az őrszem minden mentést átmásol;
+és minden mentési helyen (Docker-kötet, a gép lemeze, SQL_LOPO, pendrive) **törli a 30 napnál régebbi mentéseket** (a legújabb
+3 mindig marad). A szerveren a teljes telepítőt kell futtatni. cPanelen nincs teendő.
+
 **Frissítés 1.24.1-ről 1.24.2-re (Minden számla: pénznem-csúszka):** adatbázis-módosítás nincs. A „Minden számla” oldalon
 harmadik hármas csúszka: **Összes / EUR / HUF** – alapból a középső, **EUR**. Töltsd fel a frissített `includes/api_konyveles.php`,
 `assets/app.js`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
@@ -1130,4 +1137,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.24.2 (2026-10-13)
+Verzió: 1.24.3 (2026-10-13)

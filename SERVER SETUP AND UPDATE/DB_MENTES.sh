@@ -9,7 +9,8 @@
 #   2. másolat a gép saját lemezére (/var/backups/baninapro – a telepítő mentő segédje végzi);
 #   3. másolat MINDEN csatlakoztatott, írható külső meghajtóra (pendrive, USB-lemez): a meghajtó BaninaPRO-mentesek
 #      mappájába; ha a meghajtó nincs csatolva, a script csatolja, a másolás után kiírja a lemezre (sync), és leválasztja,
-#      hogy a pendrive azonnal kihúzható legyen. A legújabb PENDRIVE_MENTES_DB mentés marad meg rajta.
+#      hogy a pendrive azonnal kihúzható legyen. Legfeljebb PENDRIVE_MENTES_DB mentés marad rajta, és a PENDRIVE_MEGORZES_NAP
+#      napnál régebbiek törlődnek (a legújabb 3 mindig marad) – a többi mentési helyen a telepítő mentő segédje takarít ugyanígy.
 #  A végén kiírja és push-értesítésben is elküldi az eredményt.
 #
 #  Futtatás:   az asztali „DB MENTÉS” ikonnal (az ikont a BaninaPro_App_Updater.sh készíti), vagy terminálból:
@@ -26,13 +27,14 @@
 set -uo pipefail
 
 # shellcheck disable=SC2034  # (a többi szerver-scripttel azonos jelölés; a telepítő és a frissítő a verziót nézheti)
-VALTOZAT=1   # ha a scriptet módosítod, növeld
+VALTOZAT=2   # ha a scriptet módosítod, növeld
 ORSZEM="/usr/local/sbin/baninapro-orszem"       # a telepítő írja: ebből tudja a konténer nevét és a www-data uid-jét
 ERTESITO="/usr/local/sbin/baninapro-ertesites"  # push-értesítés (ha a telepítő beállította)
 MENTO="/usr/local/sbin/baninapro-mentes"        # a telepítő mentő segédje: másolat a gép saját lemezére (baninapro-mentes masol)
 NAPLO="/var/log/baninapro-mentes.log"           # közös napló az éjszakai mentéssel
 PENDRIVE_MAPPA_NEV="BaninaPRO-mentesek"         # ebbe a mappába kerülnek a mentések a meghajtón
-PENDRIVE_MENTES_DB=90                           # ennyi mentés marad meg a meghajtón (a régebbiek törlődnek – csak ebből a mappából)
+PENDRIVE_MENTES_DB=31                           # legfeljebb ennyi mentés marad meg a meghajtón (csak ebből a mappából törlünk)
+PENDRIVE_MEGORZES_NAP=30                        # az ennyi napnál régebbi mentés törlődik a meghajtóról – a legújabb 3 mindig marad
 PENDRIVE_TARTALEK_MB=64                         # legalább ennyi hely maradjon a meghajtón a másolás után
 CSATOLAS_GYOKER="/mnt/baninapro-pendrive"       # ide csatolja a még nem csatolt meghajtókat (a másolás után leválasztja)
 ALLAPOT_MAPPA="/var/lib/baninapro-orszem"       # --ha-uj: mi volt a legutóbb átmásolt mentés és meghajtó
@@ -155,7 +157,7 @@ kotetre_masol() {
     else
         rm -f "$cel/.irasproba"
         if [[ ! -f $cel/OLVASS_EL.txt ]]; then
-            printf 'BaninaPRO adatbázis-mentések (teljes SQL-mentés, a legújabb %s marad meg).\nVisszaállítás a szerveren: az asztali „SQL IMPORT” ikonnal, vagy Admin → Adatbázis-mentések → feltöltés.\n' "$PENDRIVE_MENTES_DB" > "$cel/OLVASS_EL.txt" 2>/dev/null || true
+            printf 'BaninaPRO adatbázis-mentések (teljes SQL-mentés; a %s napnál régebbiek törlődnek, legfeljebb %s marad).\nVisszaállítás a szerveren: az asztali „SQL IMPORT” ikonnal, vagy Admin → Adatbázis-mentések → feltöltés.\n' "$PENDRIVE_MEGORZES_NAP" "$PENDRIVE_MENTES_DB" > "$cel/OLVASS_EL.txt" 2>/dev/null || true
         fi
         local lista=()
         mapfile -t lista < <(teljes_mentesek "$forras" "$PENDRIVE_MENTES_DB")
@@ -173,8 +175,16 @@ kotetre_masol() {
                 break
             fi
         done
-        # csak a legújabb PENDRIVE_MENTES_DB marad – kizárólag a saját mappánkból
+        # csak a legújabb PENDRIVE_MENTES_DB marad, és a PENDRIVE_MEGORZES_NAP napnál régebbiek törlődnek (a legújabb 3 marad) – kizárólag a saját mappánkból
         printf '%s\n' "$cel"/*.sql | sort -r | tail -n +$(( PENDRIVE_MENTES_DB + 1 )) | xargs -r rm -f -- 2>/dev/null
+        local regi=() r n=0
+        mapfile -t regi < <(printf '%s\n' "$cel"/*.sql | sort -r)
+        for r in "${regi[@]}"; do
+            [[ -f $r ]] || continue
+            n=$(( n + 1 ))
+            (( n > 3 )) || continue
+            if [[ -n $(find "$r" -maxdepth 0 -mtime +"$PENDRIVE_MEGORZES_NAP" 2>/dev/null) ]]; then rm -f -- "$r" 2>/dev/null || true; fi
+        done
         osszes=("$cel"/*.sql)
         date '+%Y-%m-%d %H:%M' > "$cel/.utolso_masolas" 2>/dev/null || true
     fi

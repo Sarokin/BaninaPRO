@@ -94,9 +94,16 @@ REPO_URL="https://github.com/Sarokin/BaninaPRO.git"
 REPO_AG="main"
 # ha a gépen nincs rendes felhasználó (pl. root-ként, egy felhőben indított gépen fut), ezt hozza létre
 ALAP_FELH="baninapro"
-# a legutóbbi adatbázis-mentések másolata a gép saját lemezén, a Dockeren kívül (ennyi marad meg)
+# a legutóbbi adatbázis-mentések másolata a gép saját lemezén, a Dockeren kívül (legfeljebb ennyi marad meg)
 GEP_MENTES="/var/backups/baninapro"
-GEP_MENTES_DB=14
+GEP_MENTES_DB=31
+# SQL_LOPO: megosztott mappa a belső hálózaton (Samba, vendégként olvasható) – ide is kerül minden mentés
+# (a felhasználó kérte 2026-10-13-án: bárki elérje, és a mentések innen is letölthetők legyenek)
+LOPO_MAPPA="/srv/SQL_LOPO"
+LOPO_MEGOSZTAS="SQL_LOPO"
+# minden mentési helyen (Docker-kötet, a gép lemeze, SQL_LOPO, pendrive) az ennyi napnál régebbi mentés törlődik –
+# a legújabb 3 mindig marad (a felhasználó kérte: egy hónapnál régebbi mentés ne foglaljon helyet)
+MENTES_MEGORZES_NAP=30
 # Az adatbázis képe a szerveren (a docker-compose.yml mysql-képe helyett): MariaDB – MySQL-kompatibilis, és minden
 # 64 bites processzoron elindul. A hivatalos MySQL-kép régi processzoron (ami nem tudja az x86-64-v2 utasításkészletet:
 # SSE4.2, POPCNT… – ilyen a szerver AMD G-T48E-je) el sem indul: „Fatal glibc error: CPU does not support x86-64-v2”.
@@ -1165,7 +1172,7 @@ lepesek_listaja() {
         "lepes_ssh|15|Hálózat: SSH, gépnév ($GEPNEV.local), tűzfal, GitHub-elérés"
         "lepes_energia|5|Energia: soha nem alszik el, nincs képernyővédő, áramszünet után bekapcsol"
         "lepes_baninapro|240|BaninaPRO: konténerek és adatbázis (javítás, séma, visszaállítás mentésből) – a belső hálózatról is"
-        "lepes_mentes_cron|2|Éjszakai adatbázis-mentés (03:00) – másolat a gép saját lemezére is"
+        "lepes_mentes_cron|60|Éjszakai adatbázis-mentés (03:00) – másolat a gép lemezére, az SQL_LOPO megosztásba és pendrive-ra; $MENTES_MEGORZES_NAP napos takarítás"
         "lepes_ertesitesek|10|Push-értesítések a telefonra (ntfy): leállás, indulás, hibák, mentés, belépések"
         "lepes_orszem|5|Őrszem: ha valami leáll, magától helyreállítja, és értesít"
         "lepes_jelentes|20|Napi állapotjelentés ($JELENTES_IDO) és asztali ikon"
@@ -1927,7 +1934,10 @@ lepes_ssh() {
         ufw allow "$APP_PORT/tcp" >/dev/null 2>&1 || true
         ufw allow "$PMA_PORT/tcp" >/dev/null 2>&1 || true
         ufw allow 5353/udp >/dev/null 2>&1 || true
-        ok "Tűzfal (ufw): az SSH, a BaninaPRO ($APP_PORT), a phpMyAdmin ($PMA_PORT) és a gépnév (mDNS) nyitva"
+        ufw allow 445/tcp >/dev/null 2>&1 || true    # SQL_LOPO megosztás (SMB)
+        ufw allow 139/tcp >/dev/null 2>&1 || true
+        ufw allow 137:138/udp >/dev/null 2>&1 || true
+        ok "Tűzfal (ufw): az SSH, a BaninaPRO ($APP_PORT), a phpMyAdmin ($PMA_PORT), a gépnév (mDNS) és az SQL_LOPO megosztás (SMB) nyitva"
     fi
 
     # a frissítés (git pull) a nyilvános GitHub-repóból megy, https-en – GitHub-kulcs nem kell
@@ -2996,25 +3006,98 @@ lepes_mentes_cron() {
     systemctl enable --now cron >/dev/null 2>&1 || figy "A cron (ütemező) nem indul el – az éjszakai mentés nem fut le (systemctl status cron)."
     # a mentést egy kis burkoló futtatja: naplóz, a mentést a gép saját lemezére is átmásolja, és értesít
     mento_iras
+    lopo_megosztas
     cat > /etc/cron.d/baninapro <<EOF
 # BaninaPRO – napi teljes adatbázis-mentés, mint az éles cron (a szerver_beallitas.sh írta).
 # A mentések a Docker-kötetben vannak (lista: docker exec $APP_KONTENER php -q cron_mentes.php lista),
-# a legutóbbi $GEP_MENTES_DB a gép saját lemezén is: $GEP_MENTES – és ha írható pendrive van a gépben, azon is
-# (BaninaPRO-mentesek mappa; a másolást a BaninaPRO mappa DB_MENTES.sh scriptje végzi).
+# másolatuk a gép saját lemezén ($GEP_MENTES), az SQL_LOPO megosztásban ($LOPO_MAPPA) – és ha írható pendrive van
+# a gépben, azon is (BaninaPRO-mentesek mappa; a másolást a BaninaPRO mappa DB_MENTES.sh scriptje végzi).
+# Minden helyen a $MENTES_MEGORZES_NAP napnál régebbi mentés törlődik (a legújabb 3 marad).
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 $MENTES_CRON root $MENTO
 EOF
     chmod 644 /etc/cron.d/baninapro
-    ok "Éjszakai adatbázis-mentés: minden nap 03:00, másolat a gép lemezére és a bedugott pendrive-ra, push-értesítés (napló: /var/log/baninapro-mentes.log)"
-    # a meglévő mentések másolata a gép saját lemezére (a Dockeren kívül)
-    muvelet "a mentések másolása a gép saját lemezére"
+    ok "Éjszakai adatbázis-mentés: minden nap 03:00, másolat a gép lemezére, az SQL_LOPO megosztásba és a bedugott pendrive-ra, $MENTES_MEGORZES_NAP napos takarítás, push-értesítés (napló: /var/log/baninapro-mentes.log)"
+    # a meglévő mentések másolata a gép saját lemezére és az SQL_LOPO megosztásba (a Dockeren kívül), régi mentések takarítása
+    muvelet "a mentések másolása a gép lemezére és az SQL_LOPO mappába"
     if fut "$MENTO" masol; then
-        ok "Mentések a gép saját lemezén is: $GEP_MENTES ($(find "$GEP_MENTES" -maxdepth 1 -name '*.sql' 2>/dev/null | wc -l) db, a legutóbbi $GEP_MENTES_DB marad meg)"
+        ok "Mentések a gép lemezén ($GEP_MENTES: $( { find "$GEP_MENTES" -maxdepth 1 -name '*.sql' 2>/dev/null || true; } | wc -l) db) és az SQL_LOPO mappában ($LOPO_MAPPA: $( { find "$LOPO_MAPPA" -maxdepth 1 -name '*.sql' 2>/dev/null || true; } | wc -l) db) – a $MENTES_MEGORZES_NAP napnál régebbiek törlődnek"
     else
-        figy "A mentések nem másolhatók a gép saját lemezére ($GEP_MENTES): $(tail -n 1 "$NAPLO")"
+        figy "A mentések nem másolhatók a gép lemezére / az SQL_LOPO mappába: $(tail -n 1 "$NAPLO")"
     fi
     muvelet ""
+}
+
+# SQL_LOPO: megosztott mappa a belső hálózaton – Samba (nyílt forrású, ingyenes), vendégként, jelszó nélkül olvasható;
+# ide másol minden mentést a mentő segéd. Csak ez az egy megosztás van (nyomtató, home mappa nincs).
+lopo_megosztas() {
+    install -d -m 755 "$LOPO_MAPPA"
+    if ! van_csomag samba; then
+        if (( NINCS_INTERNET )); then
+            figy "A Samba nincs telepítve, internet nélkül nem tölthető le – az SQL_LOPO megosztás most nem készül (a mappa megvan: $LOPO_MAPPA)."
+            return 0
+        fi
+        muvelet "Samba (SQL_LOPO megosztás) telepítése"
+        if ! telepit_min samba; then
+            muvelet ""
+            figy "A Samba nem telepíthető: $(apt_hibak) – az SQL_LOPO megosztás nem készül (a mappa megvan: $LOPO_MAPPA)."
+            return 0
+        fi
+        muvelet ""
+    fi
+    local conf=/etc/samba/smb.conf valtozott=0
+    if [[ -f $conf && ! -f $conf.baninapro-eredeti ]] && ! grep -q 'szerver_beallitas.sh írta' "$conf" 2>/dev/null; then
+        cp -a "$conf" "$conf.baninapro-eredeti" 2>/dev/null || true
+    fi
+    cat > "$conf.uj" <<EOF
+# Samba – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja). Az eredeti: smb.conf.baninapro-eredeti
+# Egyetlen megosztás: $LOPO_MEGOSZTAS – a BaninaPRO adatbázis-mentései, vendégként (jelszó nélkül) olvasható a belső hálózaton.
+[global]
+   workgroup = WORKGROUP
+   server string = BaninaPRO szerver
+   server role = standalone server
+   map to guest = Bad User
+   guest account = nobody
+   server min protocol = SMB2
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+   logging = file
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   usershare max shares = 0
+
+[$LOPO_MEGOSZTAS]
+   comment = BaninaPRO adatbázis-mentések (olvasható; a legutóbbi $MENTES_MEGORZES_NAP nap)
+   path = $LOPO_MAPPA
+   browseable = yes
+   guest ok = yes
+   read only = yes
+   force user = nobody
+EOF
+    if ! cmp -s "$conf.uj" "$conf" 2>/dev/null; then
+        mv -f "$conf.uj" "$conf"
+        valtozott=1
+    else
+        rm -f "$conf.uj"
+    fi
+    if command -v testparm >/dev/null && ! testparm -s "$conf" >/dev/null 2>&1; then
+        figy "A Samba beállítófájlja nem megy át a testparm ellenőrzésen – az SQL_LOPO megosztás lehet, hogy nem érhető el."
+    fi
+    systemctl unmask smbd nmbd >/dev/null 2>&1 || true
+    if ! systemctl enable --now smbd >/dev/null 2>&1; then
+        figy "A Samba (smbd) nem indul el – az SQL_LOPO megosztás nem érhető el (systemctl status smbd)."
+        return 0
+    fi
+    systemctl enable --now nmbd >/dev/null 2>&1 || true   # a gépnév Windows-hálózati feloldása (nem kötelező)
+    if (( valtozott )); then systemctl restart smbd >/dev/null 2>&1 || true; fi
+    # az asztalon egy hivatkozás a mappára
+    local asztal
+    asztal="$(asztal_mappa)"
+    if [[ -d $asztal ]]; then felh ln -sfn "$LOPO_MAPPA" "$asztal/$LOPO_MEGOSZTAS" 2>/dev/null || true; fi
+    ok "SQL_LOPO megosztás: \\\\$GEPNEV\\$LOPO_MEGOSZTAS (Windows) · smb://$GEPNEV.local/$LOPO_MEGOSZTAS (Mac) – vendégként olvasható, a mentések $MENTES_MEGORZES_NAP napig"
 }
 
 # A mentő segéd: az éjszakai mentés (cron), a mentések másolata a gép saját lemezére és a bedugott pendrive-ra.
@@ -3022,13 +3105,13 @@ EOF
 mento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO adatbázis-mentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nERTESITO=%q\nKOTET=%q\nGEP_MENTES=%q\nGEP_MENTES_DB=%q\nWWW_UID=%q\nPENDRIVE_SCRIPT=%q\n' \
-            "$APP_KONTENER" "$ERTESITO" "$ADATOK_KOTET" "$GEP_MENTES" "$GEP_MENTES_DB" "$WWW_UID" "$REPO/SERVER SETUP AND UPDATE/DB_MENTES.sh"
+        printf 'APP_KONTENER=%q\nERTESITO=%q\nKOTET=%q\nGEP_MENTES=%q\nGEP_MENTES_DB=%q\nWWW_UID=%q\nPENDRIVE_SCRIPT=%q\nLOPO_MAPPA=%q\nMEGORZES_NAP=%q\n' \
+            "$APP_KONTENER" "$ERTESITO" "$ADATOK_KOTET" "$GEP_MENTES" "$GEP_MENTES_DB" "$WWW_UID" "$REPO/SERVER SETUP AND UPDATE/DB_MENTES.sh" "$LOPO_MAPPA" "$MENTES_MEGORZES_NAP"
         cat <<'EOF'
-#   baninapro-mentes          éjszakai mentés (a cron hívja 03:00-kor): mentés, másolat a gép saját lemezére és a
-#                             bedugott, írható pendrive-ra, értesítés
-#   baninapro-mentes masol    csak a másolatok: a kötet legújabb mentései a gép saját lemezére, és – ha van új mentés
-#                             vagy új meghajtó – a pendrive-ra (az őrszem 2 percenként hívja)
+#   baninapro-mentes          éjszakai mentés (a cron hívja 03:00-kor): mentés, másolat a gép saját lemezére, az SQL_LOPO
+#                             megosztásba és a bedugott, írható pendrive-ra, a MEGORZES_NAP napnál régebbi mentések törlése, értesítés
+#   baninapro-mentes masol    csak a másolatok és a takarítás: a kötet legújabb mentései a gép saját lemezére és az SQL_LOPO
+#                             mappába, és – ha van új mentés vagy új meghajtó – a pendrive-ra (az őrszem 2 percenként hívja)
 set -u
 export LC_ALL=C.UTF-8
 shopt -s nullglob
@@ -3042,34 +3125,65 @@ pendrive() {
     echo "Pendrive: a DB_MENTES.sh nincs a BaninaPRO mappában – a pendrive-másolat kimarad (frissítsd a BaninaPRO-t)."
     return 0
 }
-# A legújabb mentések másolata a gép saját lemezén, a Dockeren kívül: ha a Docker tárhelye (és vele az adatbázis meg a
-# mentései) elveszne, a telepítő innen állítja vissza. Csak a teljes (lezárt) mentéseket másolja, csak ha van elég
-# hely, és a legújabb GEP_MENTES_DB marad meg. Az utolsó kiírt sora az összefoglaló.
-masol() {
-    local d f nev meret szabad uj=0 fajlok=()
-    d="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)"
-    if [[ -z $d || ! -d $d/DBBCKP ]]; then echo "Másolat: az alkalmazás kötete nem található – most nem készül."; return 0; fi
-    install -d -m 700 "$GEP_MENTES"
-    mapfile -t fajlok < <(printf '%s\n' "$d"/DBBCKP/*.sql | sort -r | head -n "$GEP_MENTES_DB")
+# A MEGORZES_NAP napnál régebbi mentések törlése egy mappából – a legújabb 3 mindig marad (ha a mentés hónapokra leállna,
+# az utolsók se tűnjenek el). Csak *.sql fájlokat érint. Kiírja, hányat törölt (0-nál semmit).
+takarit() {   # $1 = mappa
+    local d="$1" f n=0 torolt=0 lista=()
+    [[ -d $d ]] || return 0
+    mapfile -t lista < <(printf '%s\n' "$d"/*.sql | sort -r)
+    for f in "${lista[@]}"; do
+        [[ -f $f ]] || continue
+        n=$(( n + 1 ))
+        (( n > 3 )) || continue
+        if [[ -n $(find "$f" -maxdepth 0 -mtime +"$MEGORZES_NAP" 2>/dev/null) ]]; then
+            rm -f -- "$f" && torolt=$(( torolt + 1 ))
+        fi
+    done
+    (( torolt == 0 )) || echo "$torolt"
+    return 0
+}
+# Egy célmappába másolja a kötet legújabb GEP_MENTES_DB teljes (lezárt) mentését, ha van elég hely.
+# $1 = célmappa, $2 = a fájlok jogosultsága (600: csak root; 644: bárki olvashatja – SQL_LOPO), $3 = a kötet DBBCKP mappája
+# Kiírja: „N új, összesen M” – vagy hibaüzenetet (1-es kóddal).
+masol_mappaba() {
+    local cel="$1" jog="$2" forras="$3" f nev meret szabad uj=0 fajlok=()
+    install -d -m "$([[ $jog == 644 ]] && echo 755 || echo 700)" "$cel" || { echo "a célmappa nem hozható létre ($cel)"; return 1; }
+    mapfile -t fajlok < <(printf '%s\n' "$forras"/*.sql | sort -r | head -n "$GEP_MENTES_DB")
     for f in "${fajlok[@]}"; do
         nev="${f##*/}"
-        [[ -n $nev && ! -f $GEP_MENTES/$nev ]] || continue
+        [[ -n $nev && -f $f && ! -f $cel/$nev ]] || continue
         tail -c 4096 "$f" 2>/dev/null | grep -q '^-- Mentés vége:' || continue   # félbemaradt vagy épp íródik
         meret=$(( $(stat -c %s "$f") / 1048576 + 1 ))
-        szabad="$(df -Pm "$GEP_MENTES" | awk 'NR == 2 { print $4 }')"
-        if (( szabad - meret < 1024 )); then echo "Másolat: kevés a hely a gép saját lemezén ($szabad MB) – nem készült."; return 1; fi
-        if cp --preserve=timestamps "$f" "$GEP_MENTES/.$nev.tmp" && mv -f "$GEP_MENTES/.$nev.tmp" "$GEP_MENTES/$nev"; then
-            chmod 600 "$GEP_MENTES/$nev"
+        szabad="$(df -Pm "$cel" | awk 'NR == 2 { print $4 }')"
+        if (( szabad - meret < 1024 )); then echo "kevés a hely ($szabad MB) – nem készült ($cel)"; return 1; fi
+        if cp --preserve=timestamps "$f" "$cel/.$nev.tmp" && mv -f "$cel/.$nev.tmp" "$cel/$nev"; then
+            chmod "$jog" "$cel/$nev"
             uj=$(( uj + 1 ))
         else
-            rm -f "$GEP_MENTES/.$nev.tmp"
-            echo "Másolat: a(z) $nev nem másolható."
+            rm -f "$cel/.$nev.tmp"
+            echo "a(z) $nev nem másolható ($cel)"
             return 1
         fi
     done
-    printf '%s\n' "$GEP_MENTES"/*.sql | sort -r | tail -n +$(( GEP_MENTES_DB + 1 )) | xargs -r rm -f --
-    fajlok=("$GEP_MENTES"/*.sql)
-    echo "Másolat a gép saját lemezén: $uj új, összesen ${#fajlok[@]} mentés ($GEP_MENTES)"
+    printf '%s\n' "$cel"/*.sql | sort -r | tail -n +$(( GEP_MENTES_DB + 1 )) | xargs -r rm -f --   # legfeljebb ennyi marad
+    fajlok=("$cel"/*.sql)
+    echo "$uj új, összesen ${#fajlok[@]}"
+}
+# A legújabb mentések másolata a gép saját lemezén (a Dockeren kívül: ha a Docker tárhelye elveszne, a telepítő innen
+# állítja vissza) és az SQL_LOPO megosztásban (bárki letöltheti a belső hálózaton). Utána mindhárom helyen – a kötet
+# DBBCKP mappájában is – törlődnek a MEGORZES_NAP napnál régebbi mentések. Az utolsó kiírt sora az összefoglaló.
+masol() {
+    local d gep lopo t rc=0 tak=()
+    d="$(timeout 30 docker volume inspect -f '{{.Mountpoint}}' "$KOTET" 2>/dev/null)"
+    if [[ -z $d || ! -d $d/DBBCKP ]]; then echo "Másolat: az alkalmazás kötete nem található – most nem készül."; return 0; fi
+    gep="$(masol_mappaba "$GEP_MENTES" 600 "$d/DBBCKP")" || rc=1
+    lopo="$(masol_mappaba "$LOPO_MAPPA" 644 "$d/DBBCKP")" || rc=1
+    for t in "$d/DBBCKP" "$GEP_MENTES" "$LOPO_MAPPA"; do
+        t="$(takarit "$t")"
+        [[ -z $t ]] || tak+=("$t")
+    done
+    echo "Másolat a gép lemezén: $gep ($GEP_MENTES) · SQL_LOPO: $lopo ($LOPO_MAPPA)$([[ ${#tak[@]} -gt 0 ]] && printf ' · takarítás: %s régi mentés törölve' "$(( $(IFS=+; echo "${tak[*]}") ))")"
+    return "$rc"
 }
 if [[ ${1:-} == masol ]]; then
     m="$(masol 2>&1 | tail -n 1)"; mrc=$?
@@ -3572,6 +3686,7 @@ figyel() {   # $1 = systemd-egység, $2 = megnevezés, $3 = mi nem működik né
 }
 figyel anydesk "Az AnyDesk" "a távoli elérés most nem működik"
 figyel cron "A cron (ütemező)" "az éjszakai adatbázis-mentés nem fut le"
+figyel smbd "A Samba (SQL_LOPO megosztás)" "az SQL_LOPO megosztás nem érhető el a hálózatról"
 # az automatikus rendszerfrissítés maradjon kikapcsolva (kevés a tárhely) – ha valami visszakapcsolta, újra ki
 for e in "${AUTO_FRISSITO_IDOZITOK[@]}"; do
     a="$(systemctl is-enabled "$e" 2>/dev/null)"
@@ -3856,8 +3971,8 @@ EOF
 jelento_iras() {
     {
         printf '#!/bin/bash\n# BaninaPRO állapotjelentés – a szerver_beallitas.sh írta, kézzel ne módosítsd (minden futása újraírja).\n'
-        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\nERTESITO=%q\nGEP_MENTES=%q\n' \
-            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT" "$ERTESITO" "$GEP_MENTES"
+        printf 'APP_KONTENER=%q\nDB_KONTENER=%q\nAPP_PORT=%q\nPMA_PORT=%q\nTITOK_MAPPA=%q\nCIMZETT=%q\nERTESITO=%q\nGEP_MENTES=%q\nLOPO_MAPPA=%q\n' \
+            "$APP_KONTENER" "$DB_KONTENER" "$APP_PORT" "$PMA_PORT" "$TITOK_MAPPA" "$JELENTES_CIMZETT" "$ERTESITO" "$GEP_MENTES" "$LOPO_MAPPA"
         printf 'AUTO_FRISSITO_IDOZITOK=(%s)\n' "${AUTO_FRISSITO_IDOZITOK[*]}"
         cat <<'EOF'
 # Ellenőrzi a szervert, és az eredményt elküldi push-értesítésként (rövid összefoglaló) és e-mailben (ha van feladó):
@@ -3919,6 +4034,15 @@ else
     gep_mentes="még nincs"
     if [[ -n $mai ]]; then pr "A mentések másolata nincs meg a gép saját lemezén ($GEP_MENTES)"; fi
 fi
+# az SQL_LOPO megosztás (bárki letöltheti a belső hálózaton)
+lopo_mentesek=("$LOPO_MAPPA"/*.sql)
+if [[ -e ${lopo_mentesek[0]} ]]; then
+    lopo_mentes="${#lopo_mentesek[@]} db, a legújabb: $(basename "${lopo_mentesek[-1]}")"
+else
+    lopo_mentes="még nincs"
+    if [[ -n $mai && -d $LOPO_MAPPA ]]; then pr "A mentések másolata nincs meg az SQL_LOPO mappában ($LOPO_MAPPA)"; fi
+fi
+if systemctl cat smbd >/dev/null 2>&1 && ! systemctl is-active --quiet smbd; then pr "A Samba (SQL_LOPO megosztás) nem fut"; fi
 
 # --- a gép ---
 szabad_gb="$(df -Pk / | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
@@ -3966,6 +4090,7 @@ fajl="$MAPPA/$(date +%Y-%m-%d)$([[ $mod == napi ]] || echo "-$(date +%H%M)-$mod"
     echo "  Ma éjjel:       $mentes"
     echo "  Mentések:       ${db_mentes:-0} db"
     echo "  A gép lemezén:  $gep_mentes ($GEP_MENTES)"
+    echo "  SQL_LOPO:       $lopo_mentes ($LOPO_MAPPA$(systemctl is-active --quiet smbd 2>/dev/null && echo ", megosztva: \\\\$(hostname)\\SQL_LOPO" || echo ", a Samba nem fut"))"
     if [[ -n $mentes_naplo ]]; then echo "  Mentési napló:  $mentes_naplo"; fi
     echo
     echo "Gép"
@@ -4337,7 +4462,10 @@ osszegzes() {   # $1 = 0: minden lépés lefutott; különben a kilépési kód 
     if [[ -n $SERULT_DB_MASOLAT ]]; then
         osz "$C_SARGA" "  A nem induló adatbázis régi adatfájljai félretéve: $SERULT_DB_MASOLAT"
     fi
-    osz "" "  Adatbázis-mentés: minden nap 03:00 – a Docker-kötetben, és a legutóbbi $GEP_MENTES_DB a gép lemezén is: $GEP_MENTES"
+    osz "" "  Adatbázis-mentés: minden nap 03:00 – a Docker-kötetben, a gép lemezén ($GEP_MENTES) és az SQL_LOPO megosztásban ($LOPO_MAPPA); a $MENTES_MEGORZES_NAP napnál régebbi törlődik"
+    if systemctl is-active --quiet smbd 2>/dev/null; then
+        osz "" "  SQL_LOPO megosztás (vendégként olvasható): \\\\${lan:-$GEPNEV}\\$LOPO_MEGOSZTAS (Windows)${mdns:+   smb://$mdns/$LOPO_MEGOSZTAS (Mac)}"
+    fi
     osz "" "  A gép IP-címe: ${lan:-ismeretlen} – SSH: ssh $CEL_FELH@${lan:-$GEPNEV}"
     osz "" "  (Tipp: a routerben foglald le ezt az IP-címet a szervernek – DHCP-foglalás –, hogy ne változzon.)"
     if [[ -z $NTFY_CSATORNA ]]; then NTFY_CSATORNA="$(sed -n 's/^NTFY_CSATORNA=//p' "$TITOK_MAPPA/ntfy" 2>/dev/null || true)"; fi
