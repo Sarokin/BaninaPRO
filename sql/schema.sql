@@ -235,6 +235,8 @@ CREATE TABLE IF NOT EXISTS `bejovo_szamlak` (
   `letrehozta`         INT UNSIGNED NULL,
   `modositva`          DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP,
   `modositotta`        INT UNSIGNED NULL,
+  `konyveles_kikuldve` DATETIME     NULL COMMENT 'könyvelésnek kiküldve egyeztetésre – mikor (1.24; NULL = még nem)',
+  `konyveles_kikuldte` INT UNSIGNED NULL COMMENT 'ki küldte ki (felhasználó id)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_bejovo_kod` (`kod`),
   UNIQUE KEY `uq_bejovo_k` (`kotes_id`, `k_sorszam`),
@@ -244,6 +246,7 @@ CREATE TABLE IF NOT EXISTS `bejovo_szamlak` (
   KEY `ix_bejovo_hatarido` (`fizetesi_hatarido`),
   KEY `ix_bejovo_teljesites` (`teljesites_datum`),
   KEY `ix_bejovo_utalas` (`utalas_id`),
+  KEY `ix_bejovo_konyveles` (`konyveles_kikuldve`),
   CONSTRAINT `fk_bejovo_kotes`  FOREIGN KEY (`kotes_id`)  REFERENCES `kotesek` (`id`),
   CONSTRAINT `fk_bejovo_utalas` FOREIGN KEY (`utalas_id`) REFERENCES `utalasok` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -288,6 +291,8 @@ CREATE TABLE IF NOT EXISTS `kimeno_szamlak` (
   `letrehozta`         INT UNSIGNED NULL,
   `modositva`          DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP,
   `modositotta`        INT UNSIGNED NULL,
+  `konyveles_kikuldve` DATETIME     NULL COMMENT 'könyvelésnek kiküldve egyeztetésre – mikor (1.24; NULL = még nem)',
+  `konyveles_kikuldte` INT UNSIGNED NULL COMMENT 'ki küldte ki (felhasználó id)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_kimeno_kod` (`kod`),
   UNIQUE KEY `uq_kimeno_sorszam` (`ev`, `penznem`, `sorszam`),
@@ -297,6 +302,7 @@ CREATE TABLE IF NOT EXISTS `kimeno_szamlak` (
   KEY `ix_kimeno_hatarido` (`fizetesi_hatarido`),
   KEY `ix_kimeno_teljesites` (`teljesites_datum`),
   KEY `ix_kimeno_bank` (`banki_kivonat_id`),
+  KEY `ix_kimeno_konyveles` (`konyveles_kikuldve`),
   CONSTRAINT `fk_kimeno_ceg`  FOREIGN KEY (`ceg_id`)           REFERENCES `cegek` (`id`),
   CONSTRAINT `fk_kimeno_bank` FOREIGN KEY (`banki_kivonat_id`) REFERENCES `banki_kivonatok` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

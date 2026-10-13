@@ -911,6 +911,7 @@
       <a href="#/osszevetes">${I.scale} Összevetés / Összesítő</a>
       <a href="#/utalasok">${I.transfer} Minden utalás</a>
       <a href="#/hataridok">${I.calendar} Fizetési határidők</a>
+      <a href="#/szamlak">${I.sheet} Minden számla · könyvelésnek kiküldve</a>
       ${jog('ir') ? `<a href="#/import">${I.sheet} Excel import (számlák)</a>` : ''}
       <button type="button" data-act="nyomtat-kosar">${I.print} Nyomtatási kosár <span class="menu-szam" data-kosar-db>${Kosar.db() || ''}</span></button>
       <div class="elvalaszto"></div>
@@ -1111,6 +1112,7 @@
       <div class="also">
         <a class="pill-gomb" href="#/utalasok">${I.transfer} Minden utalás <span class="csip-szam" data-szam="nyitott_utalas_db" title="nyitott utalások"></span></a>
         <a class="pill-gomb" href="#/hataridok">${I.calendar} Fizetési határidők <span class="csip-szam piros" data-szam="lejart_db" title="lejárt határidejű számlák"></span></a>
+        <a class="pill-gomb fekete" href="#/szamlak">${I.sheet} Minden számla</a>
       </div>
       ${keresoDoboz()}
     </div>`;
@@ -1722,6 +1724,154 @@
 
   // --------------------------------------------------------------- HATÁRIDŐK
   let hataridoAdat = null;
+  // ------------------------------------------------------------ MINDEN SZÁMLA · könyvelésnek kiküldve (1.24)
+  // Egy lista az összes számláról (csak számlák, bejövő és kimenő), dátumszűrővel és két hármas kapcsolóval; a kijelölt számlák
+  // „könyvelésnek kiküldve” jelzést kapnak (dátum + ki küldte), a kiküldöttek zöldes háttérrel látszanak. A szűrő böngészőnként megmarad.
+  const SzamlakSzuro = {
+    kulcs: 'baninapro_szamlak_szuro',
+    alap() { const ma = new Date(); const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; return { irany: 'BEJOVO', kikuldve: 'mind', mezo: 'kelt', tol: iso(new Date(ma.getFullYear(), ma.getMonth(), 1)), ig: iso(ma) }; },
+    get() { try { const j = JSON.parse(localStorage.getItem(this.kulcs) || 'null'); if (j && typeof j === 'object') return Object.assign(this.alap(), j); } catch (e) { /* privát mód */ } return this.alap(); },
+    ment(sz) { try { localStorage.setItem(this.kulcs, JSON.stringify(sz)); } catch (e) { /* marad memóriában */ } },
+  };
+  const SZAMLAK_IRANY = [['BEJOVO', 'Bejövő'], ['MIND', 'Összes'], ['KIMENO', 'Kimenő']];
+  const SZAMLAK_KIKULDVE = [['nincs', 'Kiküldendő'], ['mind', 'Összes'], ['kikuldve', 'Elküldött']];
+  /** Hármas csúszka: a jelző a kiválasztott harmadra csúszik (csak transform animál) */
+  function harmasKapcsolo(nev, opciok, ertek) {
+    const poz = Math.max(0, opciok.findIndex(([v]) => v === ertek));
+    return `<div class="harmas" data-harmas="${nev}" data-poz="${poz}" role="radiogroup"><span class="jelzo"></span>${opciok.map(([v, f]) => `<button type="button" class="${v === ertek ? 'aktiv' : ''}" role="radio" aria-checked="${v === ertek}" data-act="szamlak-harmas" data-nev="${nev}" data-v="${v}">${f}</button>`).join('')}</div>`;
+  }
+  async function viewMindenSzamla() {
+    if (!App.szamlakSzuro) App.szamlakSzuro = SzamlakSzuro.get();
+    App.szamlakKijel = new Set();
+    App.szamlakAdat = null;
+    const sz = App.szamlakSzuro;
+    const main = shell({ alcim: 'Minden számla · könyvelésnek kiküldve', vissza: '#/' });
+    main.innerHTML = `<h1>Minden számla <small>· könyvelésnek kiküldve</small></h1>
+      <div class="kartya szamlak-szuro">
+        <div class="mezo-sor szamlak-datum">
+          <div class="mezo"><label>Dátum</label><select name="mezo" data-act="szamlak-datum">${[['kelt', 'Számla kelte'], ['teljesites_datum', 'Teljesítés'], ['fizetesi_hatarido', 'Fizetési határidő']].map(([v, f]) => `<option value="${v}" ${sz.mezo === v ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+          <div class="mezo"><label>-tól</label><input type="date" name="tol" value="${esc(sz.tol || '')}" data-act="szamlak-datum"></div>
+          <div class="mezo"><label>-ig</label><input type="date" name="ig" value="${esc(sz.ig || '')}" data-act="szamlak-datum"></div>
+        </div>
+        <div class="segit">Üresen hagyva nincs alsó / felső határ. A lista legfeljebb ${3000} számlát mutat – ha több van, szűkítsd az időszakot.</div>
+        ${harmasKapcsolo('irany', SZAMLAK_IRANY, sz.irany)}
+        ${harmasKapcsolo('kikuldve', SZAMLAK_KIKULDVE, sz.kikuldve)}
+        <div class="muveletek szamlak-gombok">
+          ${jog('ir') ? `<button class="btn btn-fekete" type="button" data-act="szamlak-fogomb" data-szamlak-fogomb>${I.check} Mindet kijelöl</button>` : ''}
+          <button class="btn" type="button" data-act="szamlak-kosarba" title="A leszűrt lista minden számlája a nyomtatási kosárba">${I.print} Mind a nyomtatókosárba</button>
+          <button class="csip" type="button" data-act="szamlak-kijeloles-torol" data-szamlak-torol>Kijelölés törlése</button>
+        </div>
+        <div class="segit">A <b>fekete gomb</b> két lépés: először a lista minden számláját kijelöli, aztán a kijelölteket <b>könyvelésnek kiküldve</b> jelzésre állítja (dátummal, a te neveddel). Egy-egy számlát a sor eleji körrel is kijelölhetsz. A számla adatai, státusza nem változnak – ez csak a könyveléssel való egyeztetés nyilvántartása.${jog('torol') ? ' Ha csak már kiküldött számlákat jelölsz ki, a gomb a kiküldést vonja vissza.' : ''}</div>
+      </div>
+      <div class="lista-fej"><span class="cim">Számlák</span><span class="darab" data-szamlak-darab></span></div>
+      <div class="csipek" data-szamlak-osszegzo></div>
+      <div class="import-sorok szamlak-lista" data-szamlak-lista>${CSONTVAZ}</div>`;
+    await szamlakBetolt();
+  }
+  async function szamlakBetolt() {
+    const sz = App.szamlakSzuro;
+    const box = $('[data-szamlak-lista]');
+    if (!box) return;
+    try {
+      const d = await api('szamlak_lista', { irany: sz.irany, kikuldve: sz.kikuldve, mezo: sz.mezo, tol: sz.tol || '', ig: sz.ig || '' });
+      if (!$('[data-szamlak-lista]')) return;   // közben elnavigált
+      App.szamlakAdat = d;
+      // a kijelölésből kimegy, ami már nincs a listában
+      const megvan = new Set(d.sorok.map((s) => s.irany + ':' + s.id));
+      App.szamlakKijel = new Set(Array.from(App.szamlakKijel).filter((k) => megvan.has(k)));
+      szamlakRajzol();
+    } catch (e) {
+      box.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`;
+    }
+  }
+  function szamlakSorHtml(s) {
+    const kulcs = s.irany + ':' + s.id, be = s.irany === 'BEJOVO';
+    const link = be ? `#/bejovo/ceg/${s.ceg_id}/kotes/${s.kotes_id}?szamla=${s.id}` : `#/kimeno/ceg/${s.ceg_id}?szamla=${s.id}`;
+    const kik = !!s.konyveles_kikuldve;
+    const bej = App.szamlakKijel.has(kulcs);
+    const mikor = kik ? `${fmtDatum(s.konyveles_kikuldve.slice(0, 10))} ${s.konyveles_kikuldve.slice(11, 16)}` : '';
+    return `<div class="import-sor szamlak-sor ${kik ? 'kikuldve' : ''} ${bej ? 'bejelolt' : ''}" data-kulcs="${kulcs}">
+      <label class="kijelolo ${bej ? 'bejelolt' : ''}"><input type="checkbox" data-act="szamlak-sor" data-kulcs="${kulcs}" ${bej ? 'checked' : ''} aria-label="Kijelölés: ${esc(s.kod)}">${I.check}</label>
+      <div class="kozep">
+        <div class="cim"><span class="badge ${be ? 'BE' : 'KI'}">${be ? 'BE' : 'KI'}</span> <a class="k mono" href="${link}" title="Ugrás a számlához">${esc(s.kod)}</a> <b>„${esc(s.szamlaszam)}”</b> ${badge(s.statusz)}${kik ? ` <span class="badge KIKULDVE" title="könyvelésnek kiküldve: ${esc(mikor)}${s.kikuldte_nev ? ' · ' + esc(s.kikuldte_nev) : ''}">KIKÜLDVE</span>` : ''}</div>
+        <div class="alsor"><a href="${be ? `#/bejovo/ceg/${s.ceg_id}` : `#/kimeno/ceg/${s.ceg_id}`}"><b>${esc(s.ceg_nev)}</b></a>${s.kotes_kod ? `<span class="mono szurke">${esc(s.kotes_kod)}</span>` : ''}<span>kelt ${fmtDatum(s.kelt)}</span><span>telj. ${fmtDatum(s.teljesites_datum)}</span><span>határidő ${fmtDatum(s.fizetesi_hatarido)}</span>${s.fizetve_datum ? `<span>fizetve ${fmtDatum(s.fizetve_datum)}</span>` : ''}${s.utalas_uid ? `<span class="mono">${esc(s.utalas_uid)}</span>` : ''}${s.bank_azon ? `<span>bank: ${esc(s.bank_azon)}</span>` : ''}${Number(s.reszt) > 0 ? `<span>részt. −${fmtOsszeg(Number(s.reszt), s.penznem)}</span>` : ''}</div>
+        ${kik ? `<div class="alsor kikuldve-info"><span>könyvelésnek kiküldve: <b>${esc(mikor)}</b>${s.kikuldte_nev ? ` · ${esc(s.kikuldte_nev)}` : ''}</span></div>` : ''}
+        ${s.beszam ? `<div class="alsor"><span>BESZÁM: <b>${esc(s.beszam)}</b></span></div>` : ''}
+        ${s.megjegyzes ? `<div class="alsor"><span class="szurke">${esc(s.megjegyzes.length > 140 ? s.megjegyzes.slice(0, 140) + '…' : s.megjegyzes)}</span></div>` : ''}
+      </div>
+      <div class="osszeg${Number(s.osszeg) < 0 ? ' negativ' : ''}">${fmtOsszeg(Number(s.osszeg), s.penznem)}</div>
+    </div>`;
+  }
+  function szamlakRajzol() {
+    const d = App.szamlakAdat, box = $('[data-szamlak-lista]');
+    if (!d || !box) return;
+    box.innerHTML = (d.sorok.length ? d.sorok.map(szamlakSorHtml).join('') : `<div class="ures">${URES}Nincs a szűrésnek megfelelő számla.</div>`)
+      + (d.csonka ? `<div class="alcim-sor">A lista az első ${d.max} számlát mutatja (összesen ${d.osszes}) – szűkítsd az időszakot, hogy mindet lásd. A kijelölés és a kosárba tétel csak a megjelenített sorokra vonatkozik.</div>` : '');
+    const o = $('[data-szamlak-osszegzo]');
+    if (o) o.innerHTML = `<span class="csip">összesen: <b>${d.osszes}</b></span><span class="csip zold">kiküldve: <b>${d.kikuldve_db}</b></span>${d.osszes - d.kikuldve_db ? `<span class="csip sarga">kiküldendő: <b>${d.osszes - d.kikuldve_db}</b></span>` : ''}${d.osszegek.map((x) => `<span class="csip">${x.irany === 'BEJOVO' ? 'bejövő' : 'kimenő'} ${x.penznem}: <b>${fmtOsszeg(Number(x.osszeg))}</b> <small>(${x.db} db)</small></span>`).join('')}`;
+    szamlakKijelolesFrissit();
+  }
+  /** A kijelölés állapota: darabszám, a fekete gomb két állapota, a sorok jelölése */
+  function szamlakKijelolesFrissit() {
+    const d = App.szamlakAdat, k = App.szamlakKijel;
+    if (!d) return;
+    const db = $('[data-szamlak-darab]'); if (db) db.textContent = `${k.size ? k.size + ' kijelölve / ' : ''}${d.sorok.length} számla`;
+    $$('.szamlak-sor').forEach((row) => { const on = k.has(row.dataset.kulcs); row.classList.toggle('bejelolt', on); const c = $('.kijelolo', row); if (c) { c.classList.toggle('bejelolt', on); $('input', c).checked = on; } });
+    const g = $('[data-szamlak-fogomb]');
+    if (g) {
+      const kij = d.sorok.filter((s) => k.has(s.irany + ':' + s.id));
+      const kikuldendo = kij.filter((s) => !s.konyveles_kikuldve).length;
+      if (!k.size) { g.innerHTML = `${I.check} Mindet kijelöl${d.sorok.length ? ` <small>(${d.sorok.length})</small>` : ''}`; g.disabled = !d.sorok.length; g.classList.remove('btn-zold', 'btn-piros'); }
+      else if (kikuldendo) { g.innerHTML = `${I.check} <span class="btn-szoveg">Kijelöltek kiküldve státuszra <small>${kikuldendo} számla${kij.length > kikuldendo ? ` (${kij.length - kikuldendo} már kiküldve)` : ''}</small></span>`; g.disabled = false; g.classList.add('btn-zold'); g.classList.remove('btn-piros'); }
+      else { g.innerHTML = `${I.x} <span class="btn-szoveg">Kiküldés visszavonása <small>${kij.length} számla</small></span>`; g.disabled = !jog('torol'); g.classList.add('btn-piros'); g.classList.remove('btn-zold'); }
+    }
+    const t = $('[data-szamlak-torol]'); if (t) t.classList.toggle('rejtett', !k.size);
+  }
+  /** A fekete gomb: 1) mindet kijelöl → 2) a kijelölteket könyvelésnek kiküldve jelzésre (vagy csak kiküldöttekből: visszavonás) */
+  async function szamlakFogomb() {
+    const d = App.szamlakAdat, k = App.szamlakKijel;
+    if (!d) return;
+    if (!k.size) {
+      d.sorok.forEach((s) => k.add(s.irany + ':' + s.id));
+      szamlakKijelolesFrissit();
+      toast(`${d.sorok.length} számla kijelölve – a gomb most a kijelölteket könyvelésnek kiküldve jelzésre állítja.`, 'info', 4000);
+      return;
+    }
+    const kij = d.sorok.filter((s) => k.has(s.irany + ':' + s.id));
+    const kikuldendo = kij.filter((s) => !s.konyveles_kikuldve);
+    const visszavon = !kikuldendo.length;
+    const tetelek = (visszavon ? kij : kikuldendo).map((s) => ({ irany: s.irany, id: s.id }));
+    const ok = await confirmModal(visszavon ? 'Kiküldés visszavonása' : 'Könyvelésnek kiküldve',
+      visszavon ? `<p><b>${tetelek.length} számla</b> „könyvelésnek kiküldve” jelzése törlődik – újra kiküldendő lesz.</p>`
+        : `<p><b>${tetelek.length} számla</b> kap <b>„könyvelésnek kiküldve”</b> jelzést (mai dátum, ${esc(App.user.nev || App.user.felhasznalonev)}).${kij.length > tetelek.length ? ` ${kij.length - tetelek.length} kijelölt számla már ki volt küldve, az változatlan marad.` : ''}</p><p class="kicsi">A számlák adatai és státusza nem változnak; a jelzés a számla változásnaplójába is bekerül.</p>`,
+      { ok: visszavon ? 'Visszavonás' : 'Kiküldve státuszra', okOsztaly: visszavon ? 'btn-piros' : 'btn-zold' });
+    if (!ok) return;
+    try {
+      const r = await api('konyveles_kikuld', { tetelek, visszavon });
+      toast(visszavon ? `${r.db} számla kiküldése visszavonva.` : `${I.check} ${r.db} számla könyvelésnek kiküldve jelzést kapott.`, visszavon ? 'info' : 'ok', 4000);
+      App.szamlakKijel = new Set();
+      await szamlakBetolt();
+    } catch (e) { hibaToast(e); }
+  }
+  function szamlakKosarba() {
+    const d = App.szamlakAdat;
+    if (!d) return;
+    const sz = App.szamlakSzuro;
+    idoszakKosarba(d.sorok.map((s) => ({ t: s.irany === 'BEJOVO' ? 'bejovo' : 'kimeno', id: s.id, cimke: `${s.kod} · „${s.szamlaszam}”` })),
+      `Minden számla · ${SZAMLAK_IRANY.find(([v]) => v === sz.irany)[1]} · ${SZAMLAK_KIKULDVE.find(([v]) => v === sz.kikuldve)[1]}${sz.tol || sz.ig ? ` · ${fmtDatum(sz.tol) || '…'} – ${fmtDatum(sz.ig) || '…'}` : ''}`);
+  }
+  function szamlakSzuroValt(nev, v) {
+    const sz = App.szamlakSzuro;
+    sz[nev] = v;
+    SzamlakSzuro.ment(sz);
+    $$('.harmas').forEach((h) => { const opciok = h.dataset.harmas === 'irany' ? SZAMLAK_IRANY : SZAMLAK_KIKULDVE; const poz = Math.max(0, opciok.findIndex(([x]) => x === sz[h.dataset.harmas])); h.dataset.poz = String(poz); $$('button', h).forEach((b) => { const on = b.dataset.v === sz[h.dataset.harmas]; b.classList.toggle('aktiv', on); b.setAttribute('aria-checked', String(on)); }); });
+    App.szamlakKijel = new Set();
+    App.szamlakAdat = null;   // amíg az új lista nem jön meg, a gombok nem tudnak a régire hatni
+    const box = $('[data-szamlak-lista]'); if (box) box.innerHTML = CSONTVAZ;
+    const g = $('[data-szamlak-fogomb]'); if (g) g.disabled = true;
+    szamlakBetolt();
+  }
+
   async function viewHataridok() {
     const main = shell({ alcim: 'Fizetési határidők', vissza: '#/' });
     try {
@@ -3281,6 +3431,10 @@
     'import-fajl-gomb': () => { const i = $('[data-act=import-fajl]'); if (i) i.click(); },
     'import-uj': () => { App.importAllapot = null; nav('#/import'); },
     'import-mervado-oldal': (el) => importMervadoValt(el.dataset.v),
+    'szamlak-harmas': (el) => szamlakSzuroValt(el.dataset.nev, el.dataset.v),
+    'szamlak-fogomb': () => szamlakFogomb(),
+    'szamlak-kosarba': () => szamlakKosarba(),
+    'szamlak-kijeloles-torol': () => { App.szamlakKijel = new Set(); szamlakKijelolesFrissit(); },
     'import-felulir': (el) => {   // utalásban lévő számla módosításának felülírása egy sornál
       const st = App.importAllapot, i = Number(el.dataset.i);
       if (st.felulir.has(i)) st.felulir.delete(i); else st.felulir.add(i);
@@ -3423,6 +3577,11 @@
       if (el.name !== 'hatarido_nap') importSorokRajzol();
     } else if (el.matches('[data-act=import-mervado]')) {
       importMervadoValt(el.checked ? 'import' : 'db');
+    } else if (el.matches('[data-act=szamlak-datum]')) {
+      szamlakSzuroValt(el.name, el.value);
+    } else if (el.matches('[data-act=szamlak-sor]')) {
+      if (el.checked) App.szamlakKijel.add(el.dataset.kulcs); else App.szamlakKijel.delete(el.dataset.kulcs);
+      szamlakKijelolesFrissit();
     } else if (el.matches('[data-act=import-opcio-bool]')) {
       App.importAllapot.opciok[el.name] = el.checked;
     } else if (el.matches('[data-act=import-felulir-mind]')) {
@@ -3521,6 +3680,7 @@
       }
       if (p[0] === 'osszevetes') return await viewOsszevetes(r.query);
       if (p[0] === 'hataridok') { hataridoAdat = null; return await viewHataridok(); }
+      if (p[0] === 'szamlak') return await viewMindenSzamla();
       if (p[0] === 'import') return await viewImport(r.query);
       if (p[0] === 'admin') return await viewAdmin();
       if (p[0] === 'profil') return await viewProfil();

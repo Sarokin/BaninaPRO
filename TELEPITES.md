@@ -594,6 +594,26 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.23.0-ról 1.24.0-ra („Minden számla” oldal – könyvelésnek kiküldve):** **adatbázis-módosítás van**, futtasd le
+phpMyAdminban (SQL fül, egyben beilleszthető; ha „Duplicate column name” hibát ad, már lefutott):
+
+```sql
+ALTER TABLE `bejovo_szamlak`
+  ADD COLUMN `konyveles_kikuldve` DATETIME NULL COMMENT 'könyvelésnek kiküldve egyeztetésre – mikor (1.24; NULL = még nem)' AFTER `modositotta`,
+  ADD COLUMN `konyveles_kikuldte` INT UNSIGNED NULL COMMENT 'ki küldte ki (felhasználó id)' AFTER `konyveles_kikuldve`,
+  ADD KEY `ix_bejovo_konyveles` (`konyveles_kikuldve`);
+ALTER TABLE `kimeno_szamlak`
+  ADD COLUMN `konyveles_kikuldve` DATETIME NULL COMMENT 'könyvelésnek kiküldve egyeztetésre – mikor (1.24; NULL = még nem)' AFTER `modositotta`,
+  ADD COLUMN `konyveles_kikuldte` INT UNSIGNED NULL COMMENT 'ki küldte ki (felhasználó id)' AFTER `konyveles_kikuldve`,
+  ADD KEY `ix_kimeno_konyveles` (`konyveles_kikuldve`);
+```
+
+A főoldalon új, fekete **„Minden számla”** gomb: egy lista az összes számláról (bejövő és kimenő, csak számlák), dátumszűrővel
+és két hármas kapcsolóval; a kijelölt számlák **„könyvelésnek kiküldve”** jelzést kapnak – így számla szinten nyilván van
+tartva, mi ment ki a könyvelésnek egyeztetésre. Részletek: 7/A. fejezet. Töltsd fel a frissített `includes/api_konyveles.php`
+(új), `api.php`, `includes/jogok.php`, `assets/app.js`, `assets/app.css`, `sql/schema.sql`, `includes/config.php` (csak a
+verziószám) és `TELEPITES.md` fájlokat. (A belső szerveren a telepítő a hiányzó oszlopokat magától pótolja.)
+
 **Frissítés 1.22.1-ről 1.23.0-ra (a két rendszer – DOS és IB System – adatainak összevonása az importtal):** adatbázis-módosítás
 nincs. Az Excel import Import-mérvadónál a más számlaszámmal már meglévő számlákat is felismeri és **összevonja** (a rendszerbeli
 számla az Excel számlaszámát és adatait kapja), az **utalásban lévő** számlákat alapból nem módosítja (soronként vagy egyben
@@ -787,6 +807,25 @@ Mozgás: csak `transform`/`opacity` animációk (kártyák lépcsőzetes megjele
 felpörgő összegek, animált pipa, csúszó fülindikátor), üveghatás csak a fejlécen, a lapokon és a toaston.
 Nincs külső betűtípus vagy könyvtár; a „kevesebb mozgás” rendszerbeállítást tiszteletben tartja.
 A lapok (bottom sheet) telefonon lehúzással is bezárhatók.
+
+## 7/A. Minden számla – könyvelésnek kiküldve (1.24)
+
+Főoldal → fekete **„Minden számla”** gomb (vagy Menü → Minden számla). Egy lista az összes számláról – bejövő és kimenő egyben,
+csak számlák, a rendszer azonosítója szerint rendezve –, és számlánként nyilván tartja, **mit küldtünk ki a könyvelésnek
+egyeztetésre**.
+
+* **Szűrők:** dátummező (számla kelte / teljesítés / fizetési határidő) és **-tól / -ig** (alapból az aktuális hónap; üresen nincs
+  határ); egy hármas csúszka **Bejövő / Összes / Kimenő** (alapból Bejövő), egy másik **Kiküldendő / Összes / Elküldött** (alapból
+  Összes). A szűrő böngészőnként megmarad. A lista legfeljebb 3000 számlát mutat, az összesítő chipek (összesen, kiküldve,
+  kiküldendő, összegek pénznemenként) a teljes találatra vonatkoznak.
+* **A fekete gomb két lépés** (Rögzítőtől): először a lista minden számláját kijelöli, majd – mivel van kijelölés – a kijelölt
+  számlákat **könyvelésnek kiküldve** jelzésre állítja (dátum, idő és a kiküldő neve). Egy-egy számla a sor eleji körrel is
+  kijelölhető, a „Kijelölés törlése” mindet elengedi. Ha csak már kiküldött számlák vannak kijelölve, a gomb a kiküldést **vonja
+  vissza** (Irodavezető / Admin). A számla adatai és státusza nem változnak; a jelzés a számla változásnaplójába („Könyvelésnek
+  kiküldve: – → dátum”) és a tevékenységnaplóba (`KONYVELES_KIKULD`, `KONYVELES_VISSZAVON`) kerül.
+* **„Mind a nyomtatókosárba”:** a leszűrt lista minden számlája a nyomtatási kosárba kerül (pl. a könyvelésnek küldendő PDF-hez).
+* A még nem kiküldött számla fehér, mint máshol; a kiküldött **zöldes háttérrel**, „KIKÜLDVE” jelzéssel és a kiküldés
+  idejével / nevével látszik. A sor a számlához (kötéshez / céghez) ugrik.
 
 ## 8. Adatbázis-mentés minden éjjel 3:00-kor (DBBCKP) és visszaállítás
 
@@ -1039,6 +1078,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| „Unknown column 'konyveles_kikuldve'” (Minden számla oldal, 1.24) | a frissítő SQL nem futott le – lásd a 1.23.0 → 1.24.0 frissítés két `ALTER TABLE` utasítását (phpMyAdmin → SQL) |
 | Excel import: egy sor „Döntést vár” | több rendszerbeli számla is lehet ugyanez (azonos cég, összeg, dátum), vagy a bizonyíték gyenge – a sorban a legördülőből válaszd ki, melyikkel vonja össze; ha új számla, pipáld ki a sort (új számlaként kerül be) |
 | Excel import: „UTALÁSBAN” jelzésű sor nem módosul | a megtalált bejövő számla utalásban van – alapból védett; a „Mégis módosítom” gombbal (vagy a Beállításoknál egyben) felülírható, ha tudod, hogy az utalást is érintheti |
 | Excel import: az „eltér” sor nem pipálható | a mérvadó kapcsoló az **Adatbázis** oldalon áll (állítsd Import-ra) · Rögzítőként vagy: meglévő számlát csak Irodavezető / Admin javíthat · a sor eltérése olyan mezőben van, amely nincs bepipálva a „Mit írjon át az import” résznél · vagy a sor kézi javítást igényel (az okát kiírja: részteljesítés, előjel) |
@@ -1080,4 +1120,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.23.0 (2026-10-13)
+Verzió: 1.24.0 (2026-10-13)

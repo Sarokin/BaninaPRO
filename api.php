@@ -25,6 +25,7 @@ require_once __DIR__ . '/includes/backup.php';
 require_once __DIR__ . '/includes/api_import.php';
 require_once __DIR__ . '/includes/api_kereses.php';
 require_once __DIR__ . '/includes/api_reszteljesites.php';
+require_once __DIR__ . '/includes/api_konyveles.php';
 require_once __DIR__ . '/includes/audit.php';
 
 ini_set('display_errors', APP_DEBUG ? '1' : '0');

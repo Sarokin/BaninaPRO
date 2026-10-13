@@ -186,7 +186,11 @@ main svg, .menu svg, .modal svg, .toast svg { width: 20px; height: 20px; flex: n
   box-shadow: 0 10px 26px rgba(23,23,23,.30), inset 0 1px 0 rgba(255,255,255,.12); text-decoration: none !important; flex: 1 1 auto; justify-content: center; min-width: 150px;
   transition: transform var(--gyors) var(--ease), box-shadow var(--gyors); animation: belep .45s var(--ease) both;
 }
-.pill-gomb:nth-child(1) { animation-delay: .26s; } .pill-gomb:nth-child(2) { animation-delay: .32s; }
+.pill-gomb:nth-child(1) { animation-delay: .26s; } .pill-gomb:nth-child(2) { animation-delay: .32s; } .pill-gomb:nth-child(3) { animation-delay: .38s; }
+/* Minden számla (1.24): fekete gomb a főoldalon és a listán */
+.pill-gomb.fekete { background: #0B0B0B; color: #FFFFFF; box-shadow: 0 10px 26px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.08); }
+.btn-fekete { background: linear-gradient(135deg, #2B2B2B, #0B0B0B 70%); color: #FFFFFF; box-shadow: 0 6px 16px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.1); }
+.btn-fekete:disabled { opacity: .5; }
 .pill-gomb svg { width: 24px; height: 24px; }
 .pill-gomb:active { transform: scale(.96); }
 @media (hover: hover) {
@@ -736,6 +740,23 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .csuszka.tiltott { opacity: .45; cursor: not-allowed; }
 .mervado .segit { margin-top: 8px; }
 .import-opciok .mervado { margin-top: 0; }
+/* Minden számla: hármas csúszka (a jelző a kiválasztott harmadra csúszik), kiküldve-jelölés, szűrősor */
+.harmas { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); background: var(--felulet-2); border: 1.5px solid var(--vonal); border-radius: 999px; padding: 3px; margin: 10px 0; }
+.harmas .jelzo { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 999px; background: var(--gr-kiemelt); box-shadow: 0 4px 12px rgba(1,127,1,.3); transition: transform var(--kozepes) var(--ease); }
+.harmas[data-poz="1"] .jelzo { transform: translateX(100%); }
+.harmas[data-poz="2"] .jelzo { transform: translateX(200%); }
+.harmas button { position: relative; z-index: 1; border: 0; background: none; font: inherit; font-size: 14.5px; font-weight: 800; letter-spacing: .3px; padding: 11px 4px; color: var(--halvany); cursor: pointer; border-radius: 999px; transition: color var(--gyors); }
+.harmas button.aktiv { color: var(--on-kiemelt); }
+.harmas button:active { transform: scale(.97); }
+.szamlak-datum { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; }
+.szamlak-datum .mezo { margin: 0; }
+.szamlak-gombok { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.szamlak-gombok .btn { flex: 1 1 auto; }
+.badge.KIKULDVE { background: var(--zold-tint-2); color: var(--zold); }
+.import-sor.szamlak-sor.kikuldve { background: var(--zold-tint); border-color: rgba(1,127,1,.25); }
+.import-sor.szamlak-sor .kikuldve-info { color: var(--zold); font-weight: 600; }
+.import-sor.szamlak-sor .cim a.k { color: var(--tinta); text-decoration: none; }
+@media (max-width: 420px) { .szamlak-datum { grid-template-columns: 1fr 1fr; } .szamlak-datum .mezo:first-child { grid-column: 1 / -1; } }
 /* összevonás: jelöltválasztó a sorban; utalás-felülírás gomb; „az adatbázisban van, a fájlban nincs” lista */
 .import-sor .osszevon-valasztas { align-items: center; }
 .import-sor .osszevon-valaszto { font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; border: 1.5px solid var(--vonal); background: var(--mezo-bg); color: var(--tinta); max-width: 100%; }
