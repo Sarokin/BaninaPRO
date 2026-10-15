@@ -1,0 +1,2 @@
+Ide jön a BaninaPRO élő adatbázisának friss mentése (.sql, a szerver DB MENTÉS ikonjával) – lásd ../OLVASS_EL.txt.
+A mappa tartalma soha nem kerül a gitbe (.gitignore).

@@ -1,0 +1,2 @@
+Ide jön a DOS-os program TELJES mappája (vagy egy ZIP róla), úgy, ahogy van – lásd ../OLVASS_EL.txt.
+A mappa tartalma soha nem kerül a gitbe (.gitignore).

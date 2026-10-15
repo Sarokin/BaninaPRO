@@ -1,0 +1,2 @@
+Ide jönnek az IB System „Számla napló” xlsx exportjai (bejövő és kimenő külön) – lásd ../OLVASS_EL.txt.
+A mappa tartalma soha nem kerül a gitbe (.gitignore).

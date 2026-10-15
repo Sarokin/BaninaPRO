@@ -1,0 +1,38 @@
+BaninaPRO – DOS + IB System migráció: mit hova másolj
+=====================================================
+
+Ez a mappa csak ezen a gépen van (a git nem látja), mert éles üzleti adatok kerülnek bele.
+
+1_DOS_PROGRAM/
+    A DOS-os program TELJES mappája, minden almappával, ahogy van – ne válogass.
+    A program fájljai (EXE, OVL, CFG, BAT) is kellenek: ezekből derül ki a program fajtája
+    és az adatfájlok felépítése.
+    • Akkor másold, amikor a DOS-os program egyik gépen sincs megnyitva (különben félig
+      kiírt fájlt kaphatunk).
+    • Ha a program egy .BAT fájlból vagy parancsikonból indul, és az adatai más mappában
+      vannak (pl. egy hálózati meghajtón), azt az adatmappát is másold be, és írd meg az útvonalát.
+    • A legbiztosabb egy ZIP a mappáról (Windowson: jobb klikk → Küldés → Tömörített mappa),
+      mert az megtartja a fájlok nevét és dátumát. Sima másolás is jó.
+    • A másolás után a DOS-ba már ne rögzítsetek, mert az már nem kerül át.
+
+2_IB_SYSTEM/
+    Az IB System „Számla napló” exportja .xlsx-ben, ugyanolyan, mint eddig
+    (a fejlécsor: Számlakönyv | Tárgyév | Számlaszám | …).
+    • Bejövő és kimenő számlák, külön fájlban.
+    • A teljes időszak, partnerszűrés nélkül: 2026.01.01-től a mai napig.
+    • Ha van, a 2025-ös év is külön fájlban (a DOS-ban vannak 2025-ös kötések is).
+
+3_BANINAPRO_ELO_ADATBAZIS/
+    A BaninaPRO mostani, élő adatbázisa – közvetlenül a migráció előtt mentve:
+    a szerveren a „DB MENTÉS” ikon, a friss .sql pedig a SQL_LOPO megosztott mappában
+    (vagy a pendrive BaninaPRO-mentesek mappájában) van. Ha még a webes (cPanel) változat
+    az éles, akkor onnan phpMyAdmin exporttal.
+    • A mentéstől az eredmény visszatöltéséig ne dolgozzon senki a BaninaPRO-ban, mert az
+      akkor rögzített adat elveszne. A migráció megismételhető, ezért ez a szünet rövid.
+
+Ha megvan: az a script vagy mappa, amivel 2026.10.07-én a DOS-adatokat először
+áthoztátok (a BaninaPRO-ban „DOS import” felhasználó néven futott), azt is másold ide,
+a MIGRACIO mappába.
+
+4_EREDMENY/   – ide kerül a kész, migrált adatbázis (.sql) és az ellenőrző jelentés.
+eszkozok/     – a migráló eszközök (ezekhez nem kell nyúlni).

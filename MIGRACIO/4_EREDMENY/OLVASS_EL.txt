@@ -1,0 +1,2 @@
+Ide kerül a kész, migrált adatbázis (.sql) és az ellenőrző jelentés – ezt a migrációs eszközök írják.
+A mappa tartalma soha nem kerül a gitbe (.gitignore).

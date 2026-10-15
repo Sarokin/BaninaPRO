@@ -40,3 +40,19 @@ SERVER SETUP AND UPDATE/*.xlsx
 *.sql.gz
 *.sql.zip
 !sql/schema.sql
+
+# DOS + IB System migráció (MIGRACIO/): az eszközök és a leírások a repóban vannak. A bemenetek (DOS-mappa, IB-exportok,
+# élő adatbázis-mentés), az eredmények és a valódi adatokon futott próbák éles üzleti adatok – soha nem kerülhetnek bele.
+MIGRACIO/1_DOS_PROGRAM/*
+MIGRACIO/2_IB_SYSTEM/*
+MIGRACIO/3_BANINAPRO_ELO_ADATBAZIS/*
+MIGRACIO/4_EREDMENY/*
+!MIGRACIO/*/OLVASS_EL.txt
+MIGRACIO/eszkozok/teszt/probak/
+MIGRACIO/eszkozok/teszt/*.xlsx
+MIGRACIO/eszkozok/teszt/*.json
+!MIGRACIO/eszkozok/teszt/minta_koztes.json
+
+# Python gyorsítótár (a migrációs eszközök futtatásakor keletkezhet)
+__pycache__/
+*.pyc

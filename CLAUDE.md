@@ -376,6 +376,12 @@ The user asked for this on 2026-10-11 and chose the name: load a dump brought fr
 - **Never commit a dump.** The repo is public. `.gitignore` excludes `*.sql` everywhere except `sql/schema.sql`; the user once dropped the production export into `SERVER SETUP AND UPDATE/`.
 - **Testing.** Copy a dump into the installed test server and run the script with the path as argument (`--igen` when data exists). Cases: the first load on a terminal with a quoted path as a dropped file arrives, a second load with and without confirmation, a truncated file, a non-BaninaPRO file, the app's own backup, a dump with a failing statement near the end (rollback: a marker row written before must survive), a path given as `file://` URL, with backslashes and in quotes, and a table added to the local `sql/schema.sql` (hand-over to the installer).
 
+## DOS + IB System migration (`MIGRACIO/`, 2026-10-16)
+
+The user is merging the DOS data entered since 2026-10-06 and the IB System exports into the live database, on their MacBook at the site. **Start with `MIGRACIO/CLAUDE_JEGYZET.md`** (handoff note: what is known, what is ready, open decisions). Then read `MIGRACIO/eszkozok/FUTTATAS.md` (runbook) and `MIGRACIO/eszkozok/DOS_LEKEPEZES.md` (the reverse-engineered DOS → BaninaPRO rules and the intermediate JSON format).
+- On a new machine: `MIGRACIO/eszkozok/kornyezet.sh elokeszit` (needs internet once; only Docker Desktop is required).
+- The tools and docs are in git. The inputs (`1_DOS_PROGRAM`, `2_IB_SYSTEM`, `3_BANINAPRO_ELO_ADATBAZIS`), the results (`4_EREDMENY`) and the test runs on real data are gitignored business data. Never commit them: the repo is public.
+
 ## Working notes (lessons learned)
 
 How to work with this user and this codebase. Keep this section current.

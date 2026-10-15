@@ -1,0 +1,50 @@
+{
+ "forras": "ÖNTESZT – kitalált adatok (nem valódi cégek, számlák, összegek)",
+ "partnerek": [
+  {"tabla": "VEVO", "kod": "HU-00000001", "nev": "Minta Áru Kft", "cim": "1111 Budapest, Próba utca 1", "bank": "11111111-22222222"},
+  {"tabla": "VEVO", "kod": "NL-00000002", "nev": "Teszt Fuvar BV", "cim": "1000 AA Amsterdam, Teststraat 2"},
+  {"tabla": "UGYF", "kod": "12345678901", "nev": "Minta Vevő Zrt", "cim": "2222 Őrbottyán, Űrhajó tér 3"},
+  {"tabla": "UGYF", "kod": "B99", "nev": "Külföldi Vevő GmbH", "cim": "10115 Berlin, Beispielweg 4"},
+  {"tabla": "UGYF", "kod": "11111111111", "nev": "Minta Szolgáltató Kft", "cim": "3333 Érd, Ő utca 5"}
+ ],
+ "kotesek": [
+  {"kotesszam": "0-26-0001", "aru": "vegyes zöldség és gyümölcs"},
+  {"kotesszam": "0-26-0002", "aru": "vegyes zöldség és gyümölcs"}
+ ],
+ "tetelek": [
+  {"kotesszam": "0-26-0001", "kisszam": "11A1", "szallito": "HU-00000001", "szamlaszam": "SZ-0001", "kelt": "26.03.02", "hatarido": "26.04.31",
+   "osszeg": "1000.00", "penznem": "EUR", "beszam": "BE-1", "aru": "vegyes zöldség és gyümölcs", "utalas": {"tipus": "deviza", "szam": "000101"}, "atutalt": "1000.00"},
+  {"kotesszam": "0-26-0001", "kisszam": "11A2", "szallito": "NL-00000002", "szamlaszam": "FV-77", "kelt": "26.03.03", "hatarido": "26.04.02",
+   "osszeg": "250.00", "penznem": "EUR", "aru": "fuvar", "utalas": {"tipus": "deviza", "szam": "000102"}, "atutalt": "250.00"},
+  {"kotesszam": "0-26-0001", "kisszam": "11A3", "szallito": "HU-00000001", "szamlaszam": "SZ-0002", "kelt": "26.03.05", "hatarido": "26.04.05",
+   "osszeg": "-40.00", "penznem": "EUR", "aru": "vegyes zöldség és gyümölcs", "utalas": {"tipus": "deviza", "szam": "000101"}, "atutalt": "-40.00"},
+  {"kotesszam": "0-26-0002", "kisszam": "12B1", "szallito": "HU-00000001", "szamlaszam": "SZ-0003", "kelt": "26.05.10", "hatarido": "26.06.10",
+   "osszeg": "777.70", "penznem": "EUR", "beszam": "BE-2", "aru": "vegyes zöldség és gyümölcs"},
+  {"kotesszam": "0-26-0002", "kisszam": "12B2", "szallito": "HU-00000001", "szamlaszam": "SZ-0003", "kelt": "26.05.11", "hatarido": "26.06.11",
+   "osszeg": "10.00", "penznem": "EUR", "aru": "vegyes zöldség és gyümölcs"},
+  {"kotesszam": "0-26-0002", "kisszam": "12B3", "szallito": "NL-00000002", "szamlaszam": "FV-78", "kelt": "26.05.12", "hatarido": "26.06.12",
+   "osszeg": "500.00", "penznem": "EUR", "aru": "fuvar", "utalas": {"tipus": "deviza", "szam": "000103"}, "atutalt": "200.00"}
+ ],
+ "forintszamlak": [
+  {"azon": "F-00001", "partner": "11111111111", "partner_tabla": "UGYF", "szamlaszam": "SZOLG-2026-03", "megnevezes": "szolgáltatás március",
+   "netto": "10000", "afa_kulcs": 27, "afa": "2700", "brutto": "12700", "kelt": "2026-03-15", "hatarido": "2026-03-30",
+   "utalas": {"tipus": "forint", "szam": "000201"}}
+ ],
+ "utalasok": [
+  {"tipus": "deviza", "szam": "000101", "penznem": "EUR", "osszeg": "960.00", "megbizas": "2026-04-10", "terheles": "2026-04-11",
+   "kedv_bank": "BIC: TESTHUHB", "kozlemeny": "SZ-0001, SZ-0002 számú devizaszámlák alapján"},
+  {"tipus": "deviza", "szam": "000102", "penznem": "EUR", "osszeg": "250.00", "megbizas": "2026-04-12", "terheles": "00.00.00",
+   "kozlemeny": "FV-77 számú devizaszámla alapján"},
+  {"tipus": "deviza", "szam": "000103", "penznem": "EUR", "osszeg": "200.00", "megbizas": "2026-06-01", "terheles": "2026-06-02",
+   "kozlemeny": "FV-78 részlet"},
+  {"tipus": "forint", "szam": "000201", "penznem": "HUF", "osszeg": "12700", "utalas_datum": "2026-03-20", "datum2": "2026-03-21",
+   "terhelt_szamla": "11111111 (Bank)", "kozlemeny": "SZOLG-2026-03 sz. számla alapján:"}
+ ],
+ "kimeno": [
+  {"azon": "KE-26 1", "vevo": "12345678901", "kelt": "26.01.05", "hatarido": "26.02.04", "netto": "1500", "afa_kulcs": 0, "afa": "0", "brutto": "1500.00",
+   "penznem": "EUR", "fizmod": "ÁTUTALÁS", "befolyt": "1500.00", "befolyt_datum": "26.02.01"},
+  {"azon": "KE-26 2,", "vevo": "B99", "kelt": "26.01.06", "hatarido": "26.02.05", "brutto": "800.00", "penznem": "EUR", "fizmod": "ÁTUTALÁS",
+   "befolyt": "300.00", "befolyt_datum": "26.02.10"},
+  {"azon": "KE26 3", "vevo": "B99", "kelt": "26.01.07", "hatarido": "26.02.06", "brutto": "99.99", "penznem": "EUR", "fizmod": "ÁTUTALÁS"}
+ ]
+}
