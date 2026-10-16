@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS `bejovo_szamlak` (
   `statusz`            ENUM('FIZETENDO','UTALASHOZ_ADVA','FIZETVE','BESZAMITVA') NOT NULL DEFAULT 'FIZETENDO',
   `fizetve_datum`      DATE         NULL COMMENT 'FIZETVE / BESZÁMÍTVA: az utalás dátuma',
   `utalas_id`          INT UNSIGNED NULL,
+  `utalas_osszeg`      DECIMAL(15,2) NULL COMMENT 'részösszeg az utaláshoz (1.26): ennyi megy az utalásba a hátralékból; NULL = a teljes hátralék',
   `megjegyzes`         TEXT         NULL,
   `megjegyzes_irta`    INT UNSIGNED NULL COMMENT 'a megjegyzés utolsó szerzője (NULL = több szerző / ismeretlen)',
   `letrehozva`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -318,11 +319,14 @@ CREATE TABLE IF NOT EXISTS `reszteljesitesek` (
   `osszeg`           DECIMAL(15,2) NOT NULL,
   `datum`            DATE         NOT NULL COMMENT 'az utalás dátuma',
   `banki_azonosito`  VARCHAR(100) NULL,
+  `utalas_id`        INT UNSIGNED NULL COMMENT 'az utalás, amelynek a teljesítése hozta létre (részösszeg az utaláshoz, 1.26)',
   `letrehozva`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `letrehozta`       INT UNSIGNED NULL,
   PRIMARY KEY (`id`),
   KEY `ix_reszt_szamla` (`irany`, `szamla_id`),
-  KEY `ix_reszt_datum` (`datum`)
+  KEY `ix_reszt_datum` (`datum`),
+  KEY `ix_reszt_utalas` (`utalas_id`),
+  CONSTRAINT `fk_reszt_utalas` FOREIGN KEY (`utalas_id`) REFERENCES `utalasok` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------

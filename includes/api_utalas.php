@@ -20,9 +20,12 @@ function audit_utalas_szamlak(array $szamlak, string $leiras, string $regi, stri
     }
 }
 
-/* Az utalás összege = a bejövő számlák hátraléka (összeg − a hozzáadás előtt felvezetett részteljesítések)
-   − a beszámított kimenő számlák levont összege (1.25): ennyit kell ténylegesen elutalni */
-const UTALAS_BEJOVO_SQL = 'SELECT COALESCE(SUM(b.osszeg - COALESCE(rb.reszt, 0)), 0) FROM bejovo_szamlak b' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = u.id';
+/* Az utalás összege = a bejövő tételek utalt része − a beszámított kimenő számlák levont összege (1.25): ennyit kell ténylegesen elutalni.
+   Egy bejövő tétel utalt része (1.26): a számla hátraléka (összeg − a hozzáadás előtt felvezetett részteljesítések), vagy részösszegnél
+   (utalas_osszeg) csak annyi; az utalás teljesítése után a részösszegek részteljesítésként élnek tovább (reszteljesitesek.utalas_id). */
+const UTALAS_TETEL_SQL = 'SELECT COALESCE(SUM(COALESCE(b.utalas_osszeg, b.osszeg - COALESCE(rb.reszt, 0))), 0) FROM bejovo_szamlak b' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = u.id';
+const UTALAS_RESZ_SQL = 'SELECT COALESCE(SUM(r.osszeg), 0) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.utalas_id = u.id';
+const UTALAS_BEJOVO_SQL = '(' . UTALAS_TETEL_SQL . ') + (' . UTALAS_RESZ_SQL . ')';
 const UTALAS_BESZAMITAS_SQL = 'SELECT COALESCE(SUM(bz.osszeg), 0) FROM beszamitasok bz WHERE bz.utalas_id = u.id';
 const UTALAS_OSSZEG_SQL = '(' . UTALAS_BEJOVO_SQL . ') - (' . UTALAS_BESZAMITAS_SQL . ')';
 const UTALAS_SQL = 'SELECT u.*, c.nev AS ceg_nev,
@@ -30,7 +33,8 @@ const UTALAS_SQL = 'SELECT u.*, c.nev AS ceg_nev,
         (' . UTALAS_BEJOVO_SQL . ') AS szamlak_osszeg,
         (' . UTALAS_BESZAMITAS_SQL . ') AS beszamitas_osszeg,
         (SELECT COUNT(*) FROM beszamitasok bz WHERE bz.utalas_id = u.id) AS beszamitas_db,
-        (SELECT COUNT(*) FROM bejovo_szamlak b WHERE b.utalas_id = u.id) AS db,
+        (SELECT COUNT(*) FROM bejovo_szamlak b WHERE b.utalas_id = u.id) + (SELECT COUNT(*) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.utalas_id = u.id) AS db,
+        (SELECT COUNT(*) FROM bejovo_szamlak b WHERE b.utalas_id = u.id AND b.utalas_osszeg IS NOT NULL) + (SELECT COUNT(*) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.utalas_id = u.id) AS reszosszeg_db,
         fl.felhasznalonev AS letrehozta_nev, fu.felhasznalonev AS utalta_nev, fz.felhasznalonev AS lezarta_nev
    FROM utalasok u
    JOIN cegek c ON c.id = u.ceg_id
@@ -40,7 +44,7 @@ const UTALAS_SQL = 'SELECT u.*, c.nev AS ceg_nev,
 
 function utalas_sor_feldolgoz(array $u): array
 {
-    foreach (['id', 'ceg_id', 'ev', 'sorszam', 'db', 'beszamitas_db', 'letrehozta', 'utalta'] as $c) {
+    foreach (['id', 'ceg_id', 'ev', 'sorszam', 'db', 'beszamitas_db', 'reszosszeg_db', 'letrehozta', 'utalta'] as $c) {
         if (array_key_exists($c, $u)) {
             $u[$c] = $u[$c] === null ? null : (int)$u[$c];
         }
@@ -93,8 +97,74 @@ function utalas_betolt(int $id, bool $zarol = false): array
 
 function utalas_osszeg(int $id): float
 {
-    return round((float)db_val('SELECT COALESCE(SUM(b.osszeg - COALESCE(rb.reszt, 0)), 0) FROM bejovo_szamlak b' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = ?', [$id])
+    return round((float)db_val('SELECT COALESCE(SUM(COALESCE(b.utalas_osszeg, b.osszeg - COALESCE(rb.reszt, 0))), 0) FROM bejovo_szamlak b' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = ?', [$id])
+        + (float)db_val('SELECT COALESCE(SUM(osszeg), 0) FROM reszteljesitesek WHERE irany = "BEJOVO" AND utalas_id = ?', [$id])
         - (float)db_val('SELECT COALESCE(SUM(osszeg), 0) FROM beszamitasok WHERE utalas_id = ?', [$id]), 2);
+}
+
+/**
+ * Az utalás bejövő tételei (1.26): a benne lévő számlák (utalas_id) + a teljesítéskor részteljesítéssé vált részösszegek
+ * (reszteljesitesek.utalas_id – a számla ilyenkor már nincs az utalásban: a maradékkal FIZETENDŐ maradt, vagy azóta rendeződött).
+ * Minden sorban: tetel_osszeg = ami az utalásban számít (a hátralék, vagy a részösszeg), reszosszeg = részösszeg-e,
+ * reszt_id = a részteljesítés sora (teljesített részösszegnél), a részteljesítések listájával. Kötés, majd K sorszám szerint.
+ * Ugyanezt használja az utalás oldala és a PDF – egy adatforrás.
+ */
+function utalas_tetelek(int $id): array
+{
+    $mezok = 'b.id, b.kod, b.k_sorszam, b.szamlaszam, b.osszeg, b.statusz, b.fizetesi_hatarido, b.kelt, b.teljesites_datum, b.beszam, b.utalas_osszeg,
+              k.id AS kotes_pk, k.kod AS kotes_kod, k.megnevezes AS kotes_megnevezes,' . RESZT_BEJOVO_MEZOK;
+    $sorok = db_all('SELECT ' . $mezok . ', COALESCE(b.fizetve_datum, u.utalva_datum) AS fizetve_datum, NULL AS reszt_id, NULL AS resz
+                       FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN utalasok u ON u.id = b.utalas_id' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = ?', [$id]);
+    $reszek = db_all('SELECT ' . $mezok . ', r.datum AS fizetve_datum, r.id AS reszt_id, r.osszeg AS resz
+                       FROM reszteljesitesek r JOIN bejovo_szamlak b ON b.id = r.szamla_id JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN . 'WHERE r.irany = "BEJOVO" AND r.utalas_id = ?', [$id]);
+    $sorok = reszt_csatol(array_merge($sorok, $reszek), 'BEJOVO');
+    foreach ($sorok as &$s) {
+        foreach (['id', 'k_sorszam', 'kotes_pk'] as $c) {
+            $s[$c] = (int)$s[$c];
+        }
+        $s['reszt_id'] = $s['reszt_id'] === null ? null : (int)$s['reszt_id'];
+        $s['utalas_osszeg'] = $s['utalas_osszeg'] === null ? null : (float)$s['utalas_osszeg'];
+        if ($s['reszt_id'] !== null) {
+            $s['tetel_osszeg'] = (float)$s['resz'];
+            $s['reszosszeg'] = true;
+        } elseif ($s['utalas_osszeg'] !== null) {
+            $s['tetel_osszeg'] = $s['utalas_osszeg'];
+            $s['reszosszeg'] = true;
+        } else {
+            $s['tetel_osszeg'] = (float)$s['hatralek'];
+            $s['reszosszeg'] = false;
+        }
+        unset($s['resz']);
+    }
+    unset($s);
+    usort($sorok, fn(array $a, array $b): int => [$a['kotes_kod'], $a['k_sorszam'], $a['reszt_id'] ?? 0] <=> [$b['kotes_kod'], $b['k_sorszam'], $b['reszt_id'] ?? 0]);
+    return $sorok;
+}
+
+/**
+ * Részösszeg az utaláshoz (1.26): a kért összeg ellenőrzése a számla hátralékához képest.
+ * Vissza: a részösszeg DECIMAL-szövegként, vagy null = a teljes hátralék megy az utalásba (kérés nélkül, vagy a teljes hátralékkal).
+ */
+function reszosszeg_ertek(array $s, ?float $kert, string $pn): ?string
+{
+    if ($kert === null) {
+        return null;
+    }
+    $hatralek = round((float)$s['hatralek'], 2);
+    $kert = round($kert, 2);
+    if ($kert > $hatralek + 0.005) {
+        hiba('Az utaláshoz adott összeg (' . fmt_osszeg($kert) . " $pn) nem lehet több a(z) {$s['kod']} számla hátralékánál (" . fmt_osszeg($hatralek) . " $pn).");
+    }
+    if ($kert >= $hatralek - 0.005) {
+        return null;   // a teljes hátralék: nem részösszeg
+    }
+    if ($hatralek <= 0) {
+        hiba("A(z) {$s['kod']} számla hátraléka nem pozitív (" . fmt_osszeg($hatralek) . " $pn) – részösszeg nem adható belőle, csak a teljes számla.");
+    }
+    if ($kert <= 0) {
+        hiba('A részösszeg pozitív szám legyen (a(z) ' . $s['kod'] . ' számla hátraléka ' . fmt_osszeg($hatralek) . " $pn).");
+    }
+    return number_format($kert, 2, '.', '');
 }
 
 /** A beszámított kimenő számlák egy utalásban (1.25): a levont összeggel és a számla aktuális hátralékával */
@@ -174,26 +244,18 @@ function act_utalas(array $be): array
         }
     }
     $u = utalas_betolt($id);
-    $szamlak = db_all(
-        'SELECT b.id, b.kod, b.k_sorszam, b.szamlaszam, b.osszeg, b.statusz, b.fizetesi_hatarido, b.kelt, b.teljesites_datum, b.beszam,
-                COALESCE(b.fizetve_datum, u.utalva_datum) AS fizetve_datum,
-                k.id AS kotes_pk, k.kod AS kotes_kod, k.megnevezes AS kotes_megnevezes,' . RESZT_BEJOVO_MEZOK . '
-           FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN utalasok u ON u.id = b.utalas_id' . RESZT_BEJOVO_JOIN . '
-          WHERE b.utalas_id = ? ORDER BY k.kod, b.k_sorszam',
-        [$id]
-    );
-    $szamlak = reszt_csatol($szamlak, 'BEJOVO');
     $csoportok = [];
-    foreach ($szamlak as $s) {
+    foreach (utalas_tetelek($id) as $s) {
         $kk = $s['kotes_kod'];
         if (!isset($csoportok[$kk])) {
-            $csoportok[$kk] = ['kotes_pk' => (int)$s['kotes_pk'], 'kotes_kod' => $kk, 'kotes_megnevezes' => $s['kotes_megnevezes'], 'osszeg' => 0.0, 'szamlak' => []];
+            $csoportok[$kk] = ['kotes_pk' => $s['kotes_pk'], 'kotes_kod' => $kk, 'kotes_megnevezes' => $s['kotes_megnevezes'], 'osszeg' => 0.0, 'szamlak' => []];
         }
-        // az utalásban a hátralék szerepel (a részteljesítés már korábban kifizetésre került)
-        $csoportok[$kk]['osszeg'] = round($csoportok[$kk]['osszeg'] + (float)$s['hatralek'], 2);
+        // az utalásban a tétel utalt része szerepel: a hátralék (a korábbi részteljesítés már kifizetésre került), vagy a részösszeg (1.26)
+        $csoportok[$kk]['osszeg'] = round($csoportok[$kk]['osszeg'] + $s['tetel_osszeg'], 2);
         $csoportok[$kk]['szamlak'][] = [
-            'id' => (int)$s['id'], 'kod' => $s['kod'], 'k' => sprintf('K%04d', $s['k_sorszam']), 'szamlaszam' => $s['szamlaszam'],
+            'id' => $s['id'], 'kod' => $s['kod'], 'k' => sprintf('K%04d', $s['k_sorszam']), 'szamlaszam' => $s['szamlaszam'],
             'osszeg' => (float)$s['osszeg'], 'reszt' => $s['reszt'], 'reszt_db' => $s['reszt_db'], 'hatralek' => $s['hatralek'], 'reszteljesitesek' => $s['reszteljesitesek'],
+            'tetel_osszeg' => $s['tetel_osszeg'], 'reszosszeg' => $s['reszosszeg'], 'reszt_id' => $s['reszt_id'], 'utalas_osszeg' => $s['utalas_osszeg'],
             'statusz' => $s['statusz'], 'fizetesi_hatarido' => $s['fizetesi_hatarido'], 'fizetve_datum' => $s['fizetve_datum'],
             'kelt' => $s['kelt'], 'teljesites_datum' => $s['teljesites_datum'], 'beszam' => $s['beszam'],
         ];
@@ -333,7 +395,7 @@ function act_utalas_hatarertek_letrehoz(array $be): array
             [$cegId, $ev, $penznem, $n, $uid, number_format($limit, 2, '.', ''), $u['id']]
         );
         $utalasId = (int)db()->lastInsertId();
-        db_exec("UPDATE bejovo_szamlak SET statusz = 'UTALASHOZ_ADVA', utalas_id = ?, modositotta = ? WHERE id IN ($in) AND statusz = 'FIZETENDO'", array_merge([$utalasId, $u['id']], $ids));
+        db_exec("UPDATE bejovo_szamlak SET statusz = 'UTALASHOZ_ADVA', utalas_id = ?, utalas_osszeg = NULL, modositotta = ? WHERE id IN ($in) AND statusz = 'FIZETENDO'", array_merge([$utalasId, $u['id']], $ids));
         $lista = db_all("SELECT id, kotes_id, statusz, osszeg FROM bejovo_szamlak WHERE id IN ($in)", $ids);
         audit_utalas_szamlak($lista, "Utaláshoz adva (határértékes): $uid", 'FIZETENDO', 'UTALASHOZ_ADVA', [['m' => 'Utalás', 'r' => '–', 'u' => $uid]], $u);
         return ['id' => $utalasId, 'uid' => $uid, 'osszeg' => $osszeg, 'db' => count($ids)];
@@ -342,13 +404,18 @@ function act_utalas_hatarertek_letrehoz(array $be): array
     return $e;
 }
 
-/** Egy számla hozzáadása az utaláshoz → "UTALÁSHOZ ADVA! UTALÁS ÖSSZEGE EDDIG: ..." */
+/**
+ * Egy számla hozzáadása az utaláshoz → "UTALÁSHOZ ADVA! UTALÁS ÖSSZEGE EDDIG: ..."
+ * osszeg (nem kötelező, 1.26): részösszeg – a hátraléknál kisebb összeg, ennyi megy az utalásba; a többi FIZETENDŐ marad,
+ * és az utalás teljesítésekor a részösszeg részteljesítés lesz a számlán. Üresen (vagy a teljes hátralékkal) a teljes számla.
+ */
 function act_utalas_szamla_hozzaad(array $be): array
 {
     $u = csak_bejelentkezve();
     $utalasId = be_int($be, 'utalas_id');
     $szamlaId = be_int($be, 'szamla_id');
-    $e = db_tx(function () use ($utalasId, $szamlaId, $u) {
+    $kert = isset($be['osszeg']) && trim((string)$be['osszeg']) !== '' ? (float)be_osszeg($be, 'osszeg', false, 'utaláshoz adott összeg') : null;
+    $e = db_tx(function () use ($utalasId, $szamlaId, $kert, $u) {
         $ut = utalas_betolt($utalasId, true);
         if ($ut['statusz'] !== 'NYITOTT') {
             hiba("Az utalás ({$ut['uid']}) már nem nyitott, nem adható hozzá számla.");
@@ -367,11 +434,19 @@ function act_utalas_szamla_hozzaad(array $be): array
         if ((int)$s['ceg_id'] !== $ut['ceg_id']) {
             hiba('A számla másik céghez tartozik, mint az utalás.');
         }
-        db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", utalas_id = ?, modositotta = ? WHERE id = ?', [$utalasId, $u['id'], $szamlaId]);
-        audit_utalas_szamlak([$s], "Utaláshoz adva: {$ut['uid']}", 'FIZETENDO', 'UTALASHOZ_ADVA', [['m' => 'Utalás', 'r' => '–', 'u' => $ut['uid']]], $u);
-        return ['uid' => $ut['uid'], 'penznem' => $ut['penznem'], 'osszeg' => utalas_osszeg($utalasId), 'kod' => $s['kod'], 'szamla_osszeg' => (float)$s['hatralek'], 'utalas_id' => $utalasId, 'utalas_db' => (int)db_val('SELECT COUNT(*) FROM bejovo_szamlak WHERE utalas_id = ?', [$utalasId])];
+        $resz = reszosszeg_ertek($s, $kert, $ut['penznem']);
+        $hatralek = round((float)$s['hatralek'], 2);
+        db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", utalas_id = ?, utalas_osszeg = ?, modositotta = ? WHERE id = ?', [$utalasId, $resz, $u['id'], $szamlaId]);
+        $extra = [['m' => 'Utalás', 'r' => '–', 'u' => $ut['uid']]];
+        if ($resz !== null) {
+            $extra[] = ['m' => 'Részösszeg az utaláshoz', 'r' => '–', 'u' => fmt_osszeg((float)$resz) . " {$ut['penznem']}"];
+        }
+        audit_utalas_szamlak([$s], "Utaláshoz adva: {$ut['uid']}" . ($resz !== null ? ' – részösszeg: ' . fmt_osszeg((float)$resz) . " {$ut['penznem']} a " . fmt_osszeg($hatralek) . " {$ut['penznem']} hátralékból, a többi FIZETENDŐ marad" : ''), 'FIZETENDO', 'UTALASHOZ_ADVA', $extra, $u);
+        return ['uid' => $ut['uid'], 'penznem' => $ut['penznem'], 'osszeg' => utalas_osszeg($utalasId), 'kod' => $s['kod'], 'szamla_osszeg' => $resz !== null ? (float)$resz : $hatralek, 'hatralek' => $hatralek,
+                'reszosszeg' => $resz !== null, 'marad' => $resz !== null ? round($hatralek - (float)$resz, 2) : 0.0, 'utalas_id' => $utalasId,
+                'utalas_db' => (int)db_val('SELECT COUNT(*) FROM bejovo_szamlak WHERE utalas_id = ?', [$utalasId])];
     });
-    naplo('UTALASHOZ_AD', "számla {$e['kod']} (" . fmt_osszeg($e['szamla_osszeg']) . " {$e['penznem']}) → utalás {$e['uid']}; utalás összege eddig: " . fmt_osszeg($e['osszeg']) . " {$e['penznem']}");
+    naplo('UTALASHOZ_AD', "számla {$e['kod']} (" . fmt_osszeg($e['szamla_osszeg']) . " {$e['penznem']}" . ($e['reszosszeg'] ? ' részösszeg, hátralék ' . fmt_osszeg($e['hatralek']) : '') . ") → utalás {$e['uid']}; utalás összege eddig: " . fmt_osszeg($e['osszeg']) . " {$e['penznem']}");
     return $e;
 }
 
@@ -398,7 +473,7 @@ function act_utalas_kotes_hozzaad(array $be): array
             hiba('A kötés másik céghez tartozik, mint az utalás.');
         }
         $lista = db_all('SELECT id, kotes_id, statusz, osszeg FROM bejovo_szamlak WHERE kotes_id = ? AND statusz = "FIZETENDO"', [$kotesId]);
-        $db = db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", utalas_id = ?, modositotta = ? WHERE kotes_id = ? AND statusz = "FIZETENDO"', [$utalasId, $u['id'], $kotesId]);
+        $db = db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", utalas_id = ?, utalas_osszeg = NULL, modositotta = ? WHERE kotes_id = ? AND statusz = "FIZETENDO"', [$utalasId, $u['id'], $kotesId]);
         if ($db === 0) {
             hiba("A kötésben ({$k['kod']}) nincs FIZETENDŐ státuszú számla.");
         }
@@ -426,7 +501,7 @@ function act_utalas_szamla_eltavolit(array $be): array
             hiba('Az utalás már teljesült, a számla nem vehető ki belőle. (Irodavezető / admin: utalás visszanyitása.)');
         }
         utalas_lakat_ellenoriz(['lezarva' => $s['ut_lezarva'], 'uid' => $s['uid'], 'id' => $s['ut_id']], 'nem vehető ki belőle számla');
-        db_exec('UPDATE bejovo_szamlak SET statusz = "FIZETENDO", utalas_id = NULL, modositotta = ? WHERE id = ?', [$u['id'], $szamlaId]);
+        db_exec('UPDATE bejovo_szamlak SET statusz = "FIZETENDO", utalas_id = NULL, utalas_osszeg = NULL, modositotta = ? WHERE id = ?', [$u['id'], $szamlaId]);
         if (utalas_osszeg((int)$s['ut_id']) < -0.005) {
             hiba("A(z) {$s['kod']} számla nélkül az utalás ({$s['uid']}) összege negatív lenne: a beszámított kimenő számlák többet tesznek ki a maradék bejövő számláknál. Előbb vedd ki (vagy csökkentsd) a beszámítást, aztán ezt a számlát.", 'BESZAMITAS_TOBB');
         }
@@ -437,7 +512,55 @@ function act_utalas_szamla_eltavolit(array $be): array
     return $e;
 }
 
-/** Utalás teljesítése (elutalva): számlák → FIZETVE, negatív összeg → BESZÁMÍTVA */
+/**
+ * Részösszeg módosítása (1.26): az utalásban lévő számlából mennyi megy az utalásba.
+ * osszeg üresen, vagy a teljes hátralékkal: a teljes számla. Csak nyitott, nem lelakatolt utalásban.
+ */
+function act_utalas_szamla_osszeg(array $be): array
+{
+    $u = csak_bejelentkezve();
+    $szamlaId = be_int($be, 'szamla_id');
+    $kert = isset($be['osszeg']) && trim((string)$be['osszeg']) !== '' ? (float)be_osszeg($be, 'osszeg', false, 'utaláshoz adott összeg') : null;
+    $e = db_tx(function () use ($szamlaId, $kert, $u) {
+        $s = db_row('SELECT b.*, k.penznem, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek, ut.uid, ut.statusz AS ut_statusz, ut.id AS ut_id, ut.lezarva AS ut_lezarva
+                       FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id LEFT JOIN utalasok ut ON ut.id = b.utalas_id' . RESZT_BEJOVO_JOIN . 'WHERE b.id = ? FOR UPDATE', [$szamlaId]);
+        if (!$s) {
+            hiba('A számla nem található.');
+        }
+        if ($s['statusz'] !== 'UTALASHOZ_ADVA' || !$s['ut_id']) {
+            hiba('A számla nincs nyitott utalásban – részösszeget csak az utalásban lévő számlánál lehet megadni.');
+        }
+        if ($s['ut_statusz'] !== 'NYITOTT') {
+            hiba('Az utalás már teljesült, a részösszeg nem módosítható. (Irodavezető / admin: utalás visszanyitása.)');
+        }
+        utalas_lakat_ellenoriz(['lezarva' => $s['ut_lezarva'], 'uid' => $s['uid'], 'id' => $s['ut_id']], 'a részösszeg nem módosítható');
+        $resz = reszosszeg_ertek($s, $kert, $s['penznem']);
+        $hatralek = round((float)$s['hatralek'], 2);
+        $regi = $s['utalas_osszeg'] === null ? null : round((float)$s['utalas_osszeg'], 2);
+        $uj = $resz === null ? null : (float)$resz;
+        if ($uj !== $regi) {
+            db_exec('UPDATE bejovo_szamlak SET utalas_osszeg = ?, modositotta = ? WHERE id = ?', [$resz, $u['id'], $szamlaId]);
+            if ($resz !== null) {
+                // a beszámítás (1.25) erre a számlára megjelölt része legfeljebb a részösszeg lehet
+                db_exec('UPDATE beszamitas_bejovok bb JOIN beszamitasok bz ON bz.id = bb.beszamitas_id SET bb.osszeg = LEAST(bb.osszeg, ?) WHERE bb.bejovo_id = ? AND bz.utalas_id = ?', [$resz, $szamlaId, $s['ut_id']]);
+            }
+            if (utalas_osszeg((int)$s['ut_id']) < -0.005) {
+                hiba("Ezzel a részösszeggel az utalás ({$s['uid']}) összege negatív lenne: a beszámított kimenő számlák többet tesznek ki a bejövő tételeknél. Írj nagyobb összeget, vagy vedd ki (csökkentsd) a beszámítást.", 'BESZAMITAS_TOBB');
+            }
+            audit_ir('BEJOVO', $szamlaId, 'MODOSIT', "Részösszeg az utaláshoz módosítva: {$s['uid']} – " . ($resz !== null ? fmt_osszeg($uj) . " {$s['penznem']} megy az utalásba a " . fmt_osszeg($hatralek) . " {$s['penznem']} hátralékból, a többi FIZETENDŐ marad" : 'a teljes hátralék (' . fmt_osszeg($hatralek) . " {$s['penznem']}) megy az utalásba"),
+                [['m' => 'Részösszeg az utaláshoz', 'r' => $regi === null ? 'a teljes számla' : fmt_osszeg($regi) . " {$s['penznem']}", 'u' => $uj === null ? 'a teljes számla' : fmt_osszeg($uj) . " {$s['penznem']}"]], (int)$s['kotes_id'], $u);
+        }
+        return ['uid' => $s['uid'], 'penznem' => $s['penznem'], 'osszeg' => utalas_osszeg((int)$s['ut_id']), 'kod' => $s['kod'], 'szamla_osszeg' => $uj ?? $hatralek, 'hatralek' => $hatralek,
+                'reszosszeg' => $uj !== null, 'marad' => $uj !== null ? round($hatralek - $uj, 2) : 0.0, 'utalas_id' => (int)$s['ut_id'], 'valtozott' => $uj !== $regi,
+                'utalas_db' => (int)db_val('SELECT COUNT(*) FROM bejovo_szamlak WHERE utalas_id = ?', [$s['ut_id']])];
+    });
+    if ($e['valtozott']) {
+        naplo('UTALAS_RESZOSSZEG', "számla {$e['kod']}: " . ($e['reszosszeg'] ? 'részösszeg ' . fmt_osszeg($e['szamla_osszeg']) . " {$e['penznem']} (hátralék " . fmt_osszeg($e['hatralek']) . ')' : 'a teljes számla (' . fmt_osszeg($e['hatralek']) . " {$e['penznem']})") . " az utalásban {$e['uid']}; utalás összege: " . fmt_osszeg($e['osszeg']) . " {$e['penznem']}");
+    }
+    return $e;
+}
+
+/** Utalás teljesítése (elutalva): számlák → FIZETVE, negatív összeg → BESZÁMÍTVA; részösszeg (1.26) → részteljesítés, a számla FIZETENDŐ marad */
 function act_utalas_utalva(array $be): array
 {
     $u = csak_bejelentkezve();
@@ -455,9 +578,31 @@ function act_utalas_utalva(array $be): array
         if ($ut['osszeg'] < -0.005) {
             hiba('Az utalás összege negatív: a beszámított kimenő számlák többet tesznek ki a bejövő számláknál. Vedd ki vagy csökkentsd a beszámítást, vagy adj hozzá bejövő számlát.', 'BESZAMITAS_TOBB');
         }
-        $lista = db_all('SELECT id, kotes_id, statusz, osszeg FROM bejovo_szamlak WHERE utalas_id = ? AND statusz = "UTALASHOZ_ADVA"', [$utalasId]);
         $bzLista = utalas_beszamitasok($utalasId);   // a státuszváltás előtt: a megjelölt bejövő számlák még UTALÁSHOZ ADVA állapotban, a hátralékukkal
-        db_exec('UPDATE bejovo_szamlak SET statusz = IF(osszeg < 0, "BESZAMITVA", "FIZETVE"), fizetve_datum = ?, modositotta = ? WHERE utalas_id = ? AND statusz = "UTALASHOZ_ADVA"', [$datum, $u['id'], $utalasId]);
+        $mind = db_all('SELECT b.id, b.kod, b.szamlaszam, b.kotes_id, b.statusz, b.osszeg, b.utalas_osszeg, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek
+                          FROM bejovo_szamlak b' . RESZT_BEJOVO_JOIN . 'WHERE b.utalas_id = ? AND b.statusz = "UTALASHOZ_ADVA" FOR UPDATE', [$utalasId]);
+        // részösszegek (1.26): a részösszeg részteljesítés lesz a számlán (az utalás napjával), a számla a maradékkal FIZETENDŐ marad, és kikerül az utalásból
+        $lista = [];
+        $reszek = [];
+        foreach ($mind as $s) {
+            if ($s['utalas_osszeg'] !== null && round((float)$s['utalas_osszeg'], 2) < round((float)$s['hatralek'], 2) - 0.005) {
+                $reszek[] = $s;
+            } else {
+                $lista[] = $s;
+            }
+        }
+        $reszIds = [];
+        foreach ($reszek as $s) {
+            $resz = round((float)$s['utalas_osszeg'], 2);
+            $hatralek = round((float)$s['hatralek'], 2);
+            $reszIds[] = (int)$s['id'];
+            db_exec("INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito, letrehozta, utalas_id) VALUES ('BEJOVO', ?, ?, ?, ?, ?, ?)",
+                [$s['id'], number_format($resz, 2, '.', ''), $datum, 'Utalás: ' . $ut['uid'] . ($hiv ? " ($hiv)" : ''), $u['id'], $utalasId]);
+            db_exec('UPDATE bejovo_szamlak SET statusz = "FIZETENDO", utalas_id = NULL, utalas_osszeg = NULL, modositotta = ? WHERE id = ?', [$u['id'], $s['id']]);
+            audit_ir('BEJOVO', (int)$s['id'], 'RESZT', "Részösszeg utalva – az utalás teljesítve: {$ut['uid']}: " . fmt_osszeg($resz) . " {$ut['penznem']} (" . audit_ertek('kelt', $datum) . ') részteljesítésként felvezetve, a számla a maradékkal FIZETENDŐ marad',
+                [['m' => 'Státusz', 'r' => ny_statusz_nev('UTALASHOZ_ADVA'), 'u' => ny_statusz_nev('FIZETENDO')], ['m' => 'Hátralék', 'r' => fmt_osszeg($hatralek) . " {$ut['penznem']}", 'u' => fmt_osszeg(round($hatralek - $resz, 2)) . " {$ut['penznem']}"], ['m' => 'Utalás', 'r' => $ut['uid'], 'u' => '–']], (int)$s['kotes_id'], $u);
+        }
+        db_exec('UPDATE bejovo_szamlak SET statusz = IF(osszeg < 0, "BESZAMITVA", "FIZETVE"), fizetve_datum = ?, utalas_osszeg = NULL, modositotta = ? WHERE utalas_id = ? AND statusz = "UTALASHOZ_ADVA"', [$datum, $u['id'], $utalasId]);
         db_exec('UPDATE utalasok SET statusz = "UTALVA", utalva_datum = ?, banki_hivatkozas = ?, utalva_at = NOW(), utalta = ? WHERE id = ?', [$datum, $hiv, $u['id'], $utalasId]);
         audit_utalas_szamlak($lista, "Utalás teljesítve: {$ut['uid']}" . ($hiv ? " (hiv.: $hiv)" : ''), 'UTALASHOZ_ADVA', 'AUTO', [['m' => 'Utalás / fizetés dátuma', 'r' => '–', 'u' => audit_ertek('fizetve_datum', $datum)]], $u);
         // a megjelölt bejövő számlák (1.25): amelyiknek a teljes hátralékát a beszámítás(ok) fedezik, BESZÁMÍTVA – nem utalással, hanem a kimenő számlával rendezve
@@ -475,7 +620,7 @@ function act_utalas_utalva(array $be): array
             }
         }
         foreach ($fedezet as $bid => $f) {
-            $teljes = $f['osszeg'] >= $f['bejovo']['hatralek'] - 0.005;
+            $teljes = !in_array((int)$bid, $reszIds, true) && $f['osszeg'] >= $f['bejovo']['hatralek'] - 0.005;   // részösszegnél a számla nem rendeződik egészben
             if ($teljes) {
                 db_exec('UPDATE bejovo_szamlak SET statusz = "BESZAMITVA" WHERE id = ? AND utalas_id = ? AND statusz = "FIZETVE"', [$bid, $utalasId]);
             }
@@ -506,10 +651,11 @@ function act_utalas_utalva(array $be): array
             }
         }
         $ut['beszamitas_db'] = $bz;
+        $ut['reszosszeg_db'] = count($reszek);
         return $ut;
     });
-    naplo('UTALAS_TELJESITVE', "utalás {$e['uid']} teljesítve ($datum" . ($hiv ? ", hiv.: $hiv" : '') . "), {$e['db']} számla" . ($e['beszamitas_db'] ? " + {$e['beszamitas_db']} beszámított kimenő" : '') . ', összeg ' . fmt_osszeg($e['osszeg']) . " {$e['penznem']} – számlák FIZETVE/BESZÁMÍTVA");
-    return ['uid' => $e['uid'], 'osszeg' => $e['osszeg'], 'db' => $e['db'], 'beszamitas_db' => $e['beszamitas_db']];
+    naplo('UTALAS_TELJESITVE', "utalás {$e['uid']} teljesítve ($datum" . ($hiv ? ", hiv.: $hiv" : '') . "), {$e['db']} számla" . ($e['reszosszeg_db'] ? " (ebből {$e['reszosszeg_db']} részösszeg → részteljesítés)" : '') . ($e['beszamitas_db'] ? " + {$e['beszamitas_db']} beszámított kimenő" : '') . ', összeg ' . fmt_osszeg($e['osszeg']) . " {$e['penznem']} – számlák FIZETVE/BESZÁMÍTVA");
+    return ['uid' => $e['uid'], 'osszeg' => $e['osszeg'], 'db' => $e['db'], 'beszamitas_db' => $e['beszamitas_db'], 'reszosszeg_db' => $e['reszosszeg_db']];
 }
 
 /**
@@ -569,7 +715,8 @@ function act_utalas_kimeno_hozzaad(array $be): array
         $felosztas = [];
         if ($bejovoIds) {
             $in = implode(',', array_fill(0, count($bejovoIds), '?'));
-            $bejovok = db_all("SELECT b.id, b.kod, b.k_sorszam, b.szamlaszam, b.kotes_id, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id" . RESZT_BEJOVO_JOIN
+            // a számla utalt része: a hátralék, vagy részösszegnél (1.26) a részösszeg – ennyit rendezhet a beszámítás
+            $bejovok = db_all("SELECT b.id, b.kod, b.k_sorszam, b.szamlaszam, b.kotes_id, COALESCE(b.utalas_osszeg, b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id" . RESZT_BEJOVO_JOIN
                 . "WHERE b.id IN ($in) AND b.utalas_id = ? AND b.statusz = \"UTALASHOZ_ADVA\" ORDER BY k.kod, b.k_sorszam", array_merge($bejovoIds, [$utalasId]));
             if (count($bejovok) !== count($bejovoIds)) {
                 hiba('A megjelölt bejövő számlák valamelyike nincs ebben az utalásban (vagy már nem utalásra vár).');
@@ -650,6 +797,25 @@ function act_utalas_visszanyit(array $be): array
             hiba('Az utalás nem teljesített státuszú.');
         }
         $lista = db_all('SELECT id, kotes_id, statusz, osszeg FROM bejovo_szamlak WHERE utalas_id = ?', [$utalasId]);
+        // részösszegek (1.26): a teljesítéskor felvezetett részteljesítés törlődik, a számla a részösszeggel visszakerül az utalásba –
+        // csak ha a számla azóta nem került másik utalásba és nem rendeződött (akkor előbb azt kell visszanyitni / kivenni)
+        $reszek = db_all('SELECT r.id AS reszt_id, r.osszeg AS resz, r.datum, b.id, b.kod, b.kotes_id, b.statusz, b.utalas_id AS masik_utalas, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek
+                            FROM reszteljesitesek r JOIN bejovo_szamlak b ON b.id = r.szamla_id' . RESZT_BEJOVO_JOIN . 'WHERE r.irany = "BEJOVO" AND r.utalas_id = ? FOR UPDATE', [$utalasId]);
+        foreach ($reszek as $s) {
+            if ($s['statusz'] !== 'FIZETENDO' || $s['masik_utalas'] !== null) {
+                $masik = $s['masik_utalas'] !== null ? db_val('SELECT uid FROM utalasok WHERE id = ?', [$s['masik_utalas']]) : null;
+                hiba("Az utalás ({$ut['uid']}) nem nyitható vissza: a(z) {$s['kod']} számla részösszege volt benne, de a számla azóta " . ($masik ? "másik utalásban van ($masik)" : 'rendezve lett (' . ny_statusz_nev($s['statusz']) . ')') . '. Előbb azt vedd ki / nyisd vissza.', 'RESZOSSZEG_FOGLALT');
+            }
+        }
+        foreach ($reszek as $s) {
+            $resz = round((float)$s['resz'], 2);
+            $hatralek = round((float)$s['hatralek'] + $resz, 2);   // a törölt részteljesítés nélkül
+            $uj = $resz < $hatralek - 0.005 ? number_format($resz, 2, '.', '') : null;
+            db_exec('DELETE FROM reszteljesitesek WHERE id = ?', [$s['reszt_id']]);
+            db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", utalas_id = ?, utalas_osszeg = ?, fizetve_datum = NULL, modositotta = ? WHERE id = ?', [$utalasId, $uj, $u['id'], $s['id']]);
+            audit_ir('BEJOVO', (int)$s['id'], 'RESZT', "Utalás visszanyitva: {$ut['uid']} – a részösszeg részteljesítése (" . fmt_osszeg($resz) . " {$ut['penznem']}, " . audit_ertek('kelt', $s['datum']) . ') törölve, a számla újra UTALÁSHOZ ADVA' . ($uj !== null ? ' a részösszeggel' : ''),
+                [['m' => 'Státusz', 'r' => ny_statusz_nev('FIZETENDO'), 'u' => ny_statusz_nev('UTALASHOZ_ADVA')], ['m' => 'Hátralék', 'r' => fmt_osszeg((float)$s['hatralek']) . " {$ut['penznem']}", 'u' => fmt_osszeg($hatralek) . " {$ut['penznem']}"], ['m' => 'Utalás', 'r' => '–', 'u' => $ut['uid']]], (int)$s['kotes_id'], $u);
+        }
         db_exec('UPDATE bejovo_szamlak SET statusz = "UTALASHOZ_ADVA", fizetve_datum = NULL, modositotta = ? WHERE utalas_id = ?', [$u['id'], $utalasId]);
         // a beszámított kimenő számlák (1.25): a beszámítással fizetett vissza NYITOTT-ba, a részbeszámítás részteljesítése törlődik
         foreach (utalas_beszamitasok($utalasId) as $b) {
@@ -685,7 +851,7 @@ function act_utalas_torol(array $be): array
         }
         utalas_lakat_ellenoriz($ut, 'nem törölhető');
         $lista = db_all('SELECT id, kotes_id, statusz, osszeg FROM bejovo_szamlak WHERE utalas_id = ?', [$utalasId]);
-        db_exec('UPDATE bejovo_szamlak SET statusz = "FIZETENDO", utalas_id = NULL, modositotta = ? WHERE utalas_id = ?', [$u['id'], $utalasId]);
+        db_exec('UPDATE bejovo_szamlak SET statusz = "FIZETENDO", utalas_id = NULL, utalas_osszeg = NULL, modositotta = ? WHERE utalas_id = ?', [$u['id'], $utalasId]);
         foreach (utalas_beszamitasok($utalasId) as $b) {   // a beszámítások az utalással együtt törlődnek (a kimenő számla NYITOTT marad)
             audit_ir('KIMENO', $b['id'], 'STATUSZ', "Az utalás törölve ({$ut['uid']}) – a beszámítás (" . fmt_osszeg($b['levonva']) . " {$ut['penznem']}) megszűnt, a számla NYITOTT marad", [['m' => 'Utalás', 'r' => $ut['uid'], 'u' => '–']], null, $u);
         }

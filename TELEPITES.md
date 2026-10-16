@@ -114,6 +114,9 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
     importálódik („Importálás változatlanul”), a régi kihagyás / toldalék opciók megmaradtak.
 * Számla adatai: számlaszám, számla kelte, teljesítési dátum, fizetési határidő, összeg (**lehet negatív**),
   BESZÁM (szabad szöveg, pl. a raktári ellenőrző irat száma), megjegyzés.
+* **Részösszeg az utaláshoz (1.26):** a kártya **Részösszeg** gombjával a számlából csak egy rész megy az utalásba (pl.
+  1000-ből 600); a többi FIZETENDŐ marad, és az utalás teljesítésekor a részösszeg **részteljesítésként** jelenik meg a
+  számlán (a csip az utalásra mutat), a hátralék ennyivel csökken. A részleteket lásd az *Utalások* résznél.
 * Státuszok: **FIZETENDŐ → UTALÁSHOZ ADVA → FIZETVE** (negatív összegnél **BESZÁMÍTVA**, ami a FIZETVE-vel egyenértékű).
   UTALÁSHOZ ADVA jelvény fölé húzva az egeret (vagy rákoppintva) az utalás UID-ja látszik; FIZETVE/BESZÁMÍTVA
   sorában az UID mindig látszik és kattintható.
@@ -268,6 +271,25 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
     mind rendezettek, mert a fedezetük a banki utalás és a beszámítás együtt – az utalás írja le, melyik hogyan.
   * Csak ugyanannak a cégnek, azonos pénznemű, pozitív hátralékú kimenő számlája számítható be; egyszerre egy nyitott
     utalásban. Minden lépés a változásnaplóba kerül (BESZAMITAS_AD / BESZAMITAS_KIVESZ a naplóban).
+* **Részösszeg az utaláshoz – bejövő számlából csak egy rész (1.26):** ha egy bejövő számlából most csak egy részt
+  utalsz (pl. 1000 EUR-ból 600-at), a számla kártyáján az UTALÁSHOZ mellett a **Részösszeg** gombot nyomd meg: az utalás
+  választása ugyanaz, aztán egy ablak a teljes hátralékot ajánlja – írd át a most utalt összegre. (Az utalás oldalán a
+  **Számla hozzáadása** listában a **Rész** gomb ugyanez.) Kimenő számlából ugyanígy részösszeg a *Beszámítás utalásba*
+  ablak összegmezője (lásd fent).
+  * A számla **UTALÁSHOZ ADVA** marad, kék **RÉSZÖSSZEG** jelvénnyel: a kártyán és az utalás oldalán látszik, mennyi megy az
+    utalásba és mennyi marad (*a többi 400 EUR FIZETENDŐ marad*). Az utalás összegébe csak a részösszeg számít. A részösszeg
+    a **ceruzával** módosítható az utalás oldalán, a gyűjtő ablakban vagy a számla kártyáján (*Részösszeg: 600 EUR* gomb);
+    a teljes hátralékot beírva az egész számla megy az utalásba. Nyitott, nem lelakatolt utalásban.
+  * **Utalás teljesítve** után a részösszeg a számlán **részteljesítésként** jelenik meg (*Utalás: U-… (hivatkozás)*, az
+    utalás dátumával – a csip az utalásra kattintható), a hátralék ennyivel csökken, és a számla a maradékkal **FIZETENDŐ**
+    marad: később újra utaláshoz adható (egészben vagy megint részösszeggel), vagy beszámítással rendezhető. Az utalás
+    oldalán a teljesített részösszeg sora *RÉSZÖSSZEG* jelvénnyel és a számla mostani hátralékával látszik, a PDF-en alsorban.
+    Ez a részteljesítés kézzel nem törölhető: az utalás **visszanyitása** törli, és a számla a részösszeggel visszakerül az
+    utalásba (ha közben másik utalásba került vagy rendeződött, előbb azt kell visszanyitni / kivenni – a program szól).
+  * A **Részletes lista** sorában jobbra az utalás státusza látszik: nyitottnál a jelvény (és a lakat), teljesítettnél
+    *Utalva: dátum* (1.26).
+  * Nem kell hozzá bekapcsolni a bejövő részteljesítést az Adminban: a részösszeg részteljesítését a program maga vezeti fel.
+    Negatív (jóváíró) számlából nincs részösszeg. A határidő-listán az UTALÁSHOZ ADVA sor mellett a részösszeg is ott van.
 * Főoldal → **Minden utalás**: az összes utalás cégtől függetlenül, szűrhetően.
 
 ### Kimenő számlák
@@ -626,6 +648,16 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.25.0-ról 1.26.0-ra (részösszeg az utaláshoz bejövő számlából):** **adatbázis-módosítás van** – futtasd le a
+`sql/frissites_1.26.sql` fájlt phpMyAdmin-ban (két új oszlop: `bejovo_szamlak.utalas_osszeg`, `reszteljesitesek.utalas_id`;
+csak egyszer futtatható, másodszor „Duplicate column name” hibát ad, az nem baj; a belső szerveren a telepítő magától pótolja).
+A bejövő számla kártyáján új **Részösszeg** gomb, az utalás oldalán és a gyűjtő ablakban ceruza a részösszeg módosításához,
+RÉSZÖSSZEG jelvény; az utalás teljesítésekor a részösszeg részteljesítés lesz a számlán, a számla a maradékkal FIZETENDŐ
+marad. Az utalás oldalán a *Részletes lista* sorában jobbra a státusz (teljesítettnél *Utalva: dátum*). Töltsd fel a
+frissített `includes/api_utalas.php`, `includes/api_bejovo.php`, `includes/api_reszteljesites.php`, `includes/api_riport.php`,
+`includes/jogok.php`, `includes/nyomtatas.php`, `assets/app.js`, `assets/app.css`, `includes/config.php` (csak a verziószám)
+és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.24.4-ről 1.25.0-ra (beszámítás: kimenő számla levonása az utalásból):** **adatbázis-módosítás van** –
 futtasd le a `sql/frissites_1.25.sql` fájlt phpMyAdmin-ban (két új tábla: `beszamitasok`, `beszamitas_bejovok`; a belső
@@ -1144,6 +1176,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| „Unknown column 'utalas_osszeg'” vagy „Unknown column 'r.utalas_id'” (utalás oldal / bejövő számlák, 1.26) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.26.sql` fájlt phpMyAdmin-ban |
 | „Table 'beszamitasok' doesn't exist” (utalás oldal / kimenő számlák, 1.25) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.25.sql` fájlt phpMyAdmin-ban |
 | „Unknown column 'konyveles_kikuldve'” (Minden számla oldal, 1.24) | a frissítő SQL nem futott le – lásd a 1.23.0 → 1.24.0 frissítés két `ALTER TABLE` utasítását (phpMyAdmin → SQL) |
 | Excel import: egy sor „Döntést vár” | több rendszerbeli számla is lehet ugyanez (azonos cég, összeg, dátum), vagy a bizonyíték gyenge – a sorban a legördülőből válaszd ki, melyikkel vonja össze; ha új számla, pipáld ki a sort (új számlaként kerül be) |
@@ -1187,4 +1220,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.25.0 (2026-10-16)
+Verzió: 1.26.0 (2026-10-16)

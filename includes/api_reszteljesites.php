@@ -39,6 +39,7 @@ function reszt_sor_feldolgoz(array $r): array
     $r['szamla_id'] = (int)$r['szamla_id'];
     $r['osszeg'] = (float)$r['osszeg'];
     $r['letrehozta'] = $r['letrehozta'] === null ? null : (int)$r['letrehozta'];
+    $r['utalas_id'] = isset($r['utalas_id']) ? (int)$r['utalas_id'] : null;   // részösszeg az utaláshoz (1.26): az utalás, amelynek a teljesítése hozta létre
     return $r;
 }
 
@@ -51,7 +52,7 @@ function reszteljesitesek_betolt(string $irany, array $szamlaIds): array
     }
     $in = implode(',', array_fill(0, count($szamlaIds), '?'));
     $sorok = db_all(
-        "SELECT r.*, f.felhasznalonev AS letrehozta_nev FROM reszteljesitesek r LEFT JOIN felhasznalok f ON f.id = r.letrehozta
+        "SELECT r.*, f.felhasznalonev AS letrehozta_nev, ut.uid AS utalas_uid FROM reszteljesitesek r LEFT JOIN felhasznalok f ON f.id = r.letrehozta LEFT JOIN utalasok ut ON ut.id = r.utalas_id
           WHERE r.irany = ? AND r.szamla_id IN ($in) ORDER BY r.datum, r.id",
         array_merge([$irany], $szamlaIds)
     );
@@ -194,6 +195,12 @@ function act_reszteljesites_torol(array $be): array
         $s = reszt_szamla_betolt($irany, $szamlaId, true);
         if (!$s['nyitott']) {
             hiba('A számla már rendezett (' . ny_statusz_nev($s['statusz']) . ') – a részteljesítés nem törölhető. (Admin: fizetés visszavonása / utalás visszanyitása után lehet.)');
+        }
+        if ($irany === 'BEJOVO') {
+            $rUid = db_val('SELECT ut.uid FROM reszteljesitesek r JOIN utalasok ut ON ut.id = r.utalas_id WHERE r.id = ?', [$id]);
+            if ($rUid) {
+                hiba("Ez a részteljesítés az utalás teljesítéséből jött (részösszeg az utaláshoz: $rUid) – az utalás visszanyitásával szűnik meg (irodavezető / admin, az utalás oldalán).");
+            }
         }
         if ($irany === 'KIMENO') {
             $bzUid = db_val('SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.reszteljesites_id = ? LIMIT 1', [$id]);

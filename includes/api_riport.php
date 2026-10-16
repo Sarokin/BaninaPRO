@@ -17,7 +17,7 @@ function act_hataridok(array $be): array
         'SELECT * FROM (
             SELECT "BE" AS irany, b.id AS szamla_id, b.fizetesi_hatarido AS hatarido, c.id AS ceg_id, c.nev AS ceg_nev,
                    b.szamlaszam, b.osszeg, k.penznem, b.kod, k.id AS kotes_pk, k.kod AS kotes_kod, b.statusz, u.uid AS utalas_uid,
-                   b.teljesites_datum, b.kelt, COALESCE(rb.reszt, 0) AS reszt, COALESCE(rb.reszt_db, 0) AS reszt_db, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek
+                   b.teljesites_datum, b.kelt, COALESCE(rb.reszt, 0) AS reszt, COALESCE(rb.reszt_db, 0) AS reszt_db, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek, b.utalas_osszeg
               FROM bejovo_szamlak b
               JOIN kotesek k ON k.id = b.kotes_id
               JOIN cegek c ON c.id = k.ceg_id
@@ -27,7 +27,7 @@ function act_hataridok(array $be): array
             SELECT "KI", s.id, s.fizetesi_hatarido, c.id, c.nev,
                    s.szamlaszam, s.osszeg, s.penznem, s.kod, NULL, NULL, s.statusz,
                    (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1),
-                   s.teljesites_datum, s.kelt, COALESCE(rk.reszt, 0), COALESCE(rk.reszt_db, 0), (s.osszeg - COALESCE(rk.reszt, 0))
+                   s.teljesites_datum, s.kelt, COALESCE(rk.reszt, 0), COALESCE(rk.reszt_db, 0), (s.osszeg - COALESCE(rk.reszt, 0)), NULL
               FROM kimeno_szamlak s
               JOIN cegek c ON c.id = s.ceg_id' . RESZT_KIMENO_JOIN . '
              WHERE s.statusz = "NYITOTT"
@@ -41,6 +41,7 @@ function act_hataridok(array $be): array
         $s['reszt'] = (float)$s['reszt'];
         $s['reszt_db'] = (int)$s['reszt_db'];
         $s['hatralek'] = (float)$s['hatralek'];
+        $s['utalas_osszeg'] = $s['utalas_osszeg'] === null ? null : (float)$s['utalas_osszeg'];   // részösszeg az utalásban (1.26)
     }
     naplo('HATARIDOK', 'fizetési határidők lista megtekintve (' . count($sorok) . ' tétel)');
     return ['tetelek' => $sorok, 'ma' => date('Y-m-d')];

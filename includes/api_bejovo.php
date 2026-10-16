@@ -221,13 +221,17 @@ function bejovo_sor_feldolgoz(array $s): array
     $s['reszt'] = (float)($s['reszt'] ?? 0);
     $s['reszt_db'] = (int)($s['reszt_db'] ?? 0);
     $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'], 2);
+    $s['utalas_osszeg'] = isset($s['utalas_osszeg']) ? (float)$s['utalas_osszeg'] : null;   // részösszeg az utaláshoz (1.26)
+    if (array_key_exists('utalas_lezarva', $s)) {
+        $s['utalas_lezarva'] = (int)($s['utalas_lezarva'] ?? 0) === 1;
+    }
     $s['k'] = sprintf('K%04d', $s['k_sorszam']);
     unset($s['szamlaszam_norm']);
     return $s;
 }
 
 const BEJOVO_SQL = 'SELECT b.*, k.kod AS kotes_kod, k.penznem, k.ceg_id, k.id AS kotes_pk, k.megnevezes AS kotes_megnevezes,
-                           c.nev AS ceg_nev, u.uid AS utalas_uid, u.statusz AS utalas_statusz,
+                           c.nev AS ceg_nev, u.uid AS utalas_uid, u.statusz AS utalas_statusz, u.lezarva AS utalas_lezarva,
                            COALESCE(b.fizetve_datum, u.utalva_datum) AS fizetve_datum,
                            fl.felhasznalonev AS letrehozta_nev, fm.felhasznalonev AS modositotta_nev,' . RESZT_BEJOVO_MEZOK . '
                       FROM bejovo_szamlak b
@@ -438,6 +442,10 @@ function act_bejovo_szamla_modosit(array $be): array
     $osszeg = be_osszeg($be, 'osszeg', true, 'számla összege');
     if ((float)$s['reszt'] > 0 && (float)$osszeg <= (float)$s['reszt']) {
         hiba('A számla összege (' . fmt_osszeg($osszeg) . " {$s['penznem']}) nem lehet kisebb vagy egyenlő a már felvezetett részteljesítéseknél (" . fmt_osszeg($s['reszt']) . " {$s['penznem']}). Előbb töröld a részteljesítést.");
+    }
+    // részösszeg az utalásban (1.26): a hátralék maradjon nagyobb a részösszegnél
+    if ($s['utalas_osszeg'] !== null && round((float)$osszeg - (float)$s['reszt'], 2) <= (float)$s['utalas_osszeg'] + 0.005) {
+        hiba('A számla hátraléka (' . fmt_osszeg(round((float)$osszeg - (float)$s['reszt'], 2)) . " {$s['penznem']}) nem lehet kisebb vagy egyenlő az utaláshoz adott részösszegnél (" . fmt_osszeg((float)$s['utalas_osszeg']) . " {$s['penznem']}). Előbb módosítsd a részösszeget az utalásban.");
     }
 
     db_tx(function () use ($id, $s, $szamlaszam, $telj, $kelt, $hatarido, $osszeg, $beszam, $megj, $mj, $u) {
