@@ -41,11 +41,14 @@ function mig_megj_bont(string $megj): array
     return ['mezok' => $mezok, 'egyeb' => $egyeb];
 }
 
-/** „UGYF 12345678901, VEVO HU-00000123” → [['UGYF','12345678901'], ['VEVO','HU-00000123']] */
+/**
+ * „UGYF 12345678901, VEVO HU-00000123” → [['UGYF','12345678901'], ['VEVO','HU-00000123']]. Összevont cégnél több
+ * „DOS-kód:” rész is lehet, ezeket a megjegyzés-bontás „ · ”-tal fűzi össze – az is elválasztó.
+ */
 function mig_dos_kodok(string $s): array
 {
     $ki = [];
-    foreach (preg_split('/,\s*/', trim($s)) ?: [] as $d) {
+    foreach (preg_split('/,\s*| · /u', trim($s)) ?: [] as $d) {
         if (preg_match('/^(UGYF|VEVO)\s+(.+)$/u', trim($d), $m)) {
             $ki[] = [$m[1], trim($m[2])];
         }

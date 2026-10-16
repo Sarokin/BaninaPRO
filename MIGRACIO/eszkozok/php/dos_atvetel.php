@@ -60,8 +60,12 @@ $t0 = microtime(true);
 
 // ---- jelentés -------------------------------------------------------------------------------------------------------
 $J = ['uj' => ['ceg' => [], 'kotes' => [], 'bejovo' => [], 'forintszamla' => [], 'utalas' => [], 'kimeno' => [], 'bank' => [], 'reszt' => [], 'athelyezve' => []],
-      'javitva' => [], 'fizetve' => [], 'datum_potolva' => [], 'utkozes' => [], 'hianyzik' => [], 'figyelem' => [], 'hiba' => [], 'egyezik' => 0, 'ib_marad' => []];
+      'javitva' => [], 'fizetve' => [], 'datum_potolva' => [], 'utkozes' => [], 'hianyzik' => [], 'figyelem' => [], 'hiba' => [], 'egyezik' => 0, 'ib_marad' => [],
+      'megj_frissitve' => 0, 'megj_marad' => []];
 $AUDIT = [];   // [tipus, rekordId, szuloId, muvelet, leiras, valtozasok]
+// A dos_koztes.py köztes fájlja a 10-07-i import kiszámolt értékeit is viszi (állapot, fizetési dátum, részteljesítés, megjegyzés):
+// ilyenkor ezek a mérvadók – az új rekordok pontosan a 10-07-i import formájában jönnek létre.
+$UJF = isset($IR['ig']);
 
 function jel(string $hova, array|string $mit): void
 {
@@ -172,7 +176,7 @@ foreach (db_all("SELECT b.id, b.kotes_id, b.kod, b.szamlaszam, b.osszeg, b.statu
     $IB_ARCHIV["{$b['ceg_id']}|{$b['penznem']}|" . mig_laza_kulcs($b['szamlaszam'])][] = $b;
 }
 $UTAL = [];                   // "deviza|012345" → utalás
-foreach (db_all('SELECT id, uid, ceg_id, ev, penznem, statusz, utalva_datum, banki_hivatkozas, megjegyzes FROM utalasok') as $r) {
+foreach (db_all('SELECT id, uid, ceg_id, ev, penznem, sorszam, statusz, utalva_datum, banki_hivatkozas, megjegyzes, utalta, letrehozta FROM utalasok') as $r) {
     $ref = mig_utalas_ref((string)$r['banki_hivatkozas']);
     if ($ref) {
         $UTAL["{$ref['tipus']}|{$ref['szam']}"] = $r;
@@ -190,12 +194,18 @@ foreach (db_all('SELECT s.id, s.ceg_id, s.ev, s.penznem, s.kod, s.szamlaszam, s.
     $KIMN[$s['szamlaszam_norm']] = $s;
 }
 $BANK = [];
+$BANK_ID = [];
 foreach (db_all('SELECT id, azonosito, azonosito_norm, datum FROM banki_kivonatok') as $r) {
     $BANK[$r['azonosito_norm']] = $r;
+    $BANK_ID[(int)$r['id']] = $r;
 }
 $RESZT = [];                  // "BEJOVO|id" → [összeg, darab]
 foreach (db_all('SELECT irany, szamla_id, SUM(osszeg) ossz, COUNT(*) db FROM reszteljesitesek GROUP BY irany, szamla_id') as $r) {
     $RESZT["{$r['irany']}|{$r['szamla_id']}"] = [$r['ossz'], (int)$r['db']];
+}
+$RESZT_SOR = [];              // "BEJOVO|id" → a részteljesítés sorai (a DOS-ból jöttek: letrehozta üres, „DOS …” azonosító)
+foreach (db_all('SELECT id, irany, szamla_id, osszeg, datum, banki_azonosito, letrehozta FROM reszteljesitesek ORDER BY id') as $r) {
+    $RESZT_SOR["{$r['irany']}|{$r['szamla_id']}"][] = $r;
 }
 $IRU = [];                    // a köztes formátum utalásai
 foreach ($IR['utalasok'] ?? [] as $x) {
@@ -225,6 +235,36 @@ function ceg_dos(string $tabla, string $kod): ?int
     }
     if ($p === null) {
         return null;
+    }
+    if (isset($p['csoport'])) {
+        // a DOS-átalakító (dos_koztes.py) a 10-07-i import cégösszevonását adja (azonos adószám, kézi lista): ha a csoport egy
+        // másik DOS-kódja már egy meglévő céghez tartozik, az új kód is oda kerül. Név szerint NEM párosít (a felhasználó szabálya).
+        foreach ($p['csoport'] as $tk) {
+            [$t2, $k2] = explode(' ', (string)$tk, 2) + [1 => ''];
+            $id = $t2 === 'VEVO' ? ($VEVO[$k2] ?? null) : ($UGYF[$k2] ?? null);
+            if ($id !== null) {
+                db_exec('UPDATE cegek SET megjegyzes = IF(COALESCE(megjegyzes, \'\') = \'\', TRIM(LEADING CHAR(10) FROM ?), CONCAT(megjegyzes, ?)) WHERE id = ?',
+                    array_merge(array_fill(0, 2, "\nDOS-kód: $tabla $kod (DOS import $NAP, a DOS-ban azonos cég: $tk)"), [$id]));
+                if ($tabla === 'VEVO') { $VEVO[$kod] = $id; } else { $UGYF[$kod] = $id; }
+                jel('figyelem', "új DOS-kód ($tabla $kod) a meglévő céghez került (#$id {$CEG[$id]['nev']}), mert a DOS-ban azonos cég ($tk)");
+                return $id;
+            }
+        }
+        $c = $p['ceg'];
+        $nev = mb_substr(trim((string)$c['nev']), 0, 191);
+        if (db_val('SELECT id FROM cegek WHERE nev = ?', [$nev])) {
+            $nev = mb_substr($nev, 0, 170) . " (DOS $tabla $kod)";
+        }
+        $pk = $c['partnerkod'] ?? null;
+        if ($pk !== null && db_val('SELECT id FROM cegek WHERE partnerkod = ?', [$pk])) {
+            $pk = null;
+        }
+        db_exec('INSERT INTO cegek (nev, adoszam, partnerkod, megjegyzes) VALUES (?, ?, ?, ?)', [$nev, $c['adoszam'] ?? null, $pk, $c['megjegyzes']]);
+        $id = (int)db()->lastInsertId();
+        $CEG[$id] = ['id' => $id, 'nev' => $nev];
+        if ($tabla === 'VEVO') { $VEVO[$kod] = $id; } else { $UGYF[$kod] = $id; }
+        uj('ceg', "#$id $nev ($tabla $kod" . (count($p['csoport']) > 1 ? ', a DOS-ban azonos: ' . implode(', ', $p['csoport']) : '') . ')');
+        return $id;
     }
     $nk = mig_nev_kulcs((string)$p['nev']);
     if ($nk !== '' && isset($NEVK[$nk])) {
@@ -334,14 +374,18 @@ function utalas_dos(array $ref, int $cegId, string $penznem): ?array
         return null;
     }
     [$utalva, $d1] = utalas_datumok($x);
-    $ev = (int)substr($utalva ?? $d1 ?? date('Y-m-d'), 0, 4);
+    if (array_key_exists('utalva', $x)) {
+        $utalva = mig_datum($x['utalva']);      // a 10-07-i import: devizánál a terhelés, forintnál az utalás napja
+    }
+    // év: a 10-07-i import a DOS-utalás keltét (megbízás; ha nincs, a terhelést) vette
+    $ev = !empty($x['datum']) ? (int)substr((string)$x['datum'], 0, 4) : (int)substr($utalva ?? $d1 ?? date('Y-m-d'), 0, 4);
     $n = kovetkezo_sorszam('UTALAS', $ev, $penznem);
     $uid = utalas_uid($penznem, $ev, $n);
-    $hiv = 'DOS ' . $ref['tipus'] . 'utalás #' . trim((string)$ref['szam']);
+    $hiv = $x['hivatkozas'] ?? ('DOS ' . $ref['tipus'] . 'utalás #' . trim((string)$ref['szam']));
     db_exec("INSERT INTO utalasok (ceg_id, ev, penznem, sorszam, uid, utalas_mod, statusz, utalva_datum, banki_hivatkozas, megjegyzes, lezarva)
-             VALUES (?, ?, ?, ?, ?, 'MANUAL', 'UTALVA', ?, ?, ?, 1)", [$cegId, $ev, $penznem, $n, $uid, $utalva, $hiv, utalas_megj($x, $penznem)]);
+             VALUES (?, ?, ?, ?, ?, 'MANUAL', 'UTALVA', ?, ?, ?, 1)", [$cegId, $ev, $penznem, $n, $uid, $utalva, $hiv, $x['megjegyzes'] ?? utalas_megj($x, $penznem)]);
     $u = ['id' => (int)db()->lastInsertId(), 'uid' => $uid, 'ceg_id' => $cegId, 'ev' => $ev, 'penznem' => $penznem, 'statusz' => 'UTALVA', 'utalva_datum' => $utalva,
-          'banki_hivatkozas' => $hiv, '_uj' => true];
+          'banki_hivatkozas' => $hiv, 'sorszam' => $n, '_uj' => true, '_sorrend' => $x['sorrend'] ?? null];
     $UTAL[$kulcs] = $u;
     uj('utalas', "$uid ← $hiv" . ($utalva ? " ($utalva)" : ' (terhelés nélkül)'));
     return $u;
@@ -441,6 +485,235 @@ function mezok_osszevet(string $tipus, array $db, array $uj, string $auditTipus,
     return $javit;
 }
 
+/**
+ * A rekord DOS-megjegyzése a 10-07-i import formájában (a köztes fájlból): ha a DOS-adat azóta változott (pl. azóta átutalták,
+ * beírták a terhelést), a megjegyzés is a DOS mostani állapotát mutassa. Csak ha a megjegyzéshez azóta senki (munkatárs, IB
+ * import) nem nyúlt – egyébként marad, és a jelentés felsorolja.
+ */
+function megj_frissit(string $auditTipus, array $db, ?string $uj, array &$set, array &$p, array &$valt, string $azon): void
+{
+    global $J;
+    if ($uj === null || $uj === '' || (string)$db['megjegyzes'] === $uj) {
+        return;
+    }
+    $e = erintett($auditTipus, (int)$db['id'], 'megjegyzes');
+    if ($e !== null) {
+        $J['megj_marad'][] = "$azon: a megjegyzést azóta {$e['ki']} módosította – a DOS-adatok változását nem írtam bele";
+        return;
+    }
+    $set[] = 'megjegyzes = ?';
+    $p[] = $uj;
+    $valt[] = ['m' => AUDIT_CIMKEK['megjegyzes'], 'r' => audit_ertek('megjegyzes', $db['megjegyzes']), 'u' => audit_ertek('megjegyzes', $uj)];
+    $J['megj_frissitve']++;
+}
+
+/** A köztes rekord 10-07-i állapota: ['statusz', 'fizetve' (ÉÉÉÉ-HH-NN|null), 'reszt' => [összeg, dátum, azonosító]|null] */
+function dos_allapot(array $t): array
+{
+    $r = $t['reszt'] ?? null;
+    return ['statusz' => (string)$t['statusz'], 'fizetve' => mig_datum($t['fizetve_datum'] ?? null),
+            'reszt' => $r ? [mig_osszeg((string)$r['osszeg']), mig_datum($r['datum'] ?? null), (string)($r['azonosito'] ?? 'DOS import')] : null];
+}
+
+/** Részteljesítés rögzítése (a 10-07-i import formájában) */
+function reszt_ir(string $irany, int $szamlaId, ?int $szuloId, array $reszt, string $kod, string $penznem): void
+{
+    global $AUDIT, $NAP;
+    db_exec('INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito) VALUES (?, ?, ?, ?, ?)', [$irany, $szamlaId, $reszt[0], $reszt[1], $reszt[2]]);
+    $AUDIT[] = [$irany, $szamlaId, $szuloId, 'RESZT', "DOS import ($NAP): részteljesítés " . mig_osszeg_hu($reszt[0]) . " $penznem ({$reszt[2]})", []];
+    uj('reszt', "$kod: " . mig_osszeg_hu($reszt[0]) . " $penznem ({$reszt[2]})");
+}
+
+/**
+ * A számla DOS-ból jött részteljesítése a DOS mostani állapota szerint: $cel = [összeg, dátum, azonosító] vagy null (a DOS-ban
+ * nincs részteljesítés: teljesen kifizetve, vagy nincs átutalás). Csak a DOS-importból jött sorokhoz nyúl (letrehozta üres,
+ * „DOS …” azonosító); ha egy munkatárs is rögzített részteljesítést, semmit nem változtat, csak jelenti.
+ */
+function dos_reszt_igazit(string $irany, array $sz, ?array $cel, string $tipusNev, string $azon): void
+{
+    global $RESZT_SOR, $AUDIT, $NAP, $RESZT;
+    $sorok = $RESZT_SOR["$irany|{$sz['id']}"] ?? [];
+    $dos = array_values(array_filter($sorok, fn($r) => $r['letrehozta'] === null && str_starts_with((string)$r['banki_azonosito'], 'DOS ')));
+    $szulo = $irany === 'BEJOVO' ? (int)$sz['kotes_id'] : null;
+    if (count($dos) !== count($sorok)) {
+        $osszes = array_sum(array_map(fn($r) => (float)$r['osszeg'], $sorok));
+        if ($cel === null || abs($osszes - (float)$cel[0]) >= 0.005) {
+            jel('figyelem', "$tipusNev $azon: a BaninaPRO-ban kézzel rögzített részteljesítés is van (" . mig_osszeg_hu((string)$osszes) . '), a DOS szerint '
+                . ($cel ? mig_osszeg_hu($cel[0]) : 'nincs részteljesítés') . ' – marad');
+        }
+        return;
+    }
+    if ($cel === null) {
+        foreach ($dos as $r) {
+            db_exec('DELETE FROM reszteljesitesek WHERE id = ?', [$r['id']]);
+            $AUDIT[] = [$irany, (int)$sz['id'], $szulo, 'RESZT', "DOS import ($NAP): a DOS-ból jött részteljesítés (" . mig_osszeg_hu((string)$r['osszeg']) . ", {$r['banki_azonosito']}) törölve – a DOS-ban már "
+                . ($sz['_dos_fizetve'] ?? false ? 'teljesen kifizetve' : 'nincs részteljesítés'), []];
+            jel('javitva', ['tipus' => $tipusNev, 'kod' => $sz['kod'], 'dos' => $azon, 'mezo' => 'részteljesítés', 'regi' => $r['osszeg'] . " ({$r['banki_azonosito']})", 'uj' => '–']);
+        }
+        unset($RESZT["$irany|{$sz['id']}"], $RESZT_SOR["$irany|{$sz['id']}"]);
+        return;
+    }
+    if (count($dos) === 1 && abs((float)$dos[0]['osszeg'] - (float)$cel[0]) < 0.005 && $dos[0]['datum'] === $cel[1] && $dos[0]['banki_azonosito'] === $cel[2]) {
+        return;   // egyezik
+    }
+    foreach ($dos as $r) {
+        db_exec('DELETE FROM reszteljesitesek WHERE id = ?', [$r['id']]);
+    }
+    db_exec('INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito) VALUES (?, ?, ?, ?, ?)', [$irany, $sz['id'], $cel[0], $cel[1], $cel[2]]);
+    if ($dos) {
+        $regi = implode(', ', array_map(fn($r) => mig_osszeg_hu((string)$r['osszeg']) . " ({$r['datum']}, {$r['banki_azonosito']})", $dos));
+        $AUDIT[] = [$irany, (int)$sz['id'], $szulo, 'RESZT', "DOS import ($NAP): részteljesítés a DOS szerint: $regi → " . mig_osszeg_hu($cel[0]) . " ({$cel[1]}, {$cel[2]})", []];
+        jel('javitva', ['tipus' => $tipusNev, 'kod' => $sz['kod'], 'dos' => $azon, 'mezo' => 'részteljesítés', 'regi' => $regi, 'uj' => "{$cel[0]} ({$cel[1]}, {$cel[2]})"]);
+    } else {
+        $AUDIT[] = [$irany, (int)$sz['id'], $szulo, 'RESZT', "DOS import ($NAP): részteljesítés " . mig_osszeg_hu($cel[0]) . " {$sz['penznem']} ({$cel[2]})", []];
+        uj('reszt', "{$sz['kod']}: " . mig_osszeg_hu($cel[0]) . " {$sz['penznem']} ({$cel[2]})");
+    }
+}
+
+/** Hány ütközés / hiba van eddig (a rekordonkénti változás észleléséhez) */
+function gond_db(): int
+{
+    global $J;
+    return count($J['utkozes']) + count($J['hiba']);
+}
+
+/**
+ * Meglévő bejövő számla (devizás tétel vagy forintszámla) fizetése a DOS mostani állapota szerint (új köztes formátum).
+ * A DOS a mérvadó a fizetésben; a BaninaPRO-ban azóta történt fizetési lépést (utalásra vár, más utalás) nem írja felül.
+ */
+function bejovo_fizetes_dos(array $b, array $t, array $fiz, array $st, string $kulcs, string $tipusNev, array &$set, array &$p, array &$valt): ?string
+{
+    global $RESZT, $NAP;
+    $ki = erintett_ki('BEJOVO', (int)$b['id']);
+    $azon = "{$b['kod']} ($kulcs)";
+    $fizetett = in_array($st['statusz'], ['FIZETVE', 'BESZAMITVA'], true);
+    $dbFizetett = in_array($b['statusz'], ['FIZETVE', 'BESZAMITVA'], true);
+    $refKulcs = $fiz['mod'] !== 'nincs' ? $fiz['ref']['tipus'] . '|' . trim((string)$fiz['ref']['szam']) : null;
+    $dbRef = mig_utalas_ref((string)$b['banki_hivatkozas']);
+    $dbRefKulcs = $dbRef ? "{$dbRef['tipus']}|{$dbRef['szam']}" : null;
+    $voltReszt = $RESZT["BEJOVO|{$b['id']}"] ?? null;
+    if ($fizetett) {
+        if ($b['statusz'] === 'FIZETENDO' && $b['utalas_id'] === null) {
+            $u = null;
+            if ($refKulcs !== null) {
+                $u = utalas_dos($fiz['ref'], (int)$b['ceg_id'], $b['penznem']);
+                if ($u === null) {
+                    return null;
+                }
+            }
+            array_push($set, 'statusz = ?', 'fizetve_datum = ?', 'utalas_id = ?');
+            array_push($p, $st['statusz'], $st['fizetve'], $u['id'] ?? null);
+            jel('fizetve', "$tipusNev $azon → {$st['statusz']}" . ($u ? ", {$u['uid']} ({$u['banki_hivatkozas']})" : ' (DOS-utalás nélkül)') . ($st['fizetve'] ? ', ' . mig_datum_hu($st['fizetve']) : ', terhelés nélkül'));
+            if ($voltReszt !== null) {
+                dos_reszt_igazit('BEJOVO', $b + ['_dos_fizetve' => true], null, $tipusNev, $kulcs);
+            }
+            return "DOS import ($NAP): " . ny_statusz_nev($st['statusz']) . ($u ? " – {$u['banki_hivatkozas']} ({$u['uid']}" . ($st['fizetve'] ? ', ' . mig_datum_hu($st['fizetve']) : ', terhelés nélkül') . ')' : '');
+        }
+        if ($b['statusz'] === 'UTALASHOZ_ADVA') {
+            jel('utkozes', ['tipus' => $tipusNev, 'azon' => $azon, 'mezo' => 'utalás', 'baninapro' => "utalásra vár: {$b['utalas_uid']}", 'dos' => "átutalva: $refKulcs", 'modositotta' => $ki]);
+            return null;
+        }
+        if ($dbFizetett && $dbRefKulcs !== null && $dbRefKulcs !== $refKulcs) {
+            jel('utkozes', ['tipus' => $tipusNev, 'azon' => $azon, 'mezo' => 'utalás', 'baninapro' => (string)$b['banki_hivatkozas'], 'dos' => (string)$refKulcs, 'modositotta' => $ki]);
+            return null;
+        }
+        if ($dbFizetett && $dbRefKulcs === null) {
+            jel('figyelem', "$tipusNev $azon: a BaninaPRO-ban {$b['statusz']}" . ($b['utalas_uid'] ? " ({$b['utalas_uid']})" : ' (utalás nélkül)') . ", a DOS-ban " . ($refKulcs ?? 'utalás nélkül') . ' – marad');
+            return null;
+        }
+        if ($dbFizetett && (string)$b['fizetve_datum'] !== (string)$st['fizetve']) {
+            // a fizetés napja a DOS-ban azóta rögzítve / javítva (pl. a 00.00.00 terhelés helyett)
+            $e = erintett('BEJOVO', (int)$b['id'], 'fizetve_datum');
+            if ($e === null) {
+                $set[] = 'fizetve_datum = ?';
+                $p[] = $st['fizetve'];
+                $valt[] = ['m' => AUDIT_CIMKEK['fizetve_datum'], 'r' => audit_ertek('fizetve_datum', $b['fizetve_datum']), 'u' => audit_ertek('fizetve_datum', $st['fizetve'])];
+                jel('javitva', ['tipus' => $tipusNev, 'kod' => $b['kod'], 'dos' => $kulcs, 'mezo' => 'fizetve_datum', 'regi' => $b['fizetve_datum'], 'uj' => $st['fizetve']]);
+            } elseif (!$e['excel']) {
+                jel('utkozes', ['tipus' => $tipusNev, 'azon' => $azon, 'mezo' => 'fizetve_datum', 'baninapro' => $b['fizetve_datum'], 'dos' => $st['fizetve'], 'modositotta' => $e['ki']]);
+            }
+        }
+        if ($dbFizetett && $b['statusz'] !== $st['statusz']) {
+            jel('figyelem', "$tipusNev $azon: a BaninaPRO-ban {$b['statusz']}, a DOS szerint {$st['statusz']} (az összeg előjele?) – marad");
+        }
+        if ($dbFizetett && $voltReszt !== null) {
+            dos_reszt_igazit('BEJOVO', $b + ['_dos_fizetve' => true], null, $tipusNev, $kulcs);
+        }
+        return null;
+    }
+    if ($st['reszt'] !== null) {
+        if ($b['statusz'] === 'FIZETENDO' && $b['utalas_id'] === null) {
+            dos_reszt_igazit('BEJOVO', $b, $st['reszt'], $tipusNev, $kulcs);
+        } elseif ($dbFizetett && $dbRefKulcs !== null) {
+            jel('utkozes', ['tipus' => $tipusNev, 'azon' => $azon, 'mezo' => 'utalás', 'baninapro' => "{$b['statusz']} ({$b['banki_hivatkozas']})",
+                'dos' => 'a DOS-ban csak részben átutalt: ' . mig_osszeg_hu($st['reszt'][0]), 'modositotta' => $ki]);
+        }
+        return null;
+    }
+    if ($dbFizetett && $dbRefKulcs !== null) {
+        jel('utkozes', ['tipus' => $tipusNev, 'azon' => $azon, 'mezo' => 'utalás', 'baninapro' => "{$b['statusz']} ({$b['banki_hivatkozas']})",
+            'dos' => 'a DOS-ban már nincs átutalva', 'modositotta' => $ki]);
+    } elseif ($voltReszt !== null && $b['statusz'] === 'FIZETENDO') {
+        dos_reszt_igazit('BEJOVO', $b, null, $tipusNev, $kulcs);
+    }
+    return null;
+}
+
+/**
+ * Meglévő kimenő számla befolyása a DOS mostani állapota szerint (új köztes formátum). A DOS-ból jött („DOS …” banki kivonatú)
+ * befolyást a DOS szerint igazítja; a BaninaPRO-ban kézzel rögzített banki kivonatot nem írja felül.
+ */
+function kimeno_fizetes_dos(array $db, array $s, array $st, string $azon, array &$set, array &$p, array &$valt): ?string
+{
+    global $RESZT, $NAP, $BANK_ID;
+    $ki = erintett_ki('KIMENO', (int)$db['id']);
+    $a = "{$db['kod']} ($azon)";
+    $volt = $RESZT["KIMENO|{$db['id']}"][0] ?? null;
+    $kiv = $db['banki_kivonat_id'] !== null ? ($BANK_ID[(int)$db['banki_kivonat_id']] ?? null) : null;
+    $dosKiv = $kiv !== null && str_starts_with((string)$kiv['azonosito'], 'DOS ');
+    if ($st['statusz'] === 'FIZETVE') {
+        if ($db['statusz'] === 'NYITOTT' && $db['banki_kivonat_id'] === null) {
+            $bk = $st['fizetve'] !== null ? bank_dos($st['fizetve'], $db['penznem']) : null;
+            array_push($set, "statusz = 'FIZETVE'", 'banki_kivonat_id = ?', 'fizetve_datum = ?');
+            array_push($p, $bk, $st['fizetve']);
+            jel('fizetve', "kimenő $a → FIZETVE" . ($st['fizetve'] ? ' (' . mig_datum_hu($st['fizetve']) . ')' : ' (a DOS-ban befolyási dátum nélkül)'));
+            if ($volt !== null) {
+                dos_reszt_igazit('KIMENO', $db + ['_dos_fizetve' => true], null, 'kimenő', $azon);
+            }
+            return "DOS import ($NAP): FIZETVE – befolyt " . mig_osszeg_hu((string)mig_osszeg($s['befolyt'] ?? null)) . " {$db['penznem']} (" . mig_datum_hu($st['fizetve']) . ')';
+        }
+        if ($db['statusz'] === 'FIZETVE' && (string)$db['fizetve_datum'] !== (string)$st['fizetve']) {
+            $e = erintett('KIMENO', (int)$db['id'], 'fizetve_datum');
+            if (($kiv === null || $dosKiv) && $e === null) {
+                $bk = $st['fizetve'] !== null ? bank_dos($st['fizetve'], $db['penznem']) : null;
+                array_push($set, 'banki_kivonat_id = ?', 'fizetve_datum = ?');
+                array_push($p, $bk, $st['fizetve']);
+                $valt[] = ['m' => AUDIT_CIMKEK['fizetve_datum'], 'r' => audit_ertek('fizetve_datum', $db['fizetve_datum']), 'u' => audit_ertek('fizetve_datum', $st['fizetve'])];
+                jel('javitva', ['tipus' => 'kimenő', 'kod' => $db['kod'], 'dos' => $azon, 'mezo' => 'fizetve_datum', 'regi' => $db['fizetve_datum'], 'uj' => $st['fizetve']]);
+            } else {
+                jel('utkozes', ['tipus' => 'kimenő', 'azon' => $a, 'mezo' => 'befolyás dátuma', 'baninapro' => $db['fizetve_datum'] . ($kiv ? " ({$kiv['azonosito']})" : ''),
+                    'dos' => $st['fizetve'], 'modositotta' => $e['ki'] ?? $ki]);
+            }
+        }
+        return null;
+    }
+    if ($st['reszt'] !== null) {
+        if ($db['statusz'] === 'NYITOTT') {
+            dos_reszt_igazit('KIMENO', $db, $st['reszt'], 'kimenő', $azon);
+        } elseif ($dosKiv) {
+            jel('utkozes', ['tipus' => 'kimenő', 'azon' => $a, 'mezo' => 'befolyás', 'baninapro' => "FIZETVE ({$kiv['azonosito']})",
+                'dos' => 'a DOS-ban csak részben befolyt: ' . mig_osszeg_hu($st['reszt'][0]), 'modositotta' => $ki]);
+        }
+        return null;
+    }
+    if ($db['statusz'] === 'FIZETVE' && $dosKiv) {
+        jel('utkozes', ['tipus' => 'kimenő', 'azon' => $a, 'mezo' => 'befolyás', 'baninapro' => "FIZETVE ({$kiv['azonosito']})", 'dos' => 'a DOS-ban már nincs befolyás', 'modositotta' => $ki]);
+    } elseif ($volt !== null && $db['statusz'] === 'NYITOTT') {
+        dos_reszt_igazit('KIMENO', $db, null, 'kimenő', $azon);
+    }
+    return null;
+}
+
 // ---- a feldolgozás egy tranzakcióban ------------------------------------------------------------------------------------
 $pdo = db();
 $pdo->beginTransaction();
@@ -455,16 +728,32 @@ try {
         }
         $u = $UTAL[$kulcs];
         [$utalva] = utalas_datumok($x);
+        if (array_key_exists('utalva', $x)) {
+            $utalva = mig_datum($x['utalva']);
+        }
         if ($u['utalva_datum'] === null && $utalva !== null) {
             db_exec('UPDATE utalasok SET utalva_datum = ?, megjegyzes = IF(COALESCE(megjegyzes, \'\') = \'\', TRIM(LEADING CHAR(10) FROM ?), CONCAT(megjegyzes, ?)) WHERE id = ?',
                 array_merge([$utalva], array_fill(0, 2, "\nDOS import ($NAP): a terhelés napja a DOS-ban azóta rögzítve: " . mig_datum_hu($utalva)), [$u['id']]));
-            foreach (db_all("SELECT b.id, b.kod, b.kotes_id FROM bejovo_szamlak b WHERE b.utalas_id = ? AND b.fizetve_datum IS NULL AND b.statusz IN ('FIZETVE', 'BESZAMITVA')", [$u['id']]) as $b) {
-                db_exec('UPDATE bejovo_szamlak SET fizetve_datum = ? WHERE id = ?', [$utalva, $b['id']]);
-                $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'MODOSIT', "DOS import ($NAP): a fizetés napja a DOS-utalás terhelése szerint ({$u['uid']})",
-                            [['m' => AUDIT_CIMKEK['fizetve_datum'], 'r' => '–', 'u' => audit_ertek('fizetve_datum', $utalva)]]];
+            if (!$UJF) {
+                // régi köztes formátum: a számlák fizetési napja itt; az újban a (2) lépés veti össze a DOS-sal (és írja a megjegyzést)
+                foreach (db_all("SELECT b.id, b.kod, b.kotes_id FROM bejovo_szamlak b WHERE b.utalas_id = ? AND b.fizetve_datum IS NULL AND b.statusz IN ('FIZETVE', 'BESZAMITVA')", [$u['id']]) as $b) {
+                    db_exec('UPDATE bejovo_szamlak SET fizetve_datum = ? WHERE id = ?', [$utalva, $b['id']]);
+                    $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'MODOSIT', "DOS import ($NAP): a fizetés napja a DOS-utalás terhelése szerint ({$u['uid']})",
+                                [['m' => AUDIT_CIMKEK['fizetve_datum'], 'r' => '–', 'u' => audit_ertek('fizetve_datum', $utalva)]]];
+                }
             }
             $UTAL[$kulcs]['utalva_datum'] = $utalva;
             jel('datum_potolva', "{$u['uid']} ({$u['banki_hivatkozas']}): terhelés " . mig_datum_hu($utalva));
+        } elseif ($UJF && $u['utalva_datum'] !== null && $utalva !== $u['utalva_datum']) {
+            // a DOS-ban azóta más a terhelés napja (vagy törölték): a DOS-utalást a BaninaPRO-ban senki nem kezeli (lakatos, UTALVA), a DOS a mérvadó
+            if ($u['utalta'] === null && $u['letrehozta'] === null) {
+                db_exec('UPDATE utalasok SET utalva_datum = ?, megjegyzes = CONCAT(COALESCE(megjegyzes, \'\'), ?) WHERE id = ?',
+                    [$utalva, "\nDOS import ($NAP): a terhelés napja a DOS-ban azóta " . ($utalva ? mig_datum_hu($utalva) : 'törölve (00.00.00)') . ' (korábban ' . mig_datum_hu($u['utalva_datum']) . ')', $u['id']]);
+                jel('datum_potolva', "{$u['uid']} ({$u['banki_hivatkozas']}): terhelés " . mig_datum_hu($u['utalva_datum']) . ' → ' . mig_datum_hu($utalva));
+                $UTAL[$kulcs]['utalva_datum'] = $utalva;
+            } else {
+                jel('utkozes', ['tipus' => 'utalás', 'azon' => "{$u['uid']} ({$u['banki_hivatkozas']})", 'mezo' => 'utalva_datum', 'baninapro' => $u['utalva_datum'], 'dos' => $utalva, 'modositotta' => 'a BaninaPRO-ban kezelték']);
+            }
         }
         $dbOssz = mig_osszeg(mig_megj_bont((string)$u['megjegyzes'])['mezok']['Összeg (DOS)'] ?? null);
         $irOssz = mig_osszeg($x['osszeg'] ?? null);
@@ -522,6 +811,29 @@ try {
                 $valt[] = ['m' => AUDIT_CIMKEK[$m] ?? $m, 'r' => audit_ertek($m, $b[$m], $b['penznem']), 'u' => audit_ertek($m, $v, $b['penznem'])];
                 jel('javitva', ['tipus' => 'bejövő', 'kod' => $b['kod'], 'dos' => $kulcs, 'mezo' => $m, 'regi' => $b[$m], 'uj' => $v]);
             }
+            if ($UJF) {
+                // új köztes formátum: a fizetés a DOS mostani állapota szerint, a megjegyzés a 10-07-i import formájában
+                $st = dos_allapot($t);
+                $g0 = gond_db();
+                $r0 = count($J['uj']['reszt']) + count($J['javitva']);
+                $statuszLeiras = bejovo_fizetes_dos($b, $t, $fiz, $st, $kulcs, 'bejövő', $set, $p, $valt);
+                if (gond_db() === $g0) {
+                    megj_frissit('BEJOVO', $b, $t['megjegyzes'] ?? null, $set, $p, $valt, "{$b['kod']} ($kulcs)");
+                }
+                if ($set) {
+                    $p[] = $b['id'];
+                    db_exec('UPDATE bejovo_szamlak SET ' . implode(', ', $set) . ' WHERE id = ?', $p);
+                    if ($valt) {
+                        $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'MODOSIT', "DOS import ($NAP): javítva a DOS szerint", $valt];
+                    }
+                    if ($statuszLeiras) {
+                        $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'STATUSZ', $statuszLeiras, [['m' => 'Státusz', 'r' => ny_statusz_nev($b['statusz']), 'u' => ny_statusz_nev($st['statusz'])]]];
+                    }
+                } elseif (count($J['uj']['reszt']) + count($J['javitva']) === $r0) {
+                    $J['egyezik']++;
+                }
+                continue;
+            }
             // fizetés: a FIZETENDŐ (utalásban nem lévő) számla a DOS-utalással rendeződik
             $statuszLeiras = null;
             $ujStatusz = null;
@@ -575,6 +887,13 @@ try {
         }
 
         // --- új tétel
+        if (!empty($t['elozo_kulcs']) && isset($TETEL[$t['elozo_kulcs']])) {
+            // a DOS-ban azóta átnevezett tétel (más kötésszám / kisszám): nem jön létre másodszor – a kötés-áthelyezés döntést kér
+            $latott['tetel'][$t['elozo_kulcs']] = true;
+            jel('utkozes', ['tipus' => 'bejövő', 'azon' => "{$TETEL[$t['elozo_kulcs']]['kod']} ({$t['elozo_kulcs']})", 'mezo' => 'DOS-kulcs',
+                'baninapro' => $t['elozo_kulcs'], 'dos' => "$kulcs – a DOS-ban átnevezve (nem jött létre másodszor)", 'modositotta' => null]);
+            continue;
+        }
         $cegId = ceg_dos('VEVO', (string)$t['szallito']);
         if ($cegId === null) {
             jel('hiba', "tétel $kulcs: ismeretlen szállító ({$t['szallito']}) – nincs a DOS partnerei között");
@@ -613,12 +932,38 @@ try {
                 continue;
             }
         }
+        $statusz = 'FIZETENDO';
+        $fd = null;
+        $uid = null;
+        $x = null;
+        $st = $UJF ? dos_allapot($t) : null;
+        if ($fiz['mod'] !== 'nincs') {
+            $x = $IRU[$fiz['ref']['tipus'] . '|' . trim((string)$fiz['ref']['szam'])] ?? null;
+        }
+        if ($UJF) {
+            // a 10-07-i import állapota; a fizető DOS-utalás nélkül nem jön létre (a DOS-ban fizetett számla nem lehet nálunk nyitott)
+            [$statusz, $fd] = [$st['statusz'], $st['fizetve']];
+            if (in_array($statusz, ['FIZETVE', 'BESZAMITVA'], true) && $fiz['mod'] !== 'nincs') {
+                $u = utalas_dos($fiz['ref'], $cegId, $penznem);
+                if ($u === null) {
+                    jel('hiba', "tétel $kulcs: a DOS-ban fizetett, de a DOS-utalása nem kapcsolható – nem jött létre");
+                    continue;
+                }
+                $uid = (int)$u['id'];
+            }
+        } elseif ($fiz['mod'] === 'teljes') {
+            $u = utalas_dos($fiz['ref'], $cegId, $penznem);
+            if ($u) {
+                [$statusz, $fd, $uid] = bejovo_fizetve($u, $osszeg);
+            }
+        }
         $kk = trim((string)$t['kotesszam']) . "|$cegId|$penznem";
         if (!isset($KOTES[$kk])) {
-            $ev = mig_kotes_ev(trim((string)$t['kotesszam']), $kelt);
+            $ev = isset($t['kotes_ev']) ? (int)$t['kotes_ev'] : mig_kotes_ev(trim((string)$t['kotesszam']), $kelt);
             $n = kovetkezo_sorszam('KOTES', $ev, $penznem);
             $kod = kotes_kod($ev, $penznem, $n);
-            $megnev = trim((string)($t['aru'] ?? '')) !== '' ? trim((string)$t['aru']) : ($irKotesAru[trim((string)$t['kotesszam'])] ?? null);
+            $megnev = array_key_exists('kotes_megnevezes', $t) ? (string)$t['kotes_megnevezes']
+                : (trim((string)($t['aru'] ?? '')) !== '' ? trim((string)$t['aru']) : ($irKotesAru[trim((string)$t['kotesszam'])] ?? null));
             db_exec('INSERT INTO kotesek (ceg_id, ev, penznem, sorszam, kod, megnevezes, megjegyzes, archiv, regi_kod) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)',
                 [$cegId, $ev, $penznem, $n, $kod, $megnev !== '' ? mb_substr((string)$megnev, 0, 191) : null, "DOS import ($NAP)", trim((string)$t['kotesszam'])]);
             $KOTES[$kk] = ['id' => (int)db()->lastInsertId(), 'kod' => $kod, 'ceg_id' => $cegId, 'penznem' => $penznem, 'regi_kod' => trim((string)$t['kotesszam'])];
@@ -626,19 +971,7 @@ try {
             uj('kotes', "$kod ← " . trim((string)$t['kotesszam']) . " ({$CEG[$cegId]['nev']})");
         }
         $kot = $KOTES[$kk];
-        $statusz = 'FIZETENDO';
-        $fd = null;
-        $uid = null;
-        $x = null;
-        if ($fiz['mod'] !== 'nincs') {
-            $x = $IRU[$fiz['ref']['tipus'] . '|' . trim((string)$fiz['ref']['szam'])] ?? null;
-            if ($fiz['mod'] === 'teljes') {
-                $u = utalas_dos($fiz['ref'], $cegId, $penznem);
-                if ($u) {
-                    [$statusz, $fd, $uid] = bejovo_fizetve($u, $osszeg);
-                }
-            }
-        }
+        $ujMegj = $UJF && isset($t['megjegyzes']) ? (string)$t['megjegyzes'] : tetel_megj($t, $fiz, $x, $penznem, $dm, $tobb);
         $ksz = kovetkezo_k_sorszam((int)$kot['id']);
         $kod = szamla_kod($kot['kod'], $ksz);
         if ($ibSzamla !== null) {
@@ -648,7 +981,7 @@ try {
             db_exec('UPDATE bejovo_szamlak SET kotes_id = ?, k_sorszam = ?, kod = ?, szamlaszam = ?, szamlaszam_norm = ?, regi_k = ?, beszam = COALESCE(beszam, ?),
                             statusz = ?, fizetve_datum = ?, utalas_id = ?, megjegyzes = IF(COALESCE(megjegyzes, \'\') = \'\', TRIM(LEADING CHAR(10) FROM ?), CONCAT(megjegyzes, ?)) WHERE id = ?',
                 array_merge([$kot['id'], $ksz, $kod, $szsz, norm_azonosito($szsz), trim((string)$t['kisszam']), $adat['beszam'], $statusz, $fd, $uid],
-                    array_fill(0, 2, "\n" . tetel_megj($t, $fiz, $x, $penznem, $dm, $tobb)), [$ibSzamla['id']]));
+                    array_fill(0, 2, "\n" . $ujMegj), [$ibSzamla['id']]));
             $bid = (int)$ibSzamla['id'];
             $AUDIT[] = ['BEJOVO', $bid, (int)$kot['id'], 'ATHELYEZ', "DOS import ($NAP): kötésbe helyezve az IB-archív kötésből: {$ibSzamla['kotes_kod']} → {$kot['kod']} (DOS: $kulcs)",
                         [['m' => 'Kötés', 'r' => $ibSzamla['kotes_kod'], 'u' => $kot['kod']], ['m' => 'Azonosító', 'r' => $ibSzamla['kod'], 'u' => $kod]]
@@ -658,7 +991,9 @@ try {
                 if ((int)$x2['id'] === $bid) { $x2['_athelyezve'] = true; }
             }
             unset($x2);
-            if ($fiz['mod'] === 'resz') {
+            if ($UJF && $st['reszt'] !== null) {
+                reszt_ir('BEJOVO', $bid, (int)$kot['id'], $st['reszt'], $kod, $penznem);
+            } elseif (!$UJF && $fiz['mod'] === 'resz') {
                 [, $d1] = $x ? utalas_datumok($x) : [null, null];
                 db_exec("INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito) VALUES ('BEJOVO', ?, ?, ?, ?)",
                     [$bid, $fiz['osszeg'], $d1 ?? $kelt, 'DOS ' . $fiz['ref']['tipus'] . 'utalás #' . trim((string)$fiz['ref']['szam'])]);
@@ -671,9 +1006,13 @@ try {
         db_exec('INSERT INTO bejovo_szamlak (kotes_id, k_sorszam, kod, szamlaszam, szamlaszam_norm, teljesites_datum, kelt, osszeg, beszam, regi_k, fizetesi_hatarido,
                                              statusz, fizetve_datum, utalas_id, megjegyzes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [$kot['id'], $ksz, $kod, $szsz, norm_azonosito($szsz), $telj, $kelt, $osszeg, $adat['beszam'], trim((string)$t['kisszam']), $hat, $statusz, $fd, $uid,
-             tetel_megj($t, $fiz, $x, $penznem, $dm, $tobb)]);
+             $ujMegj]);
         $bid = (int)db()->lastInsertId();
-        if ($fiz['mod'] === 'resz') {
+        if ($UJF) {
+            if ($st['reszt'] !== null) {
+                reszt_ir('BEJOVO', $bid, (int)$kot['id'], $st['reszt'], $kod, $penznem);
+            }
+        } elseif ($fiz['mod'] === 'resz') {
             [, $d1] = $x ? utalas_datumok($x) : [null, null];
             db_exec("INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito) VALUES ('BEJOVO', ?, ?, ?, ?)",
                 [$bid, $fiz['osszeg'], $d1 ?? $kelt, 'DOS ' . $fiz['ref']['tipus'] . 'utalás #' . trim((string)$fiz['ref']['szam'])]);
@@ -714,6 +1053,27 @@ try {
                 $valt[] = ['m' => AUDIT_CIMKEK[$m] ?? $m, 'r' => audit_ertek($m, $b[$m], 'HUF'), 'u' => audit_ertek($m, $v, 'HUF')];
                 jel('javitva', ['tipus' => 'forintszámla', 'kod' => $b['kod'], 'dos' => $azon, 'mezo' => $m, 'regi' => $b[$m], 'uj' => $v]);
             }
+            if ($UJF) {
+                $st = dos_allapot($t);
+                $fiz = $ref ? ['mod' => 'teljes', 'ref' => $ref, 'osszeg' => $osszeg] : ['mod' => 'nincs'];
+                $g0 = gond_db();
+                $r0 = count($J['uj']['reszt']) + count($J['javitva']);
+                $statuszLeiras = bejovo_fizetes_dos($b, $t, $fiz, $st, $azon, 'forintszámla', $set, $p, $valt);
+                if (gond_db() === $g0) {
+                    megj_frissit('BEJOVO', $b, $t['megjegyzes'] ?? null, $set, $p, $valt, "{$b['kod']} ($azon)");
+                }
+                if ($set) {
+                    $p[] = $b['id'];
+                    db_exec('UPDATE bejovo_szamlak SET ' . implode(', ', $set) . ' WHERE id = ?', $p);
+                    if ($valt) { $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'MODOSIT', "DOS import ($NAP): javítva a DOS szerint", $valt]; }
+                    if ($statuszLeiras) {
+                        $AUDIT[] = ['BEJOVO', (int)$b['id'], (int)$b['kotes_id'], 'STATUSZ', $statuszLeiras, [['m' => 'Státusz', 'r' => ny_statusz_nev($b['statusz']), 'u' => ny_statusz_nev($st['statusz'])]]];
+                    }
+                } elseif (count($J['uj']['reszt']) + count($J['javitva']) === $r0) {
+                    $J['egyezik']++;
+                }
+                continue;
+            }
             $statuszLeiras = null;
             if ($ref && $b['statusz'] === 'FIZETENDO' && $b['utalas_id'] === null) {
                 $u = utalas_dos($ref, (int)$b['ceg_id'], 'HUF');
@@ -738,6 +1098,12 @@ try {
             }
             continue;
         }
+        if (!empty($t['elozo_kulcs']) && isset($FORINT[$t['elozo_kulcs']])) {
+            $latott['forint'][$t['elozo_kulcs']] = true;
+            jel('utkozes', ['tipus' => 'forintszámla', 'azon' => "{$FORINT[$t['elozo_kulcs']]['kod']} ({$t['elozo_kulcs']})", 'mezo' => 'DOS-kulcs',
+                'baninapro' => $t['elozo_kulcs'], 'dos' => "$azon – a DOS-ban átnevezve (nem jött létre másodszor)", 'modositotta' => null]);
+            continue;
+        }
         $cegId = ceg_dos((string)($t['partner_tabla'] ?? 'UGYF'), (string)($t['partner'] ?? ''));
         if ($cegId === null) {
             jel('hiba', "forintszámla $azon: ismeretlen partner ({$t['partner']})");
@@ -759,7 +1125,18 @@ try {
         $fd = null;
         $uid = null;
         $u = null;
-        if ($ref) {
+        $st = $UJF ? dos_allapot($t) : null;
+        if ($UJF) {
+            [$statusz, $fd] = [$st['statusz'], $st['fizetve']];
+            if (in_array($statusz, ['FIZETVE', 'BESZAMITVA'], true) && $ref) {
+                $u = utalas_dos($ref, $cegId, 'HUF');
+                if ($u === null) {
+                    jel('hiba', "forintszámla $azon: a DOS-ban fizetett, de a DOS-utalása nem kapcsolható – nem jött létre");
+                    continue;
+                }
+                $uid = (int)$u['id'];
+            }
+        } elseif ($ref) {
             $u = utalas_dos($ref, $cegId, 'HUF');
             if ($u) {
                 [$statusz, $fd, $uid] = bejovo_fizetve($u, $osszeg);
@@ -782,8 +1159,12 @@ try {
         $szsz = egyedi_szamlaszam((int)$kot['id'], $szamlaszam, $azon);
         db_exec('INSERT INTO bejovo_szamlak (kotes_id, k_sorszam, kod, szamlaszam, szamlaszam_norm, teljesites_datum, kelt, osszeg, beszam, regi_k, fizetesi_hatarido,
                                              statusz, fizetve_datum, utalas_id, megjegyzes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)',
-            [$kot['id'], $ksz, $kod, $szsz, norm_azonosito($szsz), $telj, $kelt, $osszeg, $azon, $hat, $statusz, $fd, $uid, implode(' · ', $megj)]);
+            [$kot['id'], $ksz, $kod, $szsz, norm_azonosito($szsz), $telj, $kelt, $osszeg, $azon, $hat, $statusz, $fd, $uid,
+             $UJF && isset($t['megjegyzes']) ? (string)$t['megjegyzes'] : implode(' · ', $megj)]);
         $bid = (int)db()->lastInsertId();
+        if ($UJF && $st['reszt'] !== null) {
+            reszt_ir('BEJOVO', $bid, (int)$kot['id'], $st['reszt'], $kod, 'HUF');
+        }
         $AUDIT[] = ['BEJOVO', $bid, (int)$kot['id'], 'IMPORT', "DOS importból létrehozva: $kod „{$szsz}” ($osszeg HUF)", []];
         uj('forintszamla', "$kod „{$szsz}” $osszeg HUF · $statusz ($azon)");
     }
@@ -802,18 +1183,87 @@ try {
             jel('hiba', "kimenő $azon: hiányos adat (összeg / kelt / pénznem)");
             continue;
         }
-        $ksz = mig_kimeno_szamlaszam($azon, $kelt);
-        if ($ksz === null && !isset($KIM[$azon])) {
-            jel('hiba', "kimenő „{$azon}”: a DOS-azonosítóból nem képezhető számlaszám (várt alak: „KE-26 1126”)");
-            continue;
+        if ($UJF && isset($s['szamlaszam'])) {
+            // a 10-07-i import számlaszáma (sorozatbetű-szám/a kelt éve), a köztes fájlban kiszámolva
+            $szamlaszam = (string)$s['szamlaszam'];
+            $ev = (int)substr($kelt, 0, 4);
+        } else {
+            $ksz = mig_kimeno_szamlaszam($azon, $kelt);
+            if ($ksz === null && !isset($KIM[$azon])) {
+                jel('hiba', "kimenő „{$azon}”: a DOS-azonosítóból nem képezhető számlaszám (várt alak: „KE-26 1126”)");
+                continue;
+            }
+            $ev = $ksz['ev'] ?? (int)substr($kelt, 0, 4);
+            $szamlaszam = $ksz['szamlaszam'] ?? '';
         }
-        $ev = $ksz['ev'] ?? (int)substr($kelt, 0, 4);
-        $szamlaszam = $ksz['szamlaszam'] ?? '';
         $befolyt = mig_osszeg($s['befolyt'] ?? null);
         $befDatum = mig_datum($s['befolyt_datum'] ?? null);
         if ($befolyt !== null && abs((float)$befolyt) < 0.005) { $befolyt = null; }
         $adat = ['kelt' => $kelt, 'teljesites_datum' => $telj, 'fizetesi_hatarido' => $hat, 'osszeg' => $osszeg];
-        $db = $KIM[$azon] ?? ($KIMN[norm_azonosito($szamlaszam)] ?? null);
+        $db = $KIM[$azon] ?? null;
+        $atnevezve = null;
+        if ($db === null && !empty($s['elozo_kulcs']) && isset($KIM[preg_replace('/\s+/', ' ', trim((string)$s['elozo_kulcs']))])) {
+            // a DOS-ban azóta átnevezett rekord (ugyanaz a DOS-rekord, ugyanaz a vevő, összeg, kelt): a régi kulcson megvan
+            $atnevezve = preg_replace('/\s+/', ' ', trim((string)$s['elozo_kulcs']));
+            $db = $KIM[$atnevezve];
+            $latott['kimeno'][$atnevezve] = true;
+            $adat['szamlaszam'] = $szamlaszam;     // a DOS-ban javított azonosító → javított számlaszám (ha az IB nem javította már)
+        }
+        if ($db === null && isset($KIMN[norm_azonosito($szamlaszam)])) {
+            // azonos számlaszám DOS-azonosító nélkül: az IB System importjából jött ugyanez a számla – a DOS ehhez adja a befolyást.
+            // Egy MÁSIK DOS-rekord azonos számlaszáma viszont elírás a DOS-ban (új köztes formátumban külön számla lesz, toldalékkal).
+            $jelolt = $KIMN[norm_azonosito($szamlaszam)];
+            if (!$UJF || !isset($jelolt['_dos']['DOS azonosító'])) {
+                $db = $jelolt;
+            }
+        }
+        if ($db !== null && $UJF) {
+            $ki = erintett_ki('KIMENO', (int)$db['id']);
+            $javit = mezok_osszevet('kimenő', $db, $adat, 'KIMENO', "{$db['kod']} ($azon)");
+            $set = [];
+            $p = [];
+            $valt = [];
+            foreach ($javit as $mm => $v) {
+                if ($mm === 'szamlaszam') {
+                    $foglalt = $KIMN[norm_azonosito((string)$v)] ?? null;
+                    if ($foglalt !== null && (int)$foglalt['id'] !== (int)$db['id']) {
+                        jel('utkozes', ['tipus' => 'kimenő', 'azon' => "{$db['kod']} ($azon)", 'mezo' => 'számlaszám', 'baninapro' => $db['szamlaszam'],
+                            'dos' => "$v – foglalt: {$foglalt['kod']}", 'modositotta' => null]);
+                        continue;
+                    }
+                    $set[] = 'szamlaszam_norm = ?';
+                    $p[] = norm_azonosito((string)$v);
+                    unset($KIMN[norm_azonosito((string)$db['szamlaszam'])]);
+                    $KIMN[norm_azonosito((string)$v)] = $db;
+                }
+                $set[] = "$mm = ?";
+                $p[] = $v;
+                $valt[] = ['m' => AUDIT_CIMKEK[$mm] ?? $mm, 'r' => audit_ertek($mm, $db[$mm], $db['penznem']), 'u' => audit_ertek($mm, $v, $db['penznem'])];
+                jel('javitva', ['tipus' => 'kimenő', 'kod' => $db['kod'], 'dos' => $azon, 'mezo' => $mm, 'regi' => $db[$mm], 'uj' => $v]);
+            }
+            if ($atnevezve !== null) {
+                jel('figyelem', "kimenő {$db['kod']}: a DOS-ban azóta átnevezve: „{$atnevezve}” → „{$azon}”");
+            }
+            $st = dos_allapot($s);
+            $g0 = gond_db();
+            $r0 = count($J['uj']['reszt']) + count($J['javitva']);
+            $statuszLeiras = kimeno_fizetes_dos($db, $s, $st, $azon, $set, $p, $valt);
+            if (gond_db() === $g0 && isset($db['_dos']['DOS azonosító'])) {
+                megj_frissit('KIMENO', $db, $s['megjegyzes'] ?? null, $set, $p, $valt, "{$db['kod']} ($azon)");
+            }
+            if ($set) {
+                $p[] = $db['id'];
+                db_exec('UPDATE kimeno_szamlak SET ' . implode(', ', $set) . ' WHERE id = ?', $p);
+                if ($valt) { $AUDIT[] = ['KIMENO', (int)$db['id'], null, 'MODOSIT', "DOS import ($NAP): javítva a DOS szerint", $valt]; }
+                if ($statuszLeiras) { $AUDIT[] = ['KIMENO', (int)$db['id'], null, 'STATUSZ', $statuszLeiras, [['m' => 'Státusz', 'r' => 'NYITOTT', 'u' => 'FIZETVE']]]; }
+            } elseif (count($J['uj']['reszt']) + count($J['javitva']) === $r0) {
+                $J['egyezik']++;
+            }
+            if (!isset($db['_dos']['DOS azonosító'])) {
+                jel('figyelem', "kimenő {$db['kod']} „{$db['szamlaszam']}”: az IB System importjából jött, a DOS-ban $azon – a DOS-ból a befolyás (" . $st['statusz'] . ') került hozzá');
+            }
+            continue;
+        }
         if ($db !== null) {
             $ki = erintett_ki('KIMENO', (int)$db['id']);
             $javit = mezok_osszevet('kimenő', $db, $adat, 'KIMENO', "{$db['kod']} ($azon)");
@@ -858,9 +1308,38 @@ try {
             }
             continue;
         }
-        $cegId = ceg_dos('UGYF', (string)($s['vevo'] ?? ''));
+        $cegId = $UJF && isset($s['vevo_tabla']) ? ceg_dos((string)$s['vevo_tabla'], (string)$s['vevo_kod']) : ceg_dos('UGYF', (string)($s['vevo'] ?? ''));
         if ($cegId === null) {
             jel('hiba', "kimenő $azon: ismeretlen vevő ({$s['vevo']})");
+            continue;
+        }
+        if ($UJF) {
+            // a 10-07-i import állapota, megjegyzése; ismétlődő számlaszámnál (a DOS-ban elírt szám) a cég nevével megkülönböztetve
+            $st = dos_allapot($s);
+            $fd = $st['statusz'] === 'FIZETVE' ? $st['fizetve'] : null;
+            $bk = $fd !== null ? bank_dos($fd, $penznem) : null;
+            if (isset($KIMN[norm_azonosito($szamlaszam)])) {
+                $foglalt = $KIMN[norm_azonosito($szamlaszam)]['kod'];
+                $tag = trim(mb_substr(preg_replace('/[^\p{L}\p{N}_ ]+/u', '', (string)$CEG[$cegId]['nev']) ?? '', 0, 14));
+                $sz2 = "$szamlaszam [$tag]";
+                for ($j = 2; isset($KIMN[norm_azonosito($sz2)]); $j++) {
+                    $sz2 = "$szamlaszam [$tag] $j";
+                }
+                jel('figyelem', "kimenő $azon: a számlaszám ($szamlaszam) már egy másik kimenő számláé ($foglalt) – „{$sz2}” néven jött létre, mint a 10-07-i importban (a DOS-ban elírt szám?)");
+                $szamlaszam = $sz2;
+            }
+            $n = kovetkezo_sorszam('KIMENO', $ev, $penznem);
+            $kod = kimeno_kod($ev, $penznem, $n);
+            db_exec('INSERT INTO kimeno_szamlak (ceg_id, ev, penznem, sorszam, kod, szamlaszam, szamlaszam_norm, teljesites_datum, kelt, fizetesi_hatarido, osszeg, statusz,
+                                                 banki_kivonat_id, fizetve_datum, megjegyzes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$cegId, $ev, $penznem, $n, $kod, $szamlaszam, norm_azonosito($szamlaszam), $telj, $kelt, $hat, $osszeg, $st['statusz'], $bk, $fd, (string)$s['megjegyzes']]);
+            $sid = (int)db()->lastInsertId();
+            $KIMN[norm_azonosito($szamlaszam)] = ['id' => $sid, 'kod' => $kod, '_dos' => ['DOS azonosító' => $azon]];
+            if ($st['reszt'] !== null) {
+                reszt_ir('KIMENO', $sid, null, $st['reszt'], $kod, $penznem);
+            }
+            $AUDIT[] = ['KIMENO', $sid, null, 'IMPORT', "DOS importból létrehozva: $kod „{$szamlaszam}” ($osszeg $penznem)", []];
+            uj('kimeno', "$kod „{$szamlaszam}” $osszeg $penznem · {$st['statusz']} ({$CEG[$cegId]['nev']})");
             continue;
         }
         $statusz = 'NYITOTT';
@@ -916,6 +1395,44 @@ try {
         if (empty($u['_uj']) && !isset($latott['utalas'][$kk])) { jel('hianyzik', "utalás {$u['uid']} ($kk)"); }
     }
 
+    // (6) az új DOS-utalások sorszáma a 10-07-i import rendje szerint (dátum, pénznem, forrás, azonosító), nem a létrehozás
+    // sorrendjében: a most kiosztott sorszámokat pénznemenként és évenként a köztes fájl sorrendjében osztjuk újra
+    $csop = [];
+    foreach ($UTAL as $u) {
+        if (!empty($u['_uj']) && $u['_sorrend'] !== null) {
+            $csop["{$u['penznem']}|{$u['ev']}"][] = $u;
+        }
+    }
+    $atszam = [];
+    foreach ($csop as $lista) {
+        $szamok = array_map('intval', array_column($lista, 'sorszam'));
+        sort($szamok);
+        usort($lista, fn($a, $b) => $a['_sorrend'] <=> $b['_sorrend']);
+        foreach ($lista as $i => $u) {
+            if ((int)$u['sorszam'] !== $szamok[$i]) {
+                $atszam[(int)$u['id']] = [$u, $szamok[$i]];
+            }
+        }
+    }
+    if ($atszam) {
+        foreach (array_keys($atszam) as $id) {
+            db_exec('UPDATE utalasok SET sorszam = sorszam + 1000000, uid = ? WHERE id = ?', ['TMP-' . $id, $id]);
+        }
+        $csere = [];
+        foreach ($atszam as $id => [$u, $n]) {
+            $ujUid = utalas_uid($u['penznem'], (int)$u['ev'], $n);
+            db_exec('UPDATE utalasok SET sorszam = ?, uid = ? WHERE id = ?', [$n, $ujUid, $id]);
+            $csere[$u['uid']] = $ujUid;
+        }
+        // a napló és a jelentés szövegeiben is (strtr: egy lépésben, a cserék nem láncolódnak)
+        $AUDIT = array_map(fn($a) => [$a[0], $a[1], $a[2], $a[3], strtr((string)$a[4], $csere), $a[5]], $AUDIT);
+        array_walk_recursive($J, function (&$v) use ($csere) {
+            if (is_string($v)) {
+                $v = strtr($v, $csere);
+            }
+        });
+    }
+
     audit_ir_tobb(array_map(fn($a) => [$a[0], $a[1], $a[2], $a[3], $a[4], $a[5]], $AUDIT), $U);
     if ($SZARAZ) {
         $pdo->rollBack();
@@ -939,9 +1456,10 @@ $sor[] = sprintf('ÚJ: %d cég, %d kötés, %d bejövő számla (+ %d az IB-arch
     $ujDb['ceg'], $ujDb['kotes'], $ujDb['bejovo'], $ujDb['athelyezve'], $ujDb['forintszamla'], $ujDb['utalas'], $ujDb['kimeno'], $ujDb['bank'], $ujDb['reszt']);
 $sor[] = sprintf('MEGLÉVŐ: %d egyezik, %d mező javítva a DOS szerint, %d számla rendeződött (fizetés), %d utalás terhelése pótolva',
     $J['egyezik'], $db('javitva'), $db('fizetve'), $db('datum_potolva'));
+$sor[] = sprintf('DOS-MEGJEGYZÉS: %d frissítve a DOS mostani állapotára, %d maradt (azóta a BaninaPRO-ban módosították)', $J['megj_frissitve'], $db('megj_marad'));
 $sor[] = sprintf('DÖNTÉSRE: %d ütközés (a BaninaPRO-ban azóta módosítva) · %d a DOS-ból eltűnt · %d figyelmeztetés · %d HIBA (kihagyva)',
     $db('utkozes'), $db('hianyzik'), $db('figyelem'), $db('hiba'));
-foreach (['hiba' => 'HIBA', 'utkozes' => 'ÜTKÖZÉS', 'hianyzik' => 'A DOS-BÓL ELTŰNT', 'figyelem' => 'FIGYELEM'] as $kk => $cim) {
+foreach (['hiba' => 'HIBA', 'utkozes' => 'ÜTKÖZÉS', 'hianyzik' => 'A DOS-BÓL ELTŰNT', 'figyelem' => 'FIGYELEM', 'megj_marad' => 'MEGJEGYZÉS MARADT'] as $kk => $cim) {
     if ($J[$kk]) {
         $sor[] = '';
         $sor[] = "$cim (" . count($J[$kk]) . '):';
@@ -954,6 +1472,6 @@ $szoveg = implode("\n", $sor) . "\n";
 file_put_contents("$KI/dos_atvetel.txt", $szoveg);
 file_put_contents("$KI/dos_atvetel.json", json_encode($J, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 if (!$SZARAZ) {
-    naplo('DOS_IMPORT', strip_tags($sor[1] . ' · ' . $sor[2] . ' · ' . $sor[3]), 'OK', $FELH);
+    naplo('DOS_IMPORT', strip_tags($sor[1] . ' · ' . $sor[2] . ' · ' . $sor[3] . ' · ' . $sor[4]), 'OK', $FELH);
 }
 echo $szoveg;
