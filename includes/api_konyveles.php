@@ -50,7 +50,10 @@ function act_szamlak_lista(array $be): array
     if ($irany !== 'BEJOVO') {
         // (az oszlopnevek itt is ki vannak írva: csak kimenő iránynál ez az egyetlen SELECT, és abból lesznek a mezőnevek)
         $reszek[] = 'SELECT "KIMENO" AS irany, s.id, s.kod, s.szamlaszam, c.id AS ceg_id, c.nev AS ceg_nev, NULL AS kotes_id, NULL AS kotes_kod, s.penznem,
-                            s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, s.fizetve_datum, NULL AS utalas_uid, bk.azonosito AS bank_azon,
+                            s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, s.fizetve_datum,
+                            COALESCE((SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1),
+                                     (SELECT GROUP_CONCAT(ut.uid ORDER BY ut.id SEPARATOR ", ") FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "UTALVA")) AS utalas_uid,
+                            bk.azonosito AS bank_azon,
                             s.konyveles_kikuldve, f.nev AS kikuldte_nev, COALESCE(r.reszt, 0) AS reszt, NULL AS beszam, s.megjegyzes
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id
                        LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id LEFT JOIN felhasznalok f ON f.id = s.konyveles_kikuldte

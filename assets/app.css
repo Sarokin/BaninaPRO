@@ -1026,3 +1026,15 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .naplo-tetel .valtozasok .nyil { color: var(--halvany); width: 1%; }
 .naplo-tetel .valtozasok .uj { color: var(--zold); font-weight: 700; }
 @media (max-width: 480px) { .naplo-tetel { grid-template-columns: 62px 1fr; } .naplo-fej { flex-direction: column; } .naplo-fej .jobbra { text-align: left; white-space: normal; } }
+
+/* ---- beszámítás (1.25): kimenő számla levonása az utalásból ---- */
+.badge.BESZAMITASRA_ADVA { background: var(--sarga-tint); color: var(--sarga-szoveg); border: 1px solid rgba(242,197,0,.55); }
+.badge.BESZAMITASRA_ADVA::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.reszletes .kotes-sor.beszamitas-fej .kod, .reszletes .kotes-sor.beszamitas-fej .negativ, .reszletes .osszesen-sor .negativ { color: var(--piros); }
+.reszletes .osszesen-sor.reszosszeg { border-top: 1px dashed var(--vonal); font-size: 14px; font-weight: 700; padding: 8px 0 2px; margin-top: 6px; color: var(--szoveg-2); letter-spacing: 0; }
+.reszletes .osszesen-sor.reszosszeg + .osszesen-sor.reszosszeg { border-top: 0; margin-top: 0; padding-top: 2px; }
+.alsor.beszamitas-sor .mono { font-weight: 800; }
+.valaszto-lista { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.valaszto-sor { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--vonal); border-radius: var(--radius); background: var(--felulet); font-size: 14px; cursor: pointer; }
+.valaszto-sor:has(input:checked) { border-color: var(--zold); background: var(--zold-tint); }
+.valaszto-sor input { width: 18px; height: 18px; accent-color: var(--zold); flex: none; }

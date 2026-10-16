@@ -8,8 +8,14 @@ declare(strict_types=1);
 require_once __DIR__ . '/api_reszteljesites.php';
 require_once __DIR__ . '/audit.php';
 
+/* Beszámítás (1.25): a függő (nyitott utalásban lévő) beszámítás, és a már teljesült (UTALVA) utalások, amelyekben a számlát beszámították */
+const KIMENO_BESZAMITAS_MEZOK = '
+        (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_uid,
+        (SELECT ut.id FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_utalas_id,
+        (SELECT bz.osszeg FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_osszeg,
+        (SELECT GROUP_CONCAT(ut.uid ORDER BY ut.id SEPARATOR ", ") FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "UTALVA") AS beszamitva_uid,';
 const KIMENO_SQL = 'SELECT s.*, c.nev AS ceg_nev, bk.azonosito AS banki_azonosito, bk.datum AS banki_datum,
-                           fl.felhasznalonev AS letrehozta_nev, fm.felhasznalonev AS modositotta_nev,' . RESZT_KIMENO_MEZOK . '
+                           fl.felhasznalonev AS letrehozta_nev, fm.felhasznalonev AS modositotta_nev,' . KIMENO_BESZAMITAS_MEZOK . RESZT_KIMENO_MEZOK . '
                       FROM kimeno_szamlak s
                       JOIN cegek c ON c.id = s.ceg_id
                       LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id
@@ -27,6 +33,10 @@ function kimeno_sor_feldolgoz(array $s): array
     $s['reszt'] = (float)($s['reszt'] ?? 0);
     $s['reszt_db'] = (int)($s['reszt_db'] ?? 0);
     $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'], 2);
+    if (array_key_exists('beszamitas_utalas_id', $s)) {
+        $s['beszamitas_utalas_id'] = $s['beszamitas_utalas_id'] === null ? null : (int)$s['beszamitas_utalas_id'];
+        $s['beszamitas_osszeg'] = $s['beszamitas_osszeg'] === null ? null : (float)$s['beszamitas_osszeg'];
+    }
     unset($s['szamlaszam_norm']);
     return $s;
 }
@@ -147,15 +157,16 @@ function act_kimeno_modosit(array $be): array
     }
     $mj = megjegyzes_szabaly($s, be_szoveg_tobbsoros($be, 'megjegyzes', 2000, false, 'megjegyzés'), $u);   // más megjegyzése: csak hozzáfűzés
     $megj = $mj['megjegyzes'];
-    $korlatozott = $s['statusz'] === 'FIZETVE' || !jog_van('ir', $u);   // fizetett számla VAGY Üzletkötő: csak a megjegyzés
+    $fuggo = !empty($s['beszamitas_uid']);   // beszámításra adva (nyitott utalásban): az összeg az utalást érintené – csak a megjegyzés
+    $korlatozott = $s['statusz'] === 'FIZETVE' || !jog_van('ir', $u) || $fuggo;   // fizetett számla VAGY Üzletkötő VAGY beszámításra adva: csak a megjegyzés
     if ($korlatozott) {
         $diff = audit_diff($s, ['megjegyzes' => $megj], ['megjegyzes']);
         if ($diff) {
             db_exec('UPDATE kimeno_szamlak SET megjegyzes = ?, megjegyzes_irta = ?, modositotta = ? WHERE id = ?', [$megj, $mj['irta'], $u['id'], $id]);
-            audit_ir('KIMENO', $id, 'MODOSIT', "Kimenő számla módosítva: {$s['kod']} (" . ($s['statusz'] === 'FIZETVE' ? 'fizetve' : 'üzletkötő') . ' – csak megjegyzés)', $diff, null, $u);
+            audit_ir('KIMENO', $id, 'MODOSIT', "Kimenő számla módosítva: {$s['kod']} (" . ($s['statusz'] === 'FIZETVE' ? 'fizetve' : ($fuggo ? 'beszámításra adva' : 'üzletkötő')) . ' – csak megjegyzés)', $diff, null, $u);
         }
-        naplo('KIMENO_MODOSIT', "kimenő számla {$s['kod']} (" . ($s['statusz'] === 'FIZETVE' ? 'fizetve' : 'üzletkötő') . '): megjegyzés módosítva');
-        return ['modositva' => true, 'korlatozott' => true];
+        naplo('KIMENO_MODOSIT', "kimenő számla {$s['kod']} (" . ($s['statusz'] === 'FIZETVE' ? 'fizetve' : ($fuggo ? 'beszámításra adva' : 'üzletkötő')) . '): megjegyzés módosítva');
+        return ['modositva' => true, 'korlatozott' => true, 'ok' => $fuggo ? 'beszámításra adva: ' . $s['beszamitas_uid'] : null];
     }
     $szamlaszam = be_szoveg($be, 'szamlaszam', 100, true, 'számlaszám');
     $telj = be_datum($be, 'teljesites_datum', true, 'teljesítési dátum');
@@ -199,6 +210,9 @@ function act_kimeno_torol(array $be): array
     }
     if ((int)$s['reszt_db'] > 0) {
         hiba('A számlához részteljesítés tartozik (' . fmt_osszeg($s['reszt']) . " {$s['penznem']}) – előbb töröld a részteljesítéseket a szerkesztő ablakban.");
+    }
+    if (!empty($s['beszamitas_uid']) || !empty($s['beszamitva_uid'])) {
+        hiba("A számla beszámításra van adva egy utalásban (" . ($s['beszamitas_uid'] ?: $s['beszamitva_uid']) . ') – előbb vedd ki az utalásból (a számla sorában a piros X), aztán törölhető.');
     }
     db_exec('DELETE FROM kimeno_szamlak WHERE id = ?', [$id]);
     audit_ir('KIMENO', $id, 'TOROL', "Kimenő számla törölve: {$s['kod']} „{$s['szamlaszam']}” (" . fmt_osszeg($s['osszeg']) . " {$s['penznem']})");
@@ -268,7 +282,9 @@ function act_bank_hozzarendel(array $be): array
             $uj = false;
         }
         $in = implode(',', array_fill(0, count($ids), '?'));
-        $szamlak = db_all("SELECT s.id, s.kod, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) FOR UPDATE", $ids);
+        $szamlak = db_all("SELECT s.id, s.kod, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt,
+                                  (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = 'NYITOTT' LIMIT 1) AS beszamitas_uid
+                             FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) FOR UPDATE", $ids);
         if (count($szamlak) !== count($ids)) {
             hiba('Valamelyik számla nem található.');
         }
@@ -276,6 +292,9 @@ function act_bank_hozzarendel(array $be): array
         foreach ($szamlak as $s) {
             if ($s['statusz'] !== 'NYITOTT') {
                 hiba("A(z) {$s['kod']} számla már FIZETVE státuszú.");
+            }
+            if (!empty($s['beszamitas_uid'])) {
+                hiba("A(z) {$s['kod']} számla beszámításra van adva az utalásban ({$s['beszamitas_uid']}) – vagy az utalás teljesítésével rendeződik, vagy előbb vedd ki az utalásból.");
             }
             $kodok[] = $s['kod'] . ' (' . fmt_osszeg((float)$s['osszeg'] - (float)$s['reszt']) . ' ' . $s['penznem'] . ((float)$s['reszt'] > 0 ? ', részteljesítés után' : '') . ')';
         }
@@ -351,6 +370,9 @@ function act_kimeno_fizetes_visszavon(array $be): array
     }
     if ($s['statusz'] !== 'FIZETVE') {
         hiba('A számla nem FIZETVE státuszú.');
+    }
+    if ($s['banki_kivonat_id'] === null && !empty($s['beszamitva_uid'])) {
+        hiba("A számla beszámítással lett fizetve ({$s['beszamitva_uid']}) – a fizetés az utalás visszanyitásával vonható vissza (az utalás oldalán).");
     }
     db_tx(function () use ($id, $s, $u) {
         db_exec('UPDATE kimeno_szamlak SET statusz = "NYITOTT", banki_kivonat_id = NULL, fizetve_datum = NULL, modositotta = ? WHERE id = ?', [$u['id'], $id]);

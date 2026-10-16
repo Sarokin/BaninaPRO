@@ -25,7 +25,8 @@ function act_hataridok(array $be): array
              WHERE b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA")
             UNION ALL
             SELECT "KI", s.id, s.fizetesi_hatarido, c.id, c.nev,
-                   s.szamlaszam, s.osszeg, s.penznem, s.kod, NULL, NULL, s.statusz, NULL,
+                   s.szamlaszam, s.osszeg, s.penznem, s.kod, NULL, NULL, s.statusz,
+                   (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1),
                    s.teljesites_datum, s.kelt, COALESCE(rk.reszt, 0), COALESCE(rk.reszt_db, 0), (s.osszeg - COALESCE(rk.reszt, 0))
               FROM kimeno_szamlak s
               JOIN cegek c ON c.id = s.ceg_id' . RESZT_KIMENO_JOIN . '

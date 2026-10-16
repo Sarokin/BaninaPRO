@@ -145,6 +145,12 @@ function act_reszteljesites_hozzaad(array $be): array
     }
     $e = db_tx(function () use ($irany, $szamlaId, $osszeg, $datum, $bank, $u) {
         $s = reszt_szamla_betolt($irany, $szamlaId, true);
+        if ($irany === 'KIMENO') {
+            $bz = db_val('SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = ? AND ut.statusz = "NYITOTT" LIMIT 1', [$szamlaId]);
+            if ($bz) {
+                hiba("A(z) {$s['kod']} számla beszámításra van adva az utalásban ($bz) – amíg az utalás nyitott, nem vezethető fel rá részteljesítés (előbb vedd ki az utalásból).");
+            }
+        }
         if (!$s['nyitott']) {
             hiba($irany === 'BEJOVO'
                 ? "A(z) {$s['kod']} számla nem FIZETENDŐ státuszú (" . ny_statusz_nev($s['statusz']) . ') – részteljesítés csak nyitott számlára vezethető fel.' . ($s['statusz'] === 'UTALASHOZ_ADVA' ? ' Előbb vedd ki az utalásból.' : '')
@@ -188,6 +194,16 @@ function act_reszteljesites_torol(array $be): array
         $s = reszt_szamla_betolt($irany, $szamlaId, true);
         if (!$s['nyitott']) {
             hiba('A számla már rendezett (' . ny_statusz_nev($s['statusz']) . ') – a részteljesítés nem törölhető. (Admin: fizetés visszavonása / utalás visszanyitása után lehet.)');
+        }
+        if ($irany === 'KIMENO') {
+            $bzUid = db_val('SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.reszteljesites_id = ? LIMIT 1', [$id]);
+            if ($bzUid) {
+                hiba("Ez a részteljesítés beszámításból jött ($bzUid) – az utalás visszanyitásával szűnik meg (irodavezető / admin, az utalás oldalán).");
+            }
+            $fuggo = db_val('SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = ? AND ut.statusz = "NYITOTT" LIMIT 1', [$szamlaId]);
+            if ($fuggo) {
+                hiba("A(z) {$s['kod']} számla beszámításra van adva az utalásban ($fuggo) – amíg az utalás nyitott, a részteljesítés nem törölhető (a hátralék az utalást érintené).");
+            }
         }
         db_exec('DELETE FROM reszteljesitesek WHERE id = ?', [$id]);
         return $s;

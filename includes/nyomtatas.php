@@ -20,7 +20,7 @@ const NY_TIPUSOK = ['osszevetes', 'allapot', 'ceg', 'kotes', 'bejovo', 'utalas',
 const NY_EN_STATUSZ = [
     'FIZETENDO' => 'PAYABLE', 'UTALASHOZ_ADVA' => 'IN TRANSFER', 'FIZETVE' => 'PAID', 'BESZAMITVA' => 'OFFSET',
     'NYITOTT' => 'OPEN', 'FIZETETT' => 'PAID', 'UTALVA' => 'TRANSFERRED', 'MANUAL' => 'manual', 'HATARERTEK' => 'threshold',
-    'FIZETETLEN' => 'UNPAID', 'MEG_NEM_LETEZETT' => 'NOT YET ISSUED',
+    'FIZETETLEN' => 'UNPAID', 'MEG_NEM_LETEZETT' => 'NOT YET ISSUED', 'BESZAMITAS' => 'OFFSET', 'BESZAMITASRA_ADVA' => 'OFFSET PENDING',
 ];
 
 function ny_datum(?string $d): string
@@ -46,7 +46,7 @@ function ny_statusz(string $s): string
 {
     return ['FIZETENDO' => 'FIZETENDŐ', 'UTALASHOZ_ADVA' => 'UTALÁSHOZ ADVA', 'FIZETVE' => 'FIZETVE', 'BESZAMITVA' => 'BESZÁMÍTVA',
             'NYITOTT' => 'NYITOTT', 'FIZETETT' => 'FIZETETT', 'UTALVA' => 'UTALVA', 'MANUAL' => 'manuális', 'HATARERTEK' => 'határértékes',
-            'FIZETETLEN' => 'FIZETETLEN', 'MEG_NEM_LETEZETT' => 'MÉG NEM LÉTEZETT'][$s] ?? $s;
+            'FIZETETLEN' => 'FIZETETLEN', 'MEG_NEM_LETEZETT' => 'MÉG NEM LÉTEZETT', 'BESZAMITAS' => 'BESZÁMÍTÁS', 'BESZAMITASRA_ADVA' => 'BESZÁMÍTÁSRA ADVA'][$s] ?? $s;
 }
 
 function ny_en(string $s): string
@@ -588,6 +588,30 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
                                     'stilus' => 'al', 'span' => [0 => 5]];
                     }
                 }
+                // beszámítás (1.25): a levont kimenő számlák negatív sorai, a végén a számlák összege és a levonás
+                $bzk = utalas_beszamitasok($u['id']);
+                foreach ($bzk as $b) {
+                    $sorok[] = ['cellak' => ['Beszámítás · „' . $b['szamlaszam'] . '”', 'kimenő számla ' . $b['kod'], ny_statusz('BESZAMITAS'), '', ny_datum($b['fizetesi_hatarido']), ny_osszeg(-$b['levonva'], $u['penznem'])],
+                               'en' => [2 => ny_en('BESZAMITAS')], 'szinek' => [2 => [1, 127, 1]]];
+                    $al = [];
+                    $alEn = [];
+                    if ($b['levonva'] < $b['osszeg'] - (float)$b['reszt'] - 0.005 || (float)$b['reszt'] > 0) {
+                        $al[] = 'a kimenő számla összege ' . ny_osszeg($b['osszeg'], $u['penznem']) . ', ebből beszámítva ' . ny_osszeg($b['levonva'], $u['penznem']) . ($b['statusz'] === 'NYITOTT' ? ', a többi nyitott kintlévőség marad' : '');
+                        $alEn[] = 'outgoing invoice ' . ny_osszeg($b['osszeg'], $u['penznem']) . ', offset ' . ny_osszeg($b['levonva'], $u['penznem']) . ($b['statusz'] === 'NYITOTT' ? ', the rest stays receivable' : '');
+                    }
+                    if ($b['bejovok']) {
+                        $al[] = 'rendezi: ' . implode(', ', array_map(fn($x) => $x['k'] . ' „' . $x['szamlaszam'] . '” ' . ny_osszeg($x['osszeg'], $u['penznem']) . ($x['statusz'] === 'BESZAMITVA' ? ' (BESZÁMÍTVA)' : ''), $b['bejovok']));
+                        $alEn[] = 'settles: ' . implode(', ', array_map(fn($x) => $x['k'] . ' „' . $x['szamlaszam'] . '” ' . ny_osszeg($x['osszeg'], $u['penznem']) . ($x['statusz'] === 'BESZAMITVA' ? ' (OFFSET)' : ''), $b['bejovok']));
+                    }
+                    if ($al) {
+                        $sorok[] = ['cellak' => ['» ' . implode(' · ', $al)], 'en' => [0 => '» ' . implode(' · ', $alEn)], 'stilus' => 'al', 'span' => [0 => 5]];
+                    }
+                }
+                if ($bzk) {
+                    $sorok[] = ['cellak' => ['» bejövő számlák ' . ny_osszeg($u['szamlak_osszeg'], $u['penznem']) . ' − beszámítás ' . ny_osszeg($u['beszamitas_osszeg'], $u['penznem']) . ' = utalandó ' . ny_osszeg($u['osszeg'], $u['penznem'])],
+                                'en' => [0 => '» incoming invoices ' . ny_osszeg($u['szamlak_osszeg'], $u['penznem']) . ' − offset ' . ny_osszeg($u['beszamitas_osszeg'], $u['penznem']) . ' = to transfer ' . ny_osszeg($u['osszeg'], $u['penznem'])],
+                                'stilus' => 'al', 'span' => [0 => 5]];
+                }
             }
             $sorok = array_merge($sorok, ny_osszesito($t, 6, 5));
             $pdf->tablazat([
@@ -620,7 +644,8 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
                 }
                 $sorok[] = ['cellak' => [$s['kod'], $s['ceg_nev'], $s['szamlaszam'], ny_datum($s['kelt']) . "\n" . ny_datum($s['teljesites_datum']),
                                          ny_datum($s['fizetesi_hatarido']) . (!$nyitott && $s['fizetve_datum'] ? "\n" . ny_datum($s['fizetve_datum']) : ''),
-                                         ny_osszeg($s['osszeg'], $s['penznem']), ny_statusz($s['statusz']), $s['banki_azonosito'] ?? ''],
+                                         ny_osszeg($s['osszeg'], $s['penznem']), ny_statusz($s['statusz']),
+                                         $s['banki_azonosito'] ?? (!empty($s['beszamitas_uid']) ? 'beszámításra adva: ' . $s['beszamitas_uid'] : (!empty($s['beszamitva_uid']) ? 'beszámítva: ' . $s['beszamitva_uid'] : ''))],
                            'en' => [6 => ny_en($s['statusz'])],
                            'szinek' => [6 => $nyitott ? [217, 108, 0] : [1, 127, 1]]];
                 $sorok = array_merge($sorok, ny_reszt_sorok($s, $nyitott, 8, 4, 5));

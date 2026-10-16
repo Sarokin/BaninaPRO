@@ -330,6 +330,42 @@ CREATE TABLE IF NOT EXISTS `reszteljesitesek` (
 --  (a kártyák „könyv” gombja mutatja; a bejövő számla bejegyzései a kötés
 --   naplójában is megjelennek a szulo_id révén)
 -- ---------------------------------------------------------------------
+-- ---------------------------------------------------------------------
+--  Beszámítás (1.25): kimenő számla levonása a bejövő számlák utalásából – egy sor = egy kimenő számla egy utalásban,
+--  a levont összeggel (a számla hátralékának egésze vagy egy része). Amíg az utalás NYITOTT, a kimenő számla
+--  „beszámításra adva”; az utalás teljesítésekor a teljes hátralék levonása FIZETVE-t ad, a részleges levonás
+--  részteljesítést (reszteljesites_id) – a hátralék így a megszokott módon csökken.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `beszamitasok` (
+  `id`                INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `utalas_id`         INT UNSIGNED NOT NULL COMMENT 'a bejövő utalás, amelyből levonják',
+  `kimeno_id`         INT UNSIGNED NOT NULL COMMENT 'a beszámított kimenő számla',
+  `osszeg`            DECIMAL(15,2) NOT NULL COMMENT 'a levont összeg – legfeljebb a számla hátraléka',
+  `reszteljesites_id` INT UNSIGNED NULL COMMENT 'az utalás teljesítésekor rögzített részteljesítés (részleges beszámításnál)',
+  `letrehozva`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `letrehozta`        INT UNSIGNED NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_beszamitas` (`utalas_id`, `kimeno_id`),
+  KEY `ix_beszamitas_kimeno` (`kimeno_id`),
+  CONSTRAINT `fk_beszamitas_utalas` FOREIGN KEY (`utalas_id`) REFERENCES `utalasok` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_beszamitas_kimeno` FOREIGN KEY (`kimeno_id`) REFERENCES `kimeno_szamlak` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_beszamitas_reszt`  FOREIGN KEY (`reszteljesites_id`) REFERENCES `reszteljesitesek` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- A beszámítás megjelölt bejövő számlái: melyik bejövő számlá(ka)t rendezi a levonás, és mennyivel (a levont összeg a
+-- megjelölt számlákra sorban szétosztva). Teljesítéskor a teljesen fedezett bejövő számla BESZÁMÍTVA lesz.
+CREATE TABLE IF NOT EXISTS `beszamitas_bejovok` (
+  `id`             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `beszamitas_id`  INT UNSIGNED NOT NULL,
+  `bejovo_id`      INT UNSIGNED NOT NULL,
+  `osszeg`         DECIMAL(15,2) NOT NULL COMMENT 'a levonásból erre a bejövő számlára jutó rész',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_beszamitas_bejovo` (`beszamitas_id`, `bejovo_id`),
+  KEY `ix_beszamitas_bejovo` (`bejovo_id`),
+  CONSTRAINT `fk_bb_beszamitas` FOREIGN KEY (`beszamitas_id`) REFERENCES `beszamitasok` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_bb_bejovo`     FOREIGN KEY (`bejovo_id`)     REFERENCES `bejovo_szamlak` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `valtozasnaplo` (
   `id`             INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `tipus`          ENUM('KOTES','BEJOVO','KIMENO') NOT NULL,

@@ -237,6 +237,37 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   jelzi és elengedi. A lakat kinyitása **nem** választja vissza automatikusan: ha újra gyűjtenél bele, nyomd meg az
   „Ehhez gyűjtök” gombot (vagy adj hozzá számlát az UTALÁSHOZ gombbal).
 * Az utalás összesítő nézete: UID, végösszeg, kötésenként a hozzáadott számlák és részösszegek.
+* **Beszámítás – kimenő számla levonása az utalásból (1.25):** ha a partnernek kimenő számlád is van, és azt nem
+  átutalással fizeti, hanem **levonod a neki utalandó összegből**, a kimenő számla kártyáján nyomd meg a
+  **Beszámítás utalásba** gombot (ugyanaz a lépés, mint a bejövőn az UTALÁSHOZ: a cég nyitott utalását választja, vagy
+  újat ajánl). Egy ablak mutatja a számla hátralékát és azt, hogy az utalásban most mennyi van, és **felajánlja a
+  legnagyobb levonható összeget** (a számla hátraléka, de legfeljebb annyi, amennyi az utalásba belefér – az utalás
+  nem lehet negatív). Ha kevesebbet írsz, **részbeszámítás**: a számla többi része nyitott kintlévőség marad. Példa:
+  10 EUR bejövő számla az utalásban, 20 EUR-s kimenő számla → az ajánlott levonás 10 EUR, az utalandó összeg 0, a kimenőn
+  10 EUR nyitva marad. Az utalás oldalán a **Kimenő beszámítása** gombbal is lehet (a cég nyitott kimenő számláiból
+  választva); a beszámítás a piros X-szel kivehető, amíg az utalás nyitott és nincs lelakatolva.
+  * Az utalás oldala külön **BESZÁMÍTÁS** blokkban mutatja a levont kimenő számlákat (negatív összeggel), alul pedig
+    *Bejövő számlák − Beszámítás = **UTALANDÓ***. A bankkártyás gyűjtő ablaka és az utalás PDF-je is így.
+  * Amíg az utalás nyitott, a kimenő számla **NYITOTT** marad, sárga **BESZÁMÍTÁSRA ADVA** jelvénnyel (az utalás
+    azonosítójával és a levont összeggel); ilyenkor nem adható bankazonosítóhoz, nem törölhető, az adatai nem
+    módosíthatók (a megjegyzés igen), részteljesítés nem vezethető fel rá. A határidő-listán az *Utaláshoz /
+    beszámításra adottak is* kapcsolóval látszik.
+  * **Utalás teljesítve** után: a teljes hátralék levonása esetén a kimenő számla **FIZETVE** (fizetés dátuma = az
+    utalás dátuma, a banki azonosító helyén *beszámítva: U-…*), részbeszámításnál a számlán **részteljesítés** jön létre
+    *Beszámítás: U-…* azonosítóval, és a hátralék ennyivel csökken. Az utalás **visszanyitása** mindkettőt visszavonja
+    (a számla újra beszámításra adva); a nyitott utalás **törlésekor** a beszámítás megszűnik, a számla nyitott marad.
+    A beszámítással fizetett számlán a *Fizetés visszavonása* gomb nem jelenik meg – ott az utalás visszanyitása a
+    helyes út.
+  * **Melyik bejövő számlá(ka)t rendezi a beszámítás?** A beszámítás ablakában (az összeg alatt) kipipálható az utalás
+    egy vagy több bejövő számlája – nem kötelező. A levonást a program a kipipált számlákra sorban szétosztja. Az utalás
+    teljesítésekor az a bejövő számla, amelynek a teljes összegét a beszámítás fedezi, **BESZÁMÍTVA** státuszt kap (nem
+    utalással, hanem a kimenő számlával rendeződött); amelyiknek csak egy részét, az FIZETVE lesz, és a könyvében
+    (változásnapló) látszik, mennyi volt beszámítás és mennyi utalás. Az utalás oldalán és a PDF-en a beszámítás sorában
+    *→ rendezi: K0003 „…” 10 EUR* áll. Egy utalásban több kimenő számla is beszámítható, mindegyik egészben vagy részben. **A bejövő oldalon nem keletkezik
+    hátralék**, és a bejövő részteljesítést nem kell bekapcsolni: az utalásban lévő bejövő számlák a teljesítéskor
+    mind rendezettek, mert a fedezetük a banki utalás és a beszámítás együtt – az utalás írja le, melyik hogyan.
+  * Csak ugyanannak a cégnek, azonos pénznemű, pozitív hátralékú kimenő számlája számítható be; egyszerre egy nyitott
+    utalásban. Minden lépés a változásnaplóba kerül (BESZAMITAS_AD / BESZAMITAS_KIVESZ a naplóban).
 * Főoldal → **Minden utalás**: az összes utalás cégtől függetlenül, szűrhetően.
 
 ### Kimenő számlák
@@ -256,6 +287,8 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   → *Igen* → **„Biztos?” 5 másodperces visszaszámlálóval**, az IGEN csak utána aktív.
 * Irodavezető vagy admin a fizetést vissza tudja vonni (számla vissza NYITOTT-ba).
 * **Fizetés dátuma:** FIZETVE számlánál a kártyán zölddel *Fizetve: 2026.03.28.* + a banki azonosító.
+* **Beszámítás utalásba (1.25):** a kimenő számla (vagy egy része) levonható a partnernek utalandó bejövő számlák
+  összegéből – a kártya **Beszámítás utalásba** gombjával. A részleteket lásd az *Utalások* résznél.
 * **Részteljesítés** – ha egy NYITOTT számlára csak részösszeg érkezik: a számla sorában a **ceruza** ikon →
   a szerkesztő ablak alján **Részteljesítések** rész, alapból csak egy zöld **+** gomb. A + megnyomására három mező
   jelenik meg: **összeg** (kötelező), **utalás dátuma** (kötelező, alapból a mai nap), **banki azonosító** (nem
@@ -593,6 +626,15 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.24.4-ről 1.25.0-ra (beszámítás: kimenő számla levonása az utalásból):** **adatbázis-módosítás van** –
+futtasd le a `sql/frissites_1.25.sql` fájlt phpMyAdmin-ban (két új tábla: `beszamitasok`, `beszamitas_bejovok`; a belső
+szerveren a telepítő magától pótolja). A kimenő számla kártyáján új **Beszámítás utalásba** gomb, az utalás oldalán **Kimenő beszámítása**
+gomb és BESZÁMÍTÁS blokk, *Bejövő számlák − Beszámítás = UTALANDÓ* összesítés; az utalás teljesítése a beszámított
+kimenőt FIZETVE-re (teljes levonás) vagy részteljesítésre (részbeszámítás) állítja. Töltsd fel a frissített
+`includes/api_utalas.php`, `includes/api_kimeno.php`, `includes/api_reszteljesites.php`, `includes/api_konyveles.php`,
+`includes/api_riport.php`, `includes/import.php`, `includes/jogok.php`, `includes/nyomtatas.php`, `assets/app.js`,
+`assets/app.css`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat.
 
 **Frissítés 1.24.3-ról 1.24.4-re (import: forintos IB-sorok összege):** adatbázis-módosítás nincs. Az IB System „Számla napló”
 exportjában a forintos (BH / KH) soroknál a devizás összeg (Z oszlop) üres, az összeg a **W** (Bruttó) oszlopban van – az import
@@ -1102,6 +1144,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| „Table 'beszamitasok' doesn't exist” (utalás oldal / kimenő számlák, 1.25) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.25.sql` fájlt phpMyAdmin-ban |
 | „Unknown column 'konyveles_kikuldve'” (Minden számla oldal, 1.24) | a frissítő SQL nem futott le – lásd a 1.23.0 → 1.24.0 frissítés két `ALTER TABLE` utasítását (phpMyAdmin → SQL) |
 | Excel import: egy sor „Döntést vár” | több rendszerbeli számla is lehet ugyanez (azonos cég, összeg, dátum), vagy a bizonyíték gyenge – a sorban a legördülőből válaszd ki, melyikkel vonja össze; ha új számla, pipáld ki a sort (új számlaként kerül be) |
 | Excel import: „UTALÁSBAN” jelzésű sor nem módosul | a megtalált bejövő számla utalásban van – alapból védett; a „Mégis módosítom” gombbal (vagy a Beállításoknál egyben) felülírható, ha tudod, hogy az utalást is érintheti |
@@ -1144,4 +1187,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.24.4 (2026-10-16)
+Verzió: 1.25.0 (2026-10-16)
