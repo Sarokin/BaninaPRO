@@ -19,7 +19,7 @@ require_once __DIR__ . '/xlsx.php';
  *   D  eredeti bizonylatszám = bejövő számla számlaszáma (szabad szöveg)
  *   J  számla kelte     K  teljesítés     M  fizetési határidő
  *   N  partnerkód       O  partner (cég) neve      P  partner adószám      Q  partner EU adószám
- *   Z  bruttó összeg devizában             AA deviza kód (ellenőrzés)     AB megjegyzés
+ *   Z  bruttó összeg devizában (forintos BH / KH sornál üres: W bruttó)   AA deviza kód (ellenőrzés)     AB megjegyzés
  *   Kimenő számlaszám: A-C/B  (pl. KE-41/2026)
  *
  * 1) import_elemez(): a fájl beolvasása, minden sor ellenőrzése, cégek egyeztetése (megjegyzett párosítás →
@@ -912,7 +912,11 @@ function import_elemez(string $fajl, string $fajlnev): array
             if (!$hat && $kelt) { $hat = $kelt; $potolt[] = 'fizetesi_hatarido'; $figy[] = 'fizetési határidő (M) hiányzik → a kelt dátumot kapja'; }
             if ($ev < 2000 || $ev > 2099) { $ev = $kelt ? (int)substr($kelt, 0, 4) : (int)date('Y'); $figy[] = 'tárgyév (B) hiányzik → ' . $ev; }
             $osszeg = imp_osszeg($c['Z'] ?? null);
-            if ($osszeg === null) { $hibak[] = 'hiányzik vagy érvénytelen az összeg (Z)'; }
+            if ($osszeg === null && $penznem === 'HUF') {
+                // forintos (BH / KH) számlánál az IB System a devizaoszlopokat (Y, Z) üresen hagyja: az összeg a Bruttó (W) oszlopban van
+                $osszeg = imp_osszeg($c['W'] ?? null);
+            }
+            if ($osszeg === null) { $hibak[] = 'hiányzik vagy érvénytelen az összeg (' . ($penznem === 'HUF' ? 'Z / W' : 'Z') . ')'; }
             elseif ((float)$osszeg == 0.0) { $hibak[] = 'az összeg nulla (Z)'; }
             elseif ((float)$osszeg < 0) { $figy[] = 'negatív összeg (jóváíró tétel)'; }
             $deviza = mb_strtoupper(imp_szoveg($c['AA'] ?? null, 8), 'UTF-8');

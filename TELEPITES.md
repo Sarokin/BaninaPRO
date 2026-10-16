@@ -594,6 +594,12 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
 
+**Frissítés 1.24.3-ról 1.24.4-re (import: forintos IB-sorok összege):** adatbázis-módosítás nincs. Az IB System „Számla napló”
+exportjában a forintos (BH / KH) soroknál a devizás összeg (Z oszlop) üres, az összeg a **W** (Bruttó) oszlopban van – az import
+eddig ezeket a sorokat „hiányzik az összeg” hibával kihagyta, mostantól a W oszlopot veszi. Töltsd fel a frissített
+`includes/import.php`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat; a belső szerveren a
+„BaninaPro App Updater” ikon elég.
+
 **Frissítés 1.24.2-ről 1.24.3-ra (belső szerver: SQL_LOPO megosztás és 30 napos mentés-takarítás):** a weboldal nem
 változott (csak a Docker-beállítás alapértéke: `BACKUP_MEGORZES_NAP` 30). A belső szerveren a telepítő (`szerver_beallitas.sh`)
 létrehozza az **SQL_LOPO** megosztott mappát (`/srv/SQL_LOPO`, Samba, a belső hálózaton vendégként, jelszó nélkül olvasható:
@@ -930,7 +936,8 @@ helyreállnak – ha a kapcsoló az *Import* oldalon áll.
 **A) Számlanapló** – a könyvelőprogram (IB System) „Számla napló” exportja; egy fájlban lehet bejövő és kimenő, EUR és HUF sor is.
 Oszlopok: **A** irány (BE = bejövő EUR, BH = bejövő HUF, KE = kimenő EUR, KH = kimenő HUF) ·
 **B** tárgyév · **C** sorszám · **D** bejövő számlaszám (szabadkezes) · **J** kelt · **K** teljesítés · **M** fizetési határidő ·
-**N** partnerkód · **O** cég neve · **P** adószám · **Q** EU adószám (ha van) · **Z** bruttó összeg devizában · **AA** deviza (ellenőrzés) ·
+**N** partnerkód · **O** cég neve · **P** adószám · **Q** EU adószám (ha van) · **Z** bruttó összeg devizában (forintos – BH / KH –
+sornál az IB System ezt üresen hagyja: akkor a **W** bruttó, 1.24.4) · **AA** deviza (ellenőrzés) ·
 **AB** megjegyzés. Kimenő számla számlaszáma: **A-C/B** (pl. `KE-41/2026`). A fejléc- és összesítő sorok (ahol az A
 oszlop nem BE/BH/KE/KH) automatikusan kimaradnak. Dátum lehet `2026.01.06` vagy Excel-dátum is.
 
@@ -1137,4 +1144,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.24.3 (2026-10-13)
+Verzió: 1.24.4 (2026-10-16)
