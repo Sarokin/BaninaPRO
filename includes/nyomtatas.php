@@ -344,15 +344,24 @@ function ny_reszt_sorok(array $s, bool $nyitott, int $oszlopSzam, int $datumOszl
     $sorok = [];
     foreach ($s['reszteljesitesek'] ?? [] as $r) {
         $c = array_fill(0, $oszlopSzam, '');
+        if (!empty($r['fuggo'])) {
+            // függő rész (1.27): nyitott utalásban van, még nem utalták
+            $uidTxt = !empty($r['utalas_uid']) ? ' – ' . $r['utalas_uid'] : '';
+            $c[0] = '» utalás alatt' . $uidTxt;
+            $c[$datumOszlop] = '–';
+            $c[$osszegOszlop] = ny_osszeg(-(float)$r['osszeg'], $s['penznem']);
+            $sorok[] = ['cellak' => $c, 'en' => [0 => '» in transfer' . $uidTxt], 'stilus' => 'al', 'span' => [0 => $datumOszlop], 'szinek' => [0 => [109, 90, 0], $osszegOszlop => [109, 90, 0]]];
+            continue;
+        }
         $bank = $r['banki_azonosito'] ? ' – bank: ' . $r['banki_azonosito'] : '';
         $c[0] = '» részteljesítés' . $bank;
         $c[$datumOszlop] = ny_datum($r['datum']);
         $c[$osszegOszlop] = ny_osszeg(-(float)$r['osszeg'], $s['penznem']);
         $sorok[] = ['cellak' => $c, 'en' => [0 => '» partial payment' . $bank], 'stilus' => 'al', 'span' => [0 => $datumOszlop], 'szinek' => [$osszegOszlop => [1, 127, 1]]];
     }
-    if ($nyitott && (float)($s['reszt'] ?? 0) > 0) {
+    if ($nyitott && ((float)($s['reszt'] ?? 0) > 0 || (float)($s['fuggo'] ?? 0) > 0)) {
         $c = array_fill(0, $oszlopSzam, '');
-        $c[0] = '» hátralék (még fizetendő)';
+        $c[0] = '» hátralék (még fizetendő' . ((float)($s['fuggo'] ?? 0) > 0 ? ', az utalás alatt lévő részek nélkül' : '') . ')';
         $c[$osszegOszlop] = ny_osszeg($s['hatralek'], $s['penznem']);
         $sorok[] = ['cellak' => $c, 'en' => [0 => '» balance due (still payable)'], 'stilus' => 'al', 'span' => [0 => $datumOszlop], 'szinek' => [0 => [217, 108, 0], $osszegOszlop => [217, 108, 0]]];
     }
@@ -366,7 +375,7 @@ function ny_gyujt(array &$t, array $s, bool $nyitott): void
     $t[$pn] = $t[$pn] ?? ['osszes' => 0.0, 'fizetett' => 0.0, 'nyitott' => 0.0, 'reszt' => 0.0];
     $t[$pn]['osszes'] += (float)$s['osszeg'];
     if ($nyitott) {
-        $t[$pn]['nyitott'] += (float)$s['hatralek'];
+        $t[$pn]['nyitott'] += (float)$s['hatralek'] + (float)($s['fuggo'] ?? 0);   // a még fizetendő: a nyitott utalásokban lévő részekkel együtt (1.27)
         $t[$pn]['fizetett'] += (float)$s['reszt'];
         $t[$pn]['reszt'] += (float)$s['reszt'];
     } else {
@@ -578,24 +587,25 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
                            'stilus' => 'fo', 'vastag' => [0 => true, 5 => true], 'jelveny' => [2 => $u['statusz'] === 'UTALVA' ? [1, 127, 1] : [217, 108, 0]]];
                 // a tételek (1.26): a benne lévő számlák + a teljesítéskor részteljesítéssé vált részösszegek – ugyanaz az adat, mint az utalás oldalán
                 foreach (utalas_tetelek($u['id']) as $s) {
-                    $st = $s['reszosszeg'] && $s['reszt_id'] !== null ? 'RESZOSSZEG' : $s['statusz'];   // teljesített részösszeg: a sor státusza RÉSZÖSSZEG, a számla állapota az alsorban
+                    $st = $s['reszosszeg'] ? 'RESZOSSZEG' : $s['statusz'];   // részösszeg: a sor státusza RÉSZÖSSZEG, a számla állapota az alsorban
                     $sorok[] = ['cellak' => [sprintf('K%04d · „%s”', $s['k_sorszam'], $s['szamlaszam']), $s['kotes_kod'], ny_statusz($st), '', ny_datum($s['fizetesi_hatarido']), ny_osszeg($s['tetel_osszeg'], $u['penznem'])],
                                'en' => [2 => ny_en($st)], 'szinek' => [2 => $st === 'RESZOSSZEG' ? [0, 90, 160] : ny_bejovo_szin($s['statusz'])]];
+                    $masik = $s['mas_fuggo'] > 0.005 ? ', más utalásban ' . ny_osszeg($s['mas_fuggo'], $u['penznem']) : '';
+                    $masikEn = $s['mas_fuggo'] > 0.005 ? ', in other transfers ' . ny_osszeg($s['mas_fuggo'], $u['penznem']) : '';
                     if ($s['reszosszeg']) {
-                        // részösszeg: az utalásban csak ennyi van a számlából – alatta a számla egésze
-                        if ($s['reszt_id'] !== null) {
-                            $al = 'részösszeg – a számlából ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' ebben az utalásban (részteljesítés ' . ny_datum($s['fizetve_datum']) . '); a számla összege ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', most ' . ny_statusz($s['statusz']) . ', hátralék ' . ny_osszeg($s['hatralek'], $u['penznem']);
-                            $alEn = 'partial amount – ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' of the invoice in this transfer (partial payment ' . ny_datum($s['fizetve_datum']) . '); invoice amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', now ' . ny_en($s['statusz']) . ', balance ' . ny_osszeg($s['hatralek'], $u['penznem']);
+                        // részösszeg: az utalásban csak ennyi van a számlából – alatta a számla egésze (1.27)
+                        if (!$s['fuggo_sor']) {
+                            $al = 'részösszeg – a számlából ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' ebben az utalásban (részteljesítés ' . ny_datum($s['fizetve_datum']) . '); a számla összege ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', most ' . ny_statusz($s['statusz']) . ', még szabad ' . ny_osszeg($s['hatralek'], $u['penznem']) . $masik;
+                            $alEn = 'partial amount – ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' of the invoice in this transfer (partial payment ' . ny_datum($s['fizetve_datum']) . '); invoice amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', now ' . ny_en($s['statusz']) . ', still free ' . ny_osszeg($s['hatralek'], $u['penznem']) . $masikEn;
                         } else {
-                            $marad = ny_osszeg(round((float)$s['hatralek'] - $s['tetel_osszeg'], 2), $u['penznem']);
-                            $al = 'részösszeg – a számla hátraléka ' . ny_osszeg($s['hatralek'], $u['penznem']) . ', ebből az utalásban ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ', a többi (' . $marad . ') FIZETENDŐ marad';
-                            $alEn = 'partial amount – invoice balance ' . ny_osszeg($s['hatralek'], $u['penznem']) . ', ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' in this transfer, the rest (' . $marad . ') stays payable';
+                            $al = 'részösszeg – a számlából ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' ebben az utalásban (függő); a számla összege ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', még szabad ' . ny_osszeg($s['hatralek'], $u['penznem']) . $masik;
+                            $alEn = 'partial amount – ' . ny_osszeg($s['tetel_osszeg'], $u['penznem']) . ' of the invoice in this transfer (pending); invoice amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', still free ' . ny_osszeg($s['hatralek'], $u['penznem']) . $masikEn;
                         }
                         $sorok[] = ['cellak' => ['» ' . $al], 'en' => [0 => '» ' . $alEn], 'stilus' => 'al', 'span' => [0 => 5]];
-                    } elseif ((float)$s['reszt'] > 0) {
-                        // részteljesítésnél az utalásban csak a hátralék van – alatta egy alsor mutatja az eredeti összeget és a részteljesítést
-                        $sorok[] = ['cellak' => ['» eredeti összeg ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', részteljesítés ' . ny_osszeg($s['reszt'], $u['penznem'])],
-                                    'en' => [0 => '» original amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ', partial payments ' . ny_osszeg($s['reszt'], $u['penznem'])],
+                    } elseif ((float)$s['reszt'] > 0 || $s['mas_fuggo'] > 0.005) {
+                        // egészben: az utalásban a maradék van – alatta az eredeti összeg, a részteljesítések és a más utalásban függő részek
+                        $sorok[] = ['cellak' => ['» eredeti összeg ' . ny_osszeg($s['osszeg'], $u['penznem']) . ((float)$s['reszt'] > 0 ? ', részteljesítés ' . ny_osszeg($s['reszt'], $u['penznem']) : '') . $masik],
+                                    'en' => [0 => '» original amount ' . ny_osszeg($s['osszeg'], $u['penznem']) . ((float)$s['reszt'] > 0 ? ', partial payments ' . ny_osszeg($s['reszt'], $u['penznem']) : '') . $masikEn],
                                     'stilus' => 'al', 'span' => [0 => 5]];
                     }
                 }

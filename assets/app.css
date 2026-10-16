@@ -1051,3 +1051,6 @@ a.reszt-csip:hover { background: var(--zold-tint-2); }
 .reszletes-fej .cim { font-size: 17px; }
 .reszletes-fej .allapot { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 800; }
 .reszletes-fej .utalva-jel { color: var(--zold); }
+/* függő rész (1.27): nyitott utalásban van, még nem utalták – sárga csip, az utalásra mutat */
+.reszt-csip.fuggo { background: var(--sarga-tint); color: var(--sarga-szoveg); }
+.reszt-csip.fuggo:hover { background: #fff3b0; }

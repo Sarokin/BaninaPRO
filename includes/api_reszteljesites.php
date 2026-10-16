@@ -17,12 +17,16 @@ declare(strict_types=1);
 /** LEFT JOIN-darab: bejövő számlák részteljesítés-összege (rb.reszt, rb.reszt_db) – a b alias-ú bejovo_szamlak-hoz */
 require_once __DIR__ . '/audit.php';
 
-const RESZT_BEJOVO_JOIN = ' LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt, COUNT(*) AS reszt_db FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) rb ON rb.szamla_id = b.id ';
-/** LEFT JOIN-darab: kimenő számlák részteljesítés-összege (rk.reszt, rk.reszt_db) – az s alias-ú kimeno_szamlak-hoz */
-const RESZT_KIMENO_JOIN = ' LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt, COUNT(*) AS reszt_db FROM reszteljesitesek WHERE irany = "KIMENO" GROUP BY szamla_id) rk ON rk.szamla_id = s.id ';
-/** SELECT-darabok */
-const RESZT_BEJOVO_MEZOK = ' COALESCE(rb.reszt, 0) AS reszt, COALESCE(rb.reszt_db, 0) AS reszt_db, (b.osszeg - COALESCE(rb.reszt, 0)) AS hatralek ';
-const RESZT_KIMENO_MEZOK = ' COALESCE(rk.reszt, 0) AS reszt, COALESCE(rk.reszt_db, 0) AS reszt_db, (s.osszeg - COALESCE(rk.reszt, 0)) AS hatralek ';
+/* Részösszeg az utaláshoz (1.27): a dátum nélküli (datum IS NULL) részteljesítés FÜGGŐ – egy nyitott utalásban van (utalas_id), még nem
+   utalták; az utalás teljesítésekor kap dátumot. A számla hátraléka (= még szabad része) = összeg − utalt részek − függő részek. */
+const RESZT_BEJOVO_JOIN = ' LEFT JOIN (SELECT szamla_id, SUM(CASE WHEN datum IS NOT NULL THEN osszeg ELSE 0 END) AS reszt, SUM(CASE WHEN datum IS NULL THEN osszeg ELSE 0 END) AS fuggo, COUNT(*) AS reszt_db, SUM(datum IS NULL) AS fuggo_db FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) rb ON rb.szamla_id = b.id ';
+/** LEFT JOIN-darab: kimenő számlák részteljesítés-összege (rk.reszt, rk.reszt_db) és a nyitott utalásokban beszámításra adott részei
+    (rkf.fuggo, rkf.fuggo_db, rkf.fuggo_uid – 1.25/1.27, egy számla több utalásban is lehet) – az s alias-ú kimeno_szamlak-hoz */
+const RESZT_KIMENO_JOIN = ' LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt, COUNT(*) AS reszt_db FROM reszteljesitesek WHERE irany = "KIMENO" AND datum IS NOT NULL GROUP BY szamla_id) rk ON rk.szamla_id = s.id'
+    . ' LEFT JOIN (SELECT bz.kimeno_id, SUM(bz.osszeg) AS fuggo, COUNT(*) AS fuggo_db, GROUP_CONCAT(ut.uid ORDER BY ut.id SEPARATOR ", ") AS fuggo_uid, MIN(ut.id) AS fuggo_utalas_id FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE ut.statusz = "NYITOTT" GROUP BY bz.kimeno_id) rkf ON rkf.kimeno_id = s.id ';
+/** SELECT-darabok: reszt = utalt részteljesítések, fuggo = nyitott utalás(ok)ban lévő részek, hatralek = a még szabad rész */
+const RESZT_BEJOVO_MEZOK = ' COALESCE(rb.reszt, 0) AS reszt, COALESCE(rb.reszt_db, 0) AS reszt_db, COALESCE(rb.fuggo, 0) AS fuggo, COALESCE(rb.fuggo_db, 0) AS fuggo_db, (b.osszeg - COALESCE(rb.reszt, 0) - COALESCE(rb.fuggo, 0)) AS hatralek ';
+const RESZT_KIMENO_MEZOK = ' COALESCE(rk.reszt, 0) AS reszt, COALESCE(rk.reszt_db, 0) AS reszt_db, COALESCE(rkf.fuggo, 0) AS fuggo, COALESCE(rkf.fuggo_db, 0) AS fuggo_db, rkf.fuggo_uid, (s.osszeg - COALESCE(rk.reszt, 0) - COALESCE(rkf.fuggo, 0)) AS hatralek ';
 
 function reszt_irany(array $be): string
 {
@@ -39,7 +43,8 @@ function reszt_sor_feldolgoz(array $r): array
     $r['szamla_id'] = (int)$r['szamla_id'];
     $r['osszeg'] = (float)$r['osszeg'];
     $r['letrehozta'] = $r['letrehozta'] === null ? null : (int)$r['letrehozta'];
-    $r['utalas_id'] = isset($r['utalas_id']) ? (int)$r['utalas_id'] : null;   // részösszeg az utaláshoz (1.26): az utalás, amelynek a teljesítése hozta létre
+    $r['utalas_id'] = isset($r['utalas_id']) ? (int)$r['utalas_id'] : null;   // részösszeg az utaláshoz (1.26/1.27): az utalás, amelyben a rész van / volt
+    $r['fuggo'] = $r['datum'] === null;                                        // függő: nyitott utalásban, még nem utalt (1.27)
     return $r;
 }
 
@@ -52,8 +57,9 @@ function reszteljesitesek_betolt(string $irany, array $szamlaIds): array
     }
     $in = implode(',', array_fill(0, count($szamlaIds), '?'));
     $sorok = db_all(
-        "SELECT r.*, f.felhasznalonev AS letrehozta_nev, ut.uid AS utalas_uid FROM reszteljesitesek r LEFT JOIN felhasznalok f ON f.id = r.letrehozta LEFT JOIN utalasok ut ON ut.id = r.utalas_id
-          WHERE r.irany = ? AND r.szamla_id IN ($in) ORDER BY r.datum, r.id",
+        "SELECT r.*, f.felhasznalonev AS letrehozta_nev, ut.uid AS utalas_uid, ut.statusz AS utalas_statusz, (r.datum IS NULL) AS fuggo
+           FROM reszteljesitesek r LEFT JOIN felhasznalok f ON f.id = r.letrehozta LEFT JOIN utalasok ut ON ut.id = r.utalas_id
+          WHERE r.irany = ? AND r.szamla_id IN ($in) ORDER BY (r.datum IS NULL), r.datum, r.id",
         array_merge([$irany], $szamlaIds)
     );
     $ki = [];
@@ -74,7 +80,9 @@ function reszt_csatol(array $sorok, string $irany): array
     foreach ($sorok as &$s) {
         $s['reszt'] = (float)($s['reszt'] ?? 0);
         $s['reszt_db'] = (int)($s['reszt_db'] ?? 0);
-        $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round((float)$s['osszeg'] - $s['reszt'], 2);
+        $s['fuggo'] = (float)($s['fuggo'] ?? 0);
+        $s['fuggo_db'] = (int)($s['fuggo_db'] ?? 0);
+        $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round((float)$s['osszeg'] - $s['reszt'] - $s['fuggo'], 2);
         $s['reszteljesitesek'] = [];
         if ($s['reszt_db'] > 0) {
             $ids[] = (int)$s['id'];
@@ -99,11 +107,13 @@ function reszt_szamla_betolt(string $irany, int $szamlaId, bool $zarol = false):
     $z = $zarol ? ' FOR UPDATE' : '';
     if ($irany === 'BEJOVO') {
         $s = db_row('SELECT b.id, b.kod, b.szamlaszam, b.osszeg, b.statusz, b.kotes_id, k.penznem, c.nev AS ceg_nev,
-                            COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id), 0) AS reszt
+                            COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id AND r.datum IS NOT NULL), 0) AS reszt,
+                            COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id AND r.datum IS NULL), 0) AS fuggo
                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id WHERE b.id = ?' . $z, [$szamlaId]);
     } else {
         $s = db_row('SELECT s.id, s.kod, s.szamlaszam, s.osszeg, s.statusz, s.penznem, c.nev AS ceg_nev,
-                            COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0) AS reszt
+                            COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id AND r.datum IS NOT NULL), 0) AS reszt,
+                            COALESCE((SELECT SUM(bz.osszeg) FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT"), 0) AS fuggo
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id WHERE s.id = ?' . $z, [$szamlaId]);
     }
     if (!$s) {
@@ -112,7 +122,8 @@ function reszt_szamla_betolt(string $irany, int $szamlaId, bool $zarol = false):
     $s['id'] = (int)$s['id'];
     $s['osszeg'] = (float)$s['osszeg'];
     $s['reszt'] = (float)$s['reszt'];
-    $s['hatralek'] = round($s['osszeg'] - $s['reszt'], 2);
+    $s['fuggo'] = (float)$s['fuggo'];
+    $s['hatralek'] = round($s['osszeg'] - $s['reszt'] - $s['fuggo'], 2);   // a még szabad rész (1.27: a nyitott utalásokban lévő részek nélkül)
     $s['nyitott'] = $irany === 'BEJOVO' ? $s['statusz'] === 'FIZETENDO' : $s['statusz'] === 'NYITOTT';
     return $s;
 }
@@ -161,7 +172,7 @@ function act_reszteljesites_hozzaad(array $be): array
             hiba('Negatív (jóváíró) számlára nem vezethető fel részteljesítés.');
         }
         if ($osszeg > $s['hatralek'] - 0.005) {
-            hiba('A részteljesítés (' . fmt_osszeg($osszeg) . " {$s['penznem']}) nem lehet nagyobb vagy egyenlő a számla hátralékánál (" . fmt_osszeg($s['hatralek']) . " {$s['penznem']}). Ha a teljes hátralék megérkezett, a számlát a rendes úton jelöld FIZETVE-nek" . ($irany === 'KIMENO' ? ' (bankkivonati azonosítóhoz rendelés)' : ' (utalás teljesítése)') . '.');
+            hiba('A részteljesítés (' . fmt_osszeg($osszeg) . " {$s['penznem']}) nem lehet nagyobb vagy egyenlő a számla hátralékánál (" . fmt_osszeg($s['hatralek']) . " {$s['penznem']}" . ($s['fuggo'] > 0 ? ', a nyitott utalás(ok)ban lévő részek nélkül' : '') . '). Ha a teljes hátralék megérkezett, a számlát a rendes úton jelöld FIZETVE-nek' . ($irany === 'KIMENO' ? ' (bankkivonati azonosítóhoz rendelés)' : ' (utalás teljesítése)') . '.');
         }
         db_exec('INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito, letrehozta) VALUES (?, ?, ?, ?, ?, ?)',
             [$irany, $szamlaId, number_format($osszeg, 2, '.', ''), $datum, $bank, $u['id']]);
@@ -197,9 +208,11 @@ function act_reszteljesites_torol(array $be): array
             hiba('A számla már rendezett (' . ny_statusz_nev($s['statusz']) . ') – a részteljesítés nem törölhető. (Admin: fizetés visszavonása / utalás visszanyitása után lehet.)');
         }
         if ($irany === 'BEJOVO') {
-            $rUid = db_val('SELECT ut.uid FROM reszteljesitesek r JOIN utalasok ut ON ut.id = r.utalas_id WHERE r.id = ?', [$id]);
-            if ($rUid) {
-                hiba("Ez a részteljesítés az utalás teljesítéséből jött (részösszeg az utaláshoz: $rUid) – az utalás visszanyitásával szűnik meg (irodavezető / admin, az utalás oldalán).");
+            $rUt = db_row('SELECT ut.uid, ut.statusz FROM reszteljesitesek r JOIN utalasok ut ON ut.id = r.utalas_id WHERE r.id = ?', [$id]);
+            if ($rUt) {
+                hiba($rUt['statusz'] === 'NYITOTT'
+                    ? "Ez a rész az utalásban van ({$rUt['uid']}) – az utalás oldalán (vagy a gyűjtő ablakban) a piros X-szel vehető ki."
+                    : "Ez a részteljesítés az utalás teljesítéséből jött (részösszeg az utaláshoz: {$rUt['uid']}) – az utalás visszanyitásával szűnik meg (irodavezető / admin, az utalás oldalán).");
             }
         }
         if ($irany === 'KIMENO') {

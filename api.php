@@ -68,6 +68,7 @@ try {
         if (!in_array($action, ['admin_db_visszaallit', 'admin_mentes_most'], true)) {
             mentes_ha_esedekes();
         }
+        reszosszeg_konverzio();   // 1.26-os részösszegek → függő részteljesítés (1.27; csak egyszer csinál bármit)
     }
     $fn = 'act_' . $action;
     $adat = $fn($be);
@@ -92,6 +93,8 @@ try {
             $uzenet = 'Ez a felhasználónév már foglalt.';
         } elseif (str_contains($m, 'uq_bank_norm')) {
             $uzenet = 'Ez a banki azonosító már rögzítve van.';
+        } elseif (str_contains($m, 'uq_beszamitas')) {
+            $uzenet = 'Ez a kimenő számla már beszámításra van adva ebben az utalásban – a levonás az utalás oldalán vehető ki, és új összeggel adható hozzá újra.';
         } elseif (str_contains($m, 'foreign key') || str_contains($m, 'FOREIGN KEY')) {
             $uzenet = 'A művelet nem hajtható végre, mert más adatok hivatkoznak rá.';
         } else {

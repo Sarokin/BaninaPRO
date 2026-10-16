@@ -672,17 +672,17 @@ function import_db_szamlak(): array
     $ki = ['BEJOVO' => [], 'KIMENO' => []];
     $lekerdezesek = [
         'BEJOVO' => 'SELECT b.id, b.kod, b.szamlaszam, b.szamlaszam_norm AS n, b.osszeg, b.kelt, b.teljesites_datum, b.fizetesi_hatarido, b.statusz, b.kotes_id,
-                            k.ceg_id, k.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt, b.utalas_id, ut.uid AS utalas_uid
+                            k.ceg_id, k.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt, COALESCE(b.utalas_id, r.fuggo_utalas) AS utalas_id, ut.uid AS utalas_uid
                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id
-                       LEFT JOIN utalasok ut ON ut.id = b.utalas_id
-                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) r ON r.szamla_id = b.id
+                       LEFT JOIN (SELECT szamla_id, SUM(CASE WHEN datum IS NOT NULL THEN osszeg ELSE 0 END) AS reszt, MIN(CASE WHEN datum IS NULL THEN utalas_id END) AS fuggo_utalas FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) r ON r.szamla_id = b.id
+                       LEFT JOIN utalasok ut ON ut.id = COALESCE(b.utalas_id, r.fuggo_utalas)
                       ORDER BY b.id',
         'KIMENO' => 'SELECT s.id, s.kod, s.szamlaszam, s.szamlaszam_norm AS n, s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, NULL AS kotes_id,
                             s.ceg_id, s.penznem, c.nev AS ceg_nev, COALESCE(r.reszt, 0) AS reszt,
                             (SELECT ut.id FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS utalas_id,
                             (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS utalas_uid
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id
-                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" GROUP BY szamla_id) r ON r.szamla_id = s.id
+                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" AND datum IS NOT NULL GROUP BY szamla_id) r ON r.szamla_id = s.id
                       ORDER BY s.id',
     ];
     foreach ($lekerdezesek as $irany => $sql) {
@@ -793,12 +793,13 @@ function import_szamla_javit(array $s, array $mezok, array $u, bool $felulir = f
     $id = (int)($s['letezo']['id'] ?? 0);
     if ($s['irany'] === 'BEJOVO') {
         $db = db_row('SELECT b.id, b.kod, b.szamlaszam, b.osszeg, b.kelt, b.teljesites_datum, b.fizetesi_hatarido, b.statusz, b.kotes_id, k.ceg_id, k.penznem, c.nev AS ceg_nev,
-                             b.utalas_id, COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id), 0) AS reszt
+                             COALESCE(b.utalas_id, (SELECT r2.utalas_id FROM reszteljesitesek r2 WHERE r2.irany = "BEJOVO" AND r2.szamla_id = b.id AND r2.datum IS NULL LIMIT 1)) AS utalas_id,
+                             COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "BEJOVO" AND r.szamla_id = b.id AND r.datum IS NOT NULL), 0) AS reszt
                         FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id WHERE b.id = ? FOR UPDATE', [$id]);
     } else {
         $db = db_row('SELECT s.id, s.kod, s.szamlaszam, s.osszeg, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.statusz, NULL AS kotes_id, s.ceg_id, s.penznem, c.nev AS ceg_nev,
                              (SELECT ut.id FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS utalas_id,
-                             COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0) AS reszt
+                             COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id AND r.datum IS NOT NULL), 0) AS reszt
                         FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id WHERE s.id = ? FOR UPDATE', [$id]);
     }
     if (!$db || $db['penznem'] !== $s['penznem']) {

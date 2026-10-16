@@ -8,11 +8,10 @@ declare(strict_types=1);
 require_once __DIR__ . '/api_reszteljesites.php';
 require_once __DIR__ . '/audit.php';
 
-/* Beszámítás (1.25): a függő (nyitott utalásban lévő) beszámítás, és a már teljesült (UTALVA) utalások, amelyekben a számlát beszámították */
+/* Beszámítás (1.25/1.27): a függő (nyitott utalásokban lévő) beszámítások – egy számla több utalásban is lehet (beszamitas_uid: vesszővel
+   elválasztva, beszamitas_osszeg: együtt) –, és a már teljesült (UTALVA) utalások, amelyekben a számlát beszámították */
 const KIMENO_BESZAMITAS_MEZOK = '
-        (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_uid,
-        (SELECT ut.id FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_utalas_id,
-        (SELECT bz.osszeg FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "NYITOTT" LIMIT 1) AS beszamitas_osszeg,
+        rkf.fuggo_uid AS beszamitas_uid, rkf.fuggo_utalas_id AS beszamitas_utalas_id, COALESCE(rkf.fuggo, 0) AS beszamitas_osszeg,
         (SELECT GROUP_CONCAT(ut.uid ORDER BY ut.id SEPARATOR ", ") FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = "UTALVA") AS beszamitva_uid,';
 const KIMENO_SQL = 'SELECT s.*, c.nev AS ceg_nev, bk.azonosito AS banki_azonosito, bk.datum AS banki_datum,
                            fl.felhasznalonev AS letrehozta_nev, fm.felhasznalonev AS modositotta_nev,' . KIMENO_BESZAMITAS_MEZOK . RESZT_KIMENO_MEZOK . '
@@ -32,10 +31,12 @@ function kimeno_sor_feldolgoz(array $s): array
     $s['osszeg'] = (float)$s['osszeg'];
     $s['reszt'] = (float)($s['reszt'] ?? 0);
     $s['reszt_db'] = (int)($s['reszt_db'] ?? 0);
-    $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'], 2);
+    $s['fuggo'] = (float)($s['fuggo'] ?? 0);
+    $s['fuggo_db'] = (int)($s['fuggo_db'] ?? 0);
+    $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'] - $s['fuggo'], 2);   // a még szabad rész (1.27)
     if (array_key_exists('beszamitas_utalas_id', $s)) {
         $s['beszamitas_utalas_id'] = $s['beszamitas_utalas_id'] === null ? null : (int)$s['beszamitas_utalas_id'];
-        $s['beszamitas_osszeg'] = $s['beszamitas_osszeg'] === null ? null : (float)$s['beszamitas_osszeg'];
+        $s['beszamitas_osszeg'] = $s['beszamitas_uid'] === null ? null : (float)$s['beszamitas_osszeg'];
     }
     unset($s['szamlaszam_norm']);
     return $s;
@@ -63,14 +64,16 @@ function act_kimeno_szamlak(array $be): array
                 SUM(CASE WHEN s.statusz = "NYITOTT" THEN s.osszeg - COALESCE(rk.reszt, 0) ELSE 0 END) AS nyitott,
                 SUM(CASE WHEN s.statusz = "FIZETVE" THEN s.osszeg ELSE COALESCE(rk.reszt, 0) END) AS fizetve,
                 SUM(CASE WHEN s.statusz = "NYITOTT" THEN COALESCE(rk.reszt, 0) ELSE 0 END) AS reszt,
+                SUM(CASE WHEN s.statusz = "NYITOTT" THEN COALESCE(rkf.fuggo, 0) ELSE 0 END) AS beszamitasra_adva,
                 SUM(CASE WHEN s.statusz = "NYITOTT" THEN 1 ELSE 0 END) AS nyitott_db,
                 SUM(s.osszeg) AS osszes
            FROM kimeno_szamlak s' . RESZT_KIMENO_JOIN . 'WHERE s.ceg_id = ? GROUP BY s.penznem',
         [$cegId]
     );
-    $tartozas = ['HUF' => ['nyitott' => 0.0, 'fizetve' => 0.0, 'reszt' => 0.0, 'osszes' => 0.0, 'nyitott_db' => 0], 'EUR' => ['nyitott' => 0.0, 'fizetve' => 0.0, 'reszt' => 0.0, 'osszes' => 0.0, 'nyitott_db' => 0]];
+    $ures = ['nyitott' => 0.0, 'fizetve' => 0.0, 'reszt' => 0.0, 'beszamitasra_adva' => 0.0, 'osszes' => 0.0, 'nyitott_db' => 0];
+    $tartozas = ['HUF' => $ures, 'EUR' => $ures];
     foreach ($ossz as $o) {
-        $tartozas[$o['penznem']] = ['nyitott' => (float)$o['nyitott'], 'fizetve' => (float)$o['fizetve'], 'reszt' => (float)$o['reszt'], 'osszes' => (float)$o['osszes'], 'nyitott_db' => (int)$o['nyitott_db']];
+        $tartozas[$o['penznem']] = ['nyitott' => (float)$o['nyitott'], 'fizetve' => (float)$o['fizetve'], 'reszt' => (float)$o['reszt'], 'beszamitasra_adva' => (float)$o['beszamitasra_adva'], 'osszes' => (float)$o['osszes'], 'nyitott_db' => (int)$o['nyitott_db']];
     }
     naplo('KIMENO_SZAMLAK', "cég #{$cegId} ({$ceg['nev']}) kimenő számlái megtekintve");
     return ['ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']], 'szamlak' => $sorok, 'tartozas' => $tartozas];

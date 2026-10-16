@@ -147,23 +147,25 @@
   /** Nyitott (még rendezetlen) számla? – bejövő FIZETENDŐ / UTALÁSHOZ ADVA, kimenő NYITOTT */
   const nyitottSzamla = (s) => s.statusz === 'FIZETENDO' || s.statusz === 'UTALASHOZ_ADVA' || s.statusz === 'NYITOTT';
   /** A számla FŐÉRTÉKE: nyitott számlánál a hátralék (összeg − részteljesítések), különben az összeg */
-  const foErtek = (s) => (Number(s.reszt) > 0 && nyitottSzamla(s) ? Number(s.hatralek) : Number(s.osszeg));
+  const foErtek = (s) => ((Number(s.reszt) > 0 || Number(s.fuggo) > 0) && nyitottSzamla(s) ? Number(s.hatralek) : Number(s.osszeg));   // 1.27: a nyitott utalásokban lévő részek nélkül (még szabad rész)
   /** Részteljesítés-sor a kártyákon: eredeti összeg + a részfizetések felsorolása */
   function resztSor(s) {
-    if (!(Number(s.reszt) > 0)) return '';
+    const reszt = Number(s.reszt) || 0, fuggo = Number(s.fuggo) || 0;
+    if (!(reszt > 0 || fuggo > 0 || Number(s.reszt_db) > 0)) return '';
     const ny = nyitottSzamla(s);
     const lista = (s.reszteljesitesek || []).map((r) => {
+      if (r.fuggo) {
+        // függő rész (1.27): nyitott utalásban van, még nem utalták – a csip az utalásra mutat
+        return `<a class="reszt-csip fuggo" href="#/utalas/${r.utalas_id || ''}" title="Utalás alatt – az utalás megnyitása">${fmtOsszeg(r.osszeg, s.penznem)} · utalás alatt${r.utalas_uid ? ` · ${esc(r.utalas_uid)}` : ''}</a>`;
+      }
       const t = `${fmtOsszeg(r.osszeg, s.penznem)} · ${fmtDatum(r.datum)}${r.banki_azonosito ? ` · ${esc(r.banki_azonosito)}` : ''}`;
-      // részösszeg az utaláshoz (1.26): az utalás teljesítéséből jött részteljesítés – a csip az utalásra mutat
+      // részösszeg az utalásból: a csip az utalásra mutat
       return r.utalas_id ? `<a class="reszt-csip" href="#/utalas/${r.utalas_id}" title="Részösszeg az utalásból – az utalás megnyitása">${t}</a>` : `<span class="reszt-csip" title="Részteljesítés">${t}</span>`;
     }).join('');
-    return `<div class="alsor reszt-sor"><span class="reszt-cim">${ny ? `Eredeti összeg: <b>${fmtOsszeg(s.osszeg, s.penznem)}</b> · részteljesítés: <b>−${fmtOsszeg(s.reszt, s.penznem)}</b> (${s.reszt_db} db)` : `Ebből részteljesítés: <b>${fmtOsszeg(s.reszt, s.penznem)}</b> (${s.reszt_db} db)`}</span>${lista}</div>`;
-  }
-  /** Részösszeg az utaláshoz (1.26) a bejövő kártyán: az utalásban csak a részösszeg van, a többi FIZETENDŐ marad */
-  function reszosszegSor(s) {
-    if (s.statusz !== 'UTALASHOZ_ADVA' || s.utalas_osszeg == null) return '';
-    const marad = Math.round((Number(s.hatralek) - Number(s.utalas_osszeg)) * 100) / 100;
-    return `<div class="alsor reszosszeg-sor"><span>${badge('RESZOSSZEG')} az utalásban <b>${fmtOsszeg(s.utalas_osszeg, s.penznem)}</b> · a többi <b>${fmtOsszeg(marad, s.penznem)}</b> FIZETENDŐ marad <small class="szurke">(teljesítéskor részteljesítés lesz)</small></span></div>`;
+    const fej = ny
+      ? `Eredeti összeg: <b>${fmtOsszeg(s.osszeg, s.penznem)}</b>${reszt > 0 ? ` · részteljesítés: <b>−${fmtOsszeg(reszt, s.penznem)}</b>` : ''}${fuggo > 0 ? ` · utalás alatt: <b>−${fmtOsszeg(fuggo, s.penznem)}</b>` : ''}`
+      : `Ebből részteljesítés: <b>${fmtOsszeg(reszt, s.penznem)}</b> (${s.reszt_db} db)${fuggo > 0 ? ` · utalás alatt: <b>${fmtOsszeg(fuggo, s.penznem)}</b>` : ''}`;
+    return `<div class="alsor reszt-sor"><span class="reszt-cim">${fej}</span>${lista}</div>`;
   }
   /** Kártya alja középen: ki hozta létre és ki módosította utoljára (percre pontosan) */
   function modositoSor(r) {
@@ -853,9 +855,9 @@
       if (!b) return;
       b.disabled = true;
       try {
-        const r = await api('utalas_szamla_eltavolit', { szamla_id: Number(b.dataset.ukKi) });
+        const r = await api('utalas_szamla_eltavolit', { szamla_id: Number(b.dataset.ukKi), utalas_id: a.id });
         valtozott = true;
-        toast(`${esc(r.kod)} kivéve az utalásból (${esc(r.uid)}) – utalás összege: ${fmtOsszeg(r.osszeg)}`);
+        toast(`${esc(r.kod)}${r.reszosszeg ? ' részösszege' : ''} kivéve az utalásból (${esc(r.uid)}) – utalás összege: ${fmtOsszeg(r.osszeg)}`);
         await rajzol();
       } catch (err) { hibaToast(err); b.disabled = false; }
     });
@@ -1495,22 +1497,22 @@
     const utalasLink = s.utalas_uid ? `<a href="#/utalas/${s.utalas_id}" class="mono kicsi" title="Utalás megnyitása">${esc(s.utalas_uid)}</a>` : '';
     let statusz = '';
     if (s.statusz === 'UTALASHOZ_ADVA') statusz = `<span class="badge UTALASHOZ_ADVA link" title="Utalás: ${esc(s.utalas_uid || '')}" data-act="uid-mutat" data-uid="${esc(s.utalas_uid || '')}" data-utalas="${s.utalas_id || ''}">UTALÁSHOZ ADVA</span>`;
-    else statusz = badge(s.statusz);
+    else statusz = badge(s.statusz) + (s.statusz === 'FIZETENDO' && Number(s.fuggo) > 0 ? ` <span class="badge UTALASHOZ_ADVA" title="A számla egy része nyitott utalás(ok)ban van – a csipek mutatják, melyikben">${Math.abs(Number(s.hatralek)) < 0.005 ? 'EGÉSZE UTALÁS ALATT' : 'RÉSZE UTALÁS ALATT'}</span>` : '');
     const lezart = s.statusz === 'FIZETVE' || s.statusz === 'BESZAMITVA';
+    const reszes = Number(s.reszt) > 0 || Number(s.fuggo) > 0;
     return `<div class="kartya${bejelolt ? ' bejelolt' : ''}" data-szamla-id="${s.id}">
       <div class="fejsor">${jel && jog('ir') ? `<label class="kijelolo ${bejelolt ? 'bejelolt' : ''}" title="Kijelölés kötésbe helyezéshez"><input type="checkbox" data-act="archiv-jelol" data-szamla="${s.id}" ${bejelolt ? 'checked' : ''}>${I.check}</label>` : ''}<div style="min-width:0;flex:1"><div class="cim"><span class="kod">${esc(s.k)}</span> · „${esc(s.szamlaszam)}”</div>
         ${o.kotes ? `<div class="alsor"><span class="mono">${esc(s.kotes_kod)}</span>${s.ceg_nev ? `<span>${esc(s.ceg_nev)}</span>` : ''}</div>` : ''}
         <div class="alsor"><span>Kelt: ${fmtDatum(s.kelt)}</span><span>Telj.: ${fmtDatum(s.teljesites_datum)}</span><span>Határidő: <b>${fmtDatum(s.fizetesi_hatarido)}</b>${!lezart ? ` <span class="badge ${hataridoOszt(s.fizetesi_hatarido)}">${esc(hataridoSzoveg(s.fizetesi_hatarido))}</span>` : ''}</span>${fizetveSzoveg(s, 'Utalva')}</div>
         ${s.beszam || s.regi_k ? `<div class="alsor">${s.beszam ? `<span>BESZÁM: <b>${esc(s.beszam)}</b></span>` : ''}${s.regi_k ? `<span title="Régi rendszerbeli K azonosító">régi K: <b class="mono">${esc(s.regi_k)}</b></span>` : ''}</div>` : ''}
         ${resztSor(s)}
-        ${reszosszegSor(s)}
         ${s.megjegyzes ? `<div class="alsor">${megjSzoveg(s.megjegyzes)}</div>` : ''}</div>
-        <div class="osszeg${negOszt(foErtek(s))}${Number(s.reszt) > 0 && !lezart ? ' hatralek' : ''}">${fmtOsszeg(foErtek(s), s.penznem)}${Number(s.reszt) > 0 && !lezart ? '<small>hátralék</small>' : ''}</div></div>
+        <div class="osszeg${negOszt(foErtek(s))}${reszes && !lezart ? ' hatralek' : ''}">${fmtOsszeg(foErtek(s), s.penznem)}${reszes && !lezart ? `<small>${Number(s.fuggo) > 0 ? 'még szabad' : 'hátralék'}</small>` : ''}</div></div>
       <div class="muveletek">${statusz} ${(lezart || s.statusz === 'UTALASHOZ_ADVA') && utalasLink ? utalasLink : ''}<span class="tolt"></span>
-        ${s.statusz === 'FIZETENDO' && jog('ir') ? `<button class="btn btn-sm" type="button" data-act="utalashoz-szamla" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}">${I.transfer} UTALÁSHOZ</button>` : ''}
-        ${s.statusz === 'FIZETENDO' && jog('ir') && foErtek(s) > 0 ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalashoz-resz" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}" title="Csak egy részösszeg utaláshoz adása – a többi FIZETENDŐ marad">${I.transfer} Részösszeg</button>` : ''}
-        ${s.statusz === 'UTALASHOZ_ADVA' && jog('ir') ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalasbol-ki" data-szamla="${s.id}">${I.x} Ki az utalásból</button>` : ''}
-        ${s.statusz === 'UTALASHOZ_ADVA' && jog('ir') && s.utalas_statusz === 'NYITOTT' && !s.utalas_lezarva && foErtek(s) > 0 ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalas-reszosszeg" data-szamla="${s.id}" title="Mennyi menjen a számlából az utalásba (részösszeg)">${I.edit} Részösszeg${s.utalas_osszeg != null ? `: ${fmtOsszeg(s.utalas_osszeg, s.penznem)}` : ''}</button>` : ''}
+        ${s.statusz === 'FIZETENDO' && jog('ir') && Math.abs(foErtek(s)) > 0.005 ? `<button class="btn btn-sm" type="button" data-act="utalashoz-szamla" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}" title="${Number(s.fuggo) > 0 ? 'A még szabad rész egészben utaláshoz' : 'A számla utaláshoz adása'}">${I.transfer} UTALÁSHOZ</button>` : ''}
+        ${s.statusz === 'FIZETENDO' && jog('ir') && foErtek(s) > 0 ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalashoz-resz" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}" title="Csak egy részösszeg utaláshoz adása – a többi szabad marad, bármikor másik utalásba mehet">${I.transfer} Részösszeg</button>` : ''}
+        ${s.statusz === 'UTALASHOZ_ADVA' && jog('ir') ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalasbol-ki" data-szamla="${s.id}" data-utalas="${s.utalas_id || ''}">${I.x} Ki az utalásból</button>` : ''}
+        ${s.statusz === 'UTALASHOZ_ADVA' && jog('ir') && s.utalas_statusz === 'NYITOTT' && !s.utalas_lezarva && foErtek(s) > 0 ? `<button class="btn btn-outline btn-sm" type="button" data-act="utalas-reszosszeg" data-szamla="${s.id}" data-utalas="${s.utalas_id || ''}" title="Csak egy részösszeg maradjon ebben az utalásban – a többi szabad lesz">${I.edit} Részösszeg…</button>` : ''}
         <span class="gombcsoport">${naploGomb('BEJOVO', s.id, `${s.kod} · „${s.szamlaszam}”`)}
         <button class="btn btn-outline btn-sm btn-ikon" type="button" data-act="bejovo-szerk" data-szamla="${s.id}" title="${jog('ir') ? 'Szerkesztés' : 'BESZÁM / megjegyzés'}" aria-label="${jog('ir') ? 'Szerkesztés' : 'BESZÁM / megjegyzés'}">${I.edit}</button>
         ${s.statusz === 'FIZETENDO' && jog('torol') ? `<button class="btn btn-outline piros btn-sm btn-ikon" type="button" data-act="bejovo-torol" data-szamla="${s.id}" data-kod="${esc(s.kod)}" title="Törlés" aria-label="Törlés">${I.trash}</button>` : ''}
@@ -1714,14 +1716,14 @@
         <div style="min-width:0;flex:1"><div class="cim"><span class="kod">${esc(s.kod)}</span> · „${esc(s.szamlaszam)}”</div>
           <div class="alsor"><span>Kelt: ${fmtDatum(s.kelt)}</span><span>Telj.: ${fmtDatum(s.teljesites_datum)}</span><span>Határidő: <b>${fmtDatum(s.fizetesi_hatarido)}</b>${nyitott ? ` <span class="badge ${hataridoOszt(s.fizetesi_hatarido)}">${esc(hataridoSzoveg(s.fizetesi_hatarido))}</span>` : ''}</span></div>
           ${!nyitott ? `<div class="alsor">${fizetveSzoveg(s, 'Fizetve')}${beszamitva ? `<span>beszámítva az utalásba: ${utalasUidLink(s.beszamitva_uid)}</span>` : `<span>bank: <b>${esc(s.banki_azonosito || '')}</b></span>`}</div>` : ''}
-          ${fuggo ? `<div class="alsor beszamitas-sor"><span>${badge('BESZAMITASRA_ADVA')} <a class="mono" href="#/utalas/${s.beszamitas_utalas_id}">${esc(s.beszamitas_uid)}</a> · levonva <b>${fmtOsszeg(s.beszamitas_osszeg, s.penznem)}</b>${Number(s.beszamitas_osszeg) < Number(s.hatralek) - 0.005 ? ` · részbeszámítás, nyitva marad <b>${fmtOsszeg(Number(s.hatralek) - Number(s.beszamitas_osszeg), s.penznem)}</b>` : ''}</span></div>` : ''}
+          ${fuggo ? `<div class="alsor beszamitas-sor"><span>${badge('BESZAMITASRA_ADVA')} ${utalasUidLink(s.beszamitas_uid)} · levonva <b>${fmtOsszeg(s.beszamitas_osszeg, s.penznem)}</b>${Number(s.hatralek) > 0.005 ? ` · részbeszámítás, nyitva marad <b>${fmtOsszeg(s.hatralek, s.penznem)}</b>` : ''}</span></div>` : ''}
           ${resztSor(s)}
           ${s.megjegyzes ? `<div class="alsor">${megjSzoveg(s.megjegyzes)}</div>` : ''}</div>
-        <div class="osszeg${negOszt(foErtek(s))}${Number(s.reszt) > 0 && nyitott ? ' hatralek' : ''}">${fmtOsszeg(foErtek(s), s.penznem)}${Number(s.reszt) > 0 && nyitott ? '<small>hátralék</small>' : ''}</div></div>
+        <div class="osszeg${negOszt(foErtek(s))}${(Number(s.reszt) > 0 || Number(s.fuggo) > 0) && nyitott ? ' hatralek' : ''}">${fmtOsszeg(foErtek(s), s.penznem)}${(Number(s.reszt) > 0 || Number(s.fuggo) > 0) && nyitott ? `<small>${Number(s.fuggo) > 0 ? 'még szabad' : 'hátralék'}</small>` : ''}</div></div>
       <div class="muveletek">${badge(s.statusz)}<span class="tolt"></span>
         ${jel ? `<button class="btn btn-outline btn-sm" type="button" data-act="kimeno-jelol-gomb" data-szamla="${s.id}">${bejelolt ? I.x + ' Kijelölés törlése' : I.bank + ' Bankazonosítóhoz'}</button>` : ''}
-        ${nyitott && !fuggo && jog('ir') && foErtek(s) > 0 ? `<button class="btn btn-outline narancs btn-sm" type="button" data-act="beszamitas-utalasba" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}" title="A számla összegének (vagy egy részének) levonása a cég bejövő számláinak utalásából">${I.transfer} Beszámítás utalásba</button>` : ''}
-        ${fuggo && jog('ir') ? `<button class="btn btn-outline piros btn-sm" type="button" data-act="beszamitas-ki" data-szamla="${s.id}" data-kod="${esc(s.kod)}" title="A beszámítás kivétele az utalásból – a számla nyitott marad">${I.x} Beszámítás kivétele</button>` : ''}
+        ${nyitott && jog('ir') && foErtek(s) > 0 ? `<button class="btn btn-outline narancs btn-sm" type="button" data-act="beszamitas-utalasba" data-szamla="${s.id}" data-ceg="${s.ceg_id}" data-penznem="${s.penznem}" title="A számla még szabad részének (vagy egy részének) levonása a cég bejövő számláinak egy utalásából${fuggo ? ' – egy másik utalásba is' : ''}">${I.transfer} Beszámítás utalásba</button>` : ''}
+        ${fuggo && jog('ir') ? String(s.beszamitas_uid).split(', ').map((uid) => `<button class="btn btn-outline piros btn-sm" type="button" data-act="beszamitas-ki" data-szamla="${s.id}" data-kod="${esc(s.kod)}" data-uid="${esc(uid)}" title="A beszámítás kivétele az utalásból – a számla nyitott marad">${I.x} Beszámítás kivétele${String(s.beszamitas_uid).includes(', ') ? ` (${esc(uid)})` : ''}</button>`).join('') : ''}
         ${!nyitott && jog('torol') && !beszamitva ? `<button class="btn btn-outline btn-sm" type="button" data-act="kimeno-visszavon" data-szamla="${s.id}" data-kod="${esc(s.kod)}">Fizetés visszavonása</button>` : ''}
         <span class="gombcsoport">${naploGomb('KIMENO', s.id, `${s.kod} · „${s.szamlaszam}”`)}
         <button class="btn btn-outline btn-sm btn-ikon" type="button" data-act="kimeno-szerk" data-szamla="${s.id}" title="${jog('ir') ? 'Szerkesztés' : 'Megjegyzés'}" aria-label="${jog('ir') ? 'Szerkesztés' : 'Megjegyzés'}">${I.edit}</button>
@@ -1752,7 +1754,7 @@
       const lista = d.szamlak.filter((s) => ful === 'MIND' || s.statusz === ful);
       const t = d.tartozas;
       main.innerHTML = `<h1>${esc(d.ceg.nev)} <small>· kimenő számlák</small></h1>
-        ${av ? cegEgyenlegDoboz(av.egyenleg, ful, av, 'A cég egyenlege') : `<div class="kartya"><div class="fejsor"><div><div class="cim">Ennyivel tartozik nekem</div><div class="alsor"><span>${t.EUR.nyitott_db + t.HUF.nyitott_db} nyitott számla</span><span>fizetve: ${fmtOsszeg(t.EUR.fizetve, 'EUR')} · ${fmtOsszeg(t.HUF.fizetve, 'HUF')}</span>${t.EUR.reszt > 0 || t.HUF.reszt > 0 ? `<span title="A nyitott számlákra érkezett részteljesítések">ebből részteljesítés: ${[t.EUR.reszt > 0 ? fmtOsszeg(t.EUR.reszt, 'EUR') : '', t.HUF.reszt > 0 ? fmtOsszeg(t.HUF.reszt, 'HUF') : ''].filter(Boolean).join(' · ')}</span>` : ''}</div></div>
+        ${av ? cegEgyenlegDoboz(av.egyenleg, ful, av, 'A cég egyenlege') : `<div class="kartya"><div class="fejsor"><div><div class="cim">Ennyivel tartozik nekem</div><div class="alsor"><span>${t.EUR.nyitott_db + t.HUF.nyitott_db} nyitott számla</span><span>fizetve: ${fmtOsszeg(t.EUR.fizetve, 'EUR')} · ${fmtOsszeg(t.HUF.fizetve, 'HUF')}</span>${t.EUR.reszt > 0 || t.HUF.reszt > 0 ? `<span title="A nyitott számlákra érkezett részteljesítések">ebből részteljesítés: ${[t.EUR.reszt > 0 ? fmtOsszeg(t.EUR.reszt, 'EUR') : '', t.HUF.reszt > 0 ? fmtOsszeg(t.HUF.reszt, 'HUF') : ''].filter(Boolean).join(' · ')}</span>` : ''}${(t.EUR.beszamitasra_adva || 0) > 0 || (t.HUF.beszamitasra_adva || 0) > 0 ? `<span title="Nyitott utalásokban beszámításra adva – a számlák kártyáján a még szabad rész látszik">beszámításra adva: ${[(t.EUR.beszamitasra_adva || 0) > 0 ? fmtOsszeg(t.EUR.beszamitasra_adva, 'EUR') : '', (t.HUF.beszamitasra_adva || 0) > 0 ? fmtOsszeg(t.HUF.beszamitasra_adva, 'HUF') : ''].filter(Boolean).join(' · ')}</span>` : ''}</div></div>
           <div class="osszeg"><div>${fmtOsszeg(t.EUR.nyitott, 'EUR')}</div><div>${fmtOsszeg(t.HUF.nyitott, 'HUF')}</div></div></div></div>`}
         <div class="fulek fulek-egyenleg" style="--n:3;--i:${['NYITOTT', 'FIZETVE', 'MIND'].indexOf(ful)}">${['NYITOTT', 'FIZETVE', 'MIND'].map((f) => `<button type="button" data-act="kimeno-ful" data-ful="${f}" class="${ful === f ? 'aktiv' : ''}">${f === 'MIND' ? 'MIND <small>(egyenleg készítés)</small>' : STATUSZ[f]}</button>`).join('')}</div>
         ${ful === 'MIND' && !av ? `<div class="info-doboz egyenleg-info">${I.print}<span><b>Egyenleg készítése a partnernek:</b> szűrd az időszakot, nyomd meg a <b>Mind a kosárba – egyenleg</b> gombot, majd a jobb alsó nyomtató gombot. A PDF-ben a számlák alatt egy <b>EGYENLEG</b> táblázat mutatja: összes pénzforgalom · fizetett / beszámított · nyitott (még fizetendő). Egy korábbi nap egyenlegéhez válaszd a Dátum mezőben az <b>Állapot vizsgálat</b>-ot.</span></div>` : ''}
@@ -1936,7 +1938,8 @@
     main = main || $('main');
     const sz = App.hataridoSzuro;
     let t = hataridoAdat.tetelek;
-    if (!sz.utalasAlatt) t = t.filter((x) => x.statusz !== 'UTALASHOZ_ADVA' && !(x.irany === 'KI' && x.utalas_uid));   // beszámításra adott kimenő is „utalás alatt”
+    // beszámításra adott kimenő, és a részenként teljesen utalás alatt lévő bejövő is „utalás alatt”
+    if (!sz.utalasAlatt) t = t.filter((x) => x.statusz !== 'UTALASHOZ_ADVA' && !(x.irany === 'KI' && x.utalas_uid) && !(x.irany === 'BE' && Number(x.fuggo) > 0 && Math.abs(Number(x.hatralek)) < 0.005));
     if (sz.irany !== 'MIND') t = t.filter((x) => x.irany === sz.irany);
     if (sz.penznem) t = t.filter((x) => x.penznem === sz.penznem);
     if (sz.ceg) t = t.filter((x) => x.ceg_id === sz.ceg);
@@ -1956,7 +1959,7 @@
         return `<div class="hatarido-sor ${hataridoOszt(x.hatarido)}">
           <div class="c-hat">${datumChip(x.hatarido)}<span class="datum-szoveg">${fmtDatum(x.hatarido)}<br>${esc(hataridoSzoveg(x.hatarido))}</span></div>
           <div class="c-ceg"><span class="kattint" data-act="hat-ceg" data-id="${x.ceg_id}" data-nev="${esc(x.ceg_nev)}" title="Szűrés erre a cégre">${esc(x.ceg_nev)}</span></div>
-          <div class="c-szsz"><a href="${link}?szamla=${x.szamla_id}" title="Ugrás a számlához">„${esc(x.szamlaszam)}”</a>${x.statusz === 'UTALASHOZ_ADVA' ? ' ' + badge('UTALASHOZ_ADVA') : (x.irany === 'KI' && x.utalas_uid ? ' ' + badge('BESZAMITASRA_ADVA') : '')}${x.utalas_osszeg != null ? ` <span class="kicsi szurke" title="Részösszeg az utalásban – a többi FIZETENDŐ marad">részösszeg ${fmtOsszeg(x.utalas_osszeg, x.penznem)}</span>` : ''}</div>
+          <div class="c-szsz"><a href="${link}?szamla=${x.szamla_id}" title="Ugrás a számlához">„${esc(x.szamlaszam)}”</a>${x.statusz === 'UTALASHOZ_ADVA' ? ' ' + badge('UTALASHOZ_ADVA') : (x.irany === 'KI' && x.utalas_uid ? ' ' + badge('BESZAMITASRA_ADVA') : '')}${x.irany === 'BE' && Number(x.fuggo) > 0 ? ` <span class="kicsi szurke" title="A számla egy része nyitott utalás(ok)ban van – az összeg a még szabad rész">utalás alatt ${fmtOsszeg(x.fuggo, x.penznem)}${x.fuggo_uid ? ` (${esc(x.fuggo_uid)})` : ''}</span>` : ''}</div>
           <div class="c-osszeg${negOszt(foErtek(x))}">${fmtOsszeg(foErtek(x))} <span class="kattint" data-act="hat-penznem" data-v="${x.penznem}" title="Szűrés erre a pénznemre">${x.penznem}</span>${Number(x.reszt) > 0 ? `<small class="hatralek-jel" title="Eredeti összeg ${fmtOsszeg(x.osszeg, x.penznem)}, részteljesítés ${fmtOsszeg(x.reszt, x.penznem)}">hátralék (eredeti ${fmtOsszeg(x.osszeg)})</small>` : ''}</div>
           <div class="c-penznem"><span class="badge ${x.penznem} link" data-act="hat-penznem" data-v="${x.penznem}" title="Szűrés erre a pénznemre">${x.penznem}</span></div>
           <div class="c-id">${x.irany === 'BE' ? `<span><a href="${link}" title="Ugrás a kötéshez">${esc(x.kotes_kod)}</a><a href="${link}?szamla=${x.szamla_id}" title="Ugrás a számlához">-${esc(x.kod.slice(-5))}</a></span>` : `<a href="${link}?szamla=${x.szamla_id}">${esc(x.kod)}</a>`}<span class="badge ${x.irany}">${x.irany === 'BE' ? 'BEJÖVŐ' : 'KIMENŐ'}</span></div>
@@ -2997,7 +3000,7 @@
    */
   function resztSzakasz(irany, szamla) {
     // bejövő számlánál csak akkor, ha az admin bekapcsolta (alapból ki) – a már felvezetett részteljesítések ettől még látszanak
-    if (irany === 'BEJOVO' && !resztBejovo() && !(Number(szamla.reszt) > 0)) return '';
+    if (irany === 'BEJOVO' && !resztBejovo() && !(Number(szamla.reszt_db) > 0)) return '';
     const nyitott = (irany === 'BEJOVO' ? szamla.statusz === 'FIZETENDO' : szamla.statusz === 'NYITOTT') && jog('ir') && (irany !== 'BEJOVO' || resztBejovo());
     return `<div class="reszt-szakasz" data-reszt data-irany="${irany}" data-szamla="${szamla.id}">
       <div class="reszt-fej"><div><b>Részteljesítések</b> <span class="szurke kicsi" data-reszt-info></span></div>
@@ -3023,9 +3026,11 @@
     let lista = szamla.reszteljesitesek || [];
     let reszt = Number(szamla.reszt) || 0;
     const rajzol = () => {
-      const hatralek = Math.round((Number(szamla.osszeg) - reszt) * 100) / 100;
-      $('[data-reszt-info]', doboz).innerHTML = lista.length ? `${lista.length} db · összesen <b>${fmtOsszeg(reszt, pn)}</b> · <b class="narancs-szoveg">hátralék: ${fmtOsszeg(hatralek, pn)}</b>` : (nyitott ? 'még nincs – a + gombbal vezethetsz fel' : 'nincs');
-      $('[data-reszt-lista]', doboz).innerHTML = lista.map((r) => `<div class="reszt-tetel"><span class="datum">${fmtDatum(r.datum)}</span><span class="o">${fmtOsszeg(r.osszeg, pn)}</span><span class="bank">${r.banki_azonosito ? esc(r.banki_azonosito) : '<span class="szurke">– nincs banki azonosító –</span>'}</span>${torolhet ? `<button type="button" class="btn btn-outline piros btn-sm btn-ikon" data-reszt-torol="${r.id}" title="Részteljesítés törlése" aria-label="Részteljesítés törlése">${I.trash}</button>` : ''}</div>`).join('');
+      // függő részek (1.27): nyitott utalásban vannak – nem törölhetők innen (az utalás oldalán vehetők ki), a még szabad részbe nem számítanak
+      const fuggo = Math.round(lista.filter((r) => r.fuggo).reduce((o, r) => o + Number(r.osszeg), 0) * 100) / 100;
+      const hatralek = Math.round((Number(szamla.osszeg) - reszt - fuggo) * 100) / 100;
+      $('[data-reszt-info]', doboz).innerHTML = lista.length ? `${lista.length} db · utalva <b>${fmtOsszeg(reszt, pn)}</b>${fuggo > 0 ? ` · utalás alatt <b>${fmtOsszeg(fuggo, pn)}</b>` : ''} · <b class="narancs-szoveg">még szabad: ${fmtOsszeg(hatralek, pn)}</b>` : (nyitott ? 'még nincs – a + gombbal vezethetsz fel' : 'nincs');
+      $('[data-reszt-lista]', doboz).innerHTML = lista.map((r) => `<div class="reszt-tetel"><span class="datum">${r.fuggo ? '<span class="szurke">utalás alatt</span>' : fmtDatum(r.datum)}</span><span class="o">${fmtOsszeg(r.osszeg, pn)}</span><span class="bank">${r.banki_azonosito ? esc(r.banki_azonosito) : (r.utalas_uid ? `<a href="#/utalas/${r.utalas_id}">${esc(r.utalas_uid)}</a>` : '<span class="szurke">– nincs banki azonosító –</span>')}</span>${torolhet && !r.utalas_id ? `<button type="button" class="btn btn-outline piros btn-sm btn-ikon" data-reszt-torol="${r.id}" title="Részteljesítés törlése" aria-label="Részteljesítés törlése">${I.trash}</button>` : ''}</div>`).join('');
     };
     rajzol();
     const urlap = $('[data-reszt-urlap]', doboz);
@@ -3153,7 +3158,9 @@
   }
   async function utalashozAdvaPopup(r, db, cim) {
     // részösszeg (1.26): a számlából csak ennyi megy az utalásba, a többi FIZETENDŐ marad
-    const resz = r.reszosszeg ? `<div class="kis">részösszeg: <b>${fmtOsszeg(r.szamla_osszeg, r.penznem)}</b> a számla ${fmtOsszeg(r.hatralek, r.penznem)} hátralékából<br>a többi <b>${fmtOsszeg(r.marad, r.penznem)}</b> FIZETENDŐ marad – teljesítéskor részteljesítés lesz</div>` : '';
+    const resz = r.reszosszeg
+      ? `<div class="kis">részösszeg: <b>${fmtOsszeg(r.szamla_osszeg, r.penznem)}</b><br>a számlából még szabad: <b>${fmtOsszeg(r.marad, r.penznem)}</b>${Number(r.mas_utalas) > 0 ? ` · más utalásban: ${fmtOsszeg(r.mas_utalas, r.penznem)}` : ''}<br><small>a számla FIZETENDŐ marad; a szabad rész bármikor másik utalásba mehet</small></div>`
+      : (Number(r.mas_utalas) > 0 ? `<div class="kis">a maradék egészben (${fmtOsszeg(r.szamla_osszeg, r.penznem)}) · a számla más része más utalásban: ${fmtOsszeg(r.mas_utalas, r.penznem)}</div>` : '');
     await uzenetModal(`<div class="fo">${cim || 'UTALÁSHOZ ADVA!'}</div>${db ? `<div class="kis">${db} számla hozzáadva</div>` : ''}${resz}<div class="kis" style="margin-top:8px">UTALÁS ÖSSZEGE EDDIG:</div><div class="osszeg-nagy${negOszt(r.osszeg)}" data-countup="${r.osszeg}" data-penznem="${esc(r.penznem)}">${fmtOsszeg(r.osszeg, r.penznem)}</div><div class="kis"><a href="#/utalas/${r.utalas_id || ''}" data-act="nav" data-href="#/utalas/${r.utalas_id || ''}">${esc(r.uid)}</a></div>`, { pipa: true });
   }
   /**
@@ -3165,37 +3172,46 @@
   async function reszosszegModal(utalasId, s, o) {
     o = o || {};
     const pn = s.penznem;
-    const hatralek = Math.round(Number(s.hatralek != null ? s.hatralek : s.osszeg) * 100) / 100;
-    const akt = o.modosit && s.utalas_osszeg != null ? Number(s.utalas_osszeg) : hatralek;
-    const u = (await api('utalas', { id: utalasId })).utalas;
+    const d = await api('utalas', { id: utalasId });
+    const u = d.utalas;
+    // a számla tétele ebben az utalásban (ha már benne van): egészben a maradék, vagy a függő részösszeg
+    let tetel = null;
+    d.kotesek.forEach((k) => k.szamlak.forEach((x) => { if (x.id === s.id && (!x.reszosszeg || x.fuggo_sor)) tetel = x; }));
+    const szabad = Math.round(Number(s.hatralek != null ? s.hatralek : s.osszeg) * 100) / 100;   // a számlából még szabad rész (a nyitott utalásokban lévő részek nélkül)
+    const sajat = tetel ? Number(tetel.tetel_osszeg) : 0;
+    const max = Math.round((szabad + sajat) * 100) / 100;
+    const akt = o.modosit && tetel ? sajat : max;
+    const masUtalas = Math.max(0, Math.round((Number(s.fuggo || 0) - (tetel && tetel.reszosszeg ? sajat : 0)) * 100) / 100);
     formModal(`Részösszeg az utaláshoz – ${esc(s.k || s.kod)}`, `
-      <div class="info-doboz">A számla (<b>„${esc(s.szamlaszam)}”</b>) hátraléka <b>${fmtOsszeg(hatralek, pn)}</b>. Írd be, <b>mennyit utalsz belőle most</b> (<span class="mono">${esc(u.uid)}</span>): a különbség <b>FIZETENDŐ marad</b>, és az utalás teljesítésekor a számlán <b>részteljesítésként</b> jelenik meg. Ha a teljes hátralékot hagyod, az egész számla megy az utalásba.</div>
-      ${inp('osszeg', `Ebből most utalt összeg (${esc(pn)})`, { ertek: akt.toFixed(2).replace('.', ','), kotelezo: true, inputmode: 'decimal', segit: `Legfeljebb a hátralék: <b>${fmtOsszeg(hatralek, pn)}</b> – ennél kevesebb a részösszeg.` })}`,
+      <div class="info-doboz">A számla (<b>„${esc(s.szamlaszam)}”</b>, ${fmtOsszeg(s.osszeg, pn)})${tetel ? ` ebben az utalásban (<span class="mono">${esc(u.uid)}</span>) most: <b>${fmtOsszeg(sajat, pn)}</b>${tetel.reszosszeg ? '' : ' (egészben)'}.` : ''} Még szabad része: <b>${fmtOsszeg(szabad, pn)}</b>${masUtalas > 0 ? `, más utalásban: <b>${fmtOsszeg(masUtalas, pn)}</b>` : ''}. Írd be, <b>mennyi legyen ebben az utalásban</b>${tetel ? '' : ` (<span class="mono">${esc(u.uid)}</span>)`}: a többi szabad marad, és bármikor másik utalásba mehet. Ha a teljes szabad részt írod, az egész maradék ide kerül.</div>
+      ${inp('osszeg', `Ebben az utalásban (${esc(pn)})`, { ertek: akt.toFixed(2).replace('.', ','), kotelezo: true, inputmode: 'decimal', segit: `Legfeljebb: <b>${fmtOsszeg(max, pn)}</b> – ennél kevesebb a részösszeg.` })}`,
       async (a, f, m) => {
         const r = o.modosit
-          ? await api('utalas_szamla_osszeg', { szamla_id: s.id, osszeg: a.osszeg })
+          ? await api('utalas_szamla_osszeg', { szamla_id: s.id, utalas_id: utalasId, osszeg: a.osszeg })
           : await api('utalas_szamla_hozzaad', { utalas_id: utalasId, szamla_id: s.id, osszeg: a.osszeg });
         r.utalas_id = utalasId; UtalasKosar.set({ id: utalasId, uid: r.uid, penznem: r.penznem, osszeg: r.osszeg, db: r.utalas_db });
         m.bezar();
-        await utalashozAdvaPopup(r, 0, o.modosit ? (r.reszosszeg ? 'RÉSZÖSSZEG MÓDOSÍTVA' : 'A TELJES SZÁMLA AZ UTALÁSBAN') : (r.reszosszeg ? 'RÉSZÖSSZEG UTALÁSHOZ ADVA!' : 'UTALÁSHOZ ADVA!'));
+        await utalashozAdvaPopup(r, 0, o.modosit ? (r.reszosszeg ? 'RÉSZÖSSZEG MÓDOSÍTVA' : 'A TELJES MARADÉK AZ UTALÁSBAN') : (r.reszosszeg ? 'RÉSZÖSSZEG UTALÁSHOZ ADVA!' : 'UTALÁSHOZ ADVA!'));
         if (o.utana) await o.utana(); else render();
       }, { ok: o.modosit ? 'Mentés' : 'Utaláshoz adás', okOsztaly: 'btn-zold' });
   }
   /** Egy bejövő tétel sora az utalás oldalán és a gyűjtő ablakban (1.26: a részösszeg jelölésével és módosító gombjával) */
   function utalasTetelSor(s, k, u, o) {
     const nyitott = u.statusz === 'NYITOTT';
+    const pn = u.penznem;
+    const masik = Number(s.mas_fuggo) > 0.005 ? ` · más utalásban ${fmtOsszeg(s.mas_fuggo, pn)}` : '';
     let info = '';
     if (s.reszosszeg) {
-      info = s.reszt_id
-        ? `<span class="kicsi szurke" title="Teljesített részösszeg: a számlán részteljesítés">részteljesítés ${fmtDatum(s.fizetve_datum)} · a számla ${fmtOsszeg(s.osszeg, u.penznem)}, hátralék most ${fmtOsszeg(s.hatralek, u.penznem)}</span>`
-        : `<span class="kicsi szurke" title="Részösszeg: a többi FIZETENDŐ marad">a számla hátraléka ${fmtOsszeg(s.hatralek, u.penznem)} · a többi ${fmtOsszeg(Math.round((Number(s.hatralek) - Number(s.tetel_osszeg)) * 100) / 100, u.penznem)} FIZETENDŐ marad</span>`;
-    } else if (Number(s.reszt) > 0) {
-      info = `<span class="kicsi szurke" title="Részteljesítés után">eredeti ${fmtOsszeg(s.osszeg, u.penznem)} · részt. −${fmtOsszeg(s.reszt, u.penznem)}</span>`;
+      info = s.fuggo_sor
+        ? `<span class="kicsi szurke" title="Részösszeg: a számlából csak ennyi van ebben az utalásban">a számla ${fmtOsszeg(s.osszeg, pn)} · még szabad ${fmtOsszeg(s.hatralek, pn)}${masik}</span>`
+        : `<span class="kicsi szurke" title="Teljesített részösszeg: a számlán részteljesítés">részteljesítés ${fmtDatum(s.fizetve_datum)} · a számla ${fmtOsszeg(s.osszeg, pn)}, még szabad ${fmtOsszeg(s.hatralek, pn)}${masik}</span>`;
+    } else if (Number(s.reszt) > 0 || Number(s.mas_fuggo) > 0.005) {
+      info = `<span class="kicsi szurke" title="A maradék van az utalásban">eredeti ${fmtOsszeg(s.osszeg, pn)}${Number(s.reszt) > 0 ? ` · részt. −${fmtOsszeg(s.reszt, pn)}` : ''}${masik}</span>`;
     }
-    const gombok = o.szerkeszthet && nyitott && !s.reszt_id
-      ? `${Number(s.hatralek) > 0 ? `<button class="btn btn-outline btn-sm btn-ikon" type="button" ${o.kosar ? `data-uk-resz="${s.id}"` : `data-act="utalas-reszosszeg" data-szamla="${s.id}"`} title="Részösszeg: mennyi menjen a számlából az utalásba" aria-label="Részösszeg">${I.edit}</button>` : ''}<button class="btn btn-outline piros btn-sm btn-ikon" type="button" ${o.kosar ? `data-uk-ki="${s.id}" data-kod="${esc(s.kod)}"` : `data-act="utalasbol-ki" data-szamla="${s.id}"`} title="Kivétel az utalásból" aria-label="Kivétel az utalásból">${I.x}</button>`
+    const gombok = o.szerkeszthet && nyitott
+      ? `${Number(s.osszeg) > 0 ? `<button class="btn btn-outline btn-sm btn-ikon" type="button" ${o.kosar ? `data-uk-resz="${s.id}"` : `data-act="utalas-reszosszeg" data-szamla="${s.id}" data-utalas="${u.id}"`} title="Részösszeg: mennyi legyen a számlából ebben az utalásban" aria-label="Részösszeg">${I.edit}</button>` : ''}<button class="btn btn-outline piros btn-sm btn-ikon" type="button" ${o.kosar ? `data-uk-ki="${s.id}" data-kod="${esc(s.kod)}"` : `data-act="utalasbol-ki" data-szamla="${s.id}" data-utalas="${u.id}"`} title="Kivétel az utalásból" aria-label="Kivétel az utalásból">${I.x}</button>`
       : '';
-    return `<div class="szamla-sor"><div class="bal"><a class="k" ${o.link(`#/bejovo/ceg/${u.ceg_id}/kotes/${k.kotes_pk}?szamla=${s.id}`)}>– ${esc(s.k)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${s.reszosszeg ? badge('RESZOSSZEG') + ' ' : ''}${o.kosar && s.statusz === 'UTALASHOZ_ADVA' ? '' : badge(s.statusz)}${o.kosar ? `<span class="kicsi szurke">határidő ${fmtDatum(s.fizetesi_hatarido)}</span>` : ''}${info}</div><span class="o${negOszt(s.tetel_osszeg)}">${fmtOsszeg(s.tetel_osszeg, u.penznem)}</span>${gombok}${o.kosar ? '' : nyomtatGomb('bejovo', s.id, `${k.kotes_kod}-${s.k} · „${s.szamlaszam}”`)}</div>`;
+    return `<div class="szamla-sor"><div class="bal"><a class="k" ${o.link(`#/bejovo/ceg/${u.ceg_id}/kotes/${k.kotes_pk}?szamla=${s.id}`)}>– ${esc(s.k)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${s.reszosszeg ? badge('RESZOSSZEG') + ' ' : ''}${o.kosar ? '' : badge(s.statusz)}${o.kosar ? `<span class="kicsi szurke">határidő ${fmtDatum(s.fizetesi_hatarido)}</span>` : ''}${info}</div><span class="o${negOszt(s.tetel_osszeg)}">${fmtOsszeg(s.tetel_osszeg, pn)}</span>${gombok}${o.kosar ? '' : nyomtatGomb('bejovo', s.id, `${k.kotes_kod}-${s.k} · „${s.szamlaszam}”`)}</div>`;
   }
   function hatarertekModal(cegId) {
     const m = modal({ cim: 'Határértékes utalás', html: `<form data-hf novalidate>
@@ -3307,9 +3323,10 @@
     const nyitott = u.statusz === 'NYITOTT';
     return `<div class="kotes-sor beszamitas-fej"><span class="kod">BESZÁMÍTÁS<small>kimenő számlák levonva az utalásból</small></span><span class="negativ">−${fmtOsszeg(u.beszamitas_osszeg, u.penznem)}</span></div>
       ${lista.map((b) => {
-        const marad = nyitott ? b.hatralek - b.levonva : b.hatralek;
-        const resz = b.reszt > 0 || marad > 0.005;
-        return `<div class="szamla-sor"><div class="bal"><a class="k" ${link(`#/kimeno/ceg/${u.ceg_id}?szamla=${b.id}`)}>– ${esc(b.kod)}</a><span class="szsz">„${esc(b.szamlaszam)}”</span>${badge(b.statusz === 'FIZETVE' ? 'FIZETVE' : (nyitott ? 'BESZAMITASRA_ADVA' : 'NYITOTT'))}${resz ? `<span class="kicsi szurke" title="Részbeszámítás">számla ${fmtOsszeg(b.osszeg, u.penznem)}${b.statusz === 'NYITOTT' && marad > 0.005 ? ` · nyitva ${nyitott ? 'marad' : 'maradt'} ${fmtOsszeg(marad, u.penznem)}` : ''}</span>` : ''}${b.bejovok && b.bejovok.length ? `<span class="kicsi" title="Ezeket a bejövő számlákat rendezi a beszámítás">→ rendezi: ${b.bejovok.map((x) => `<a class="mono" ${link(`#/bejovo/ceg/${u.ceg_id}/kotes/${x.kotes_id}?szamla=${x.id}`)}>${esc(x.k)}</a> „${esc(x.szamlaszam)}” ${fmtOsszeg(x.osszeg, u.penznem)}${x.statusz === 'BESZAMITVA' ? ' ' + badge('BESZAMITVA') : ''}`).join(', ')}</span>` : ''}</div><span class="o negativ">−${fmtOsszeg(b.levonva, u.penznem)}</span>${szerkeszthet && nyitott ? `<button class="btn btn-outline piros btn-sm btn-ikon" type="button" ${kosar ? `data-uk-bz-ki="${b.id}"` : `data-act="beszamitas-ki" data-szamla="${b.id}"`} title="Beszámítás kivétele az utalásból" aria-label="Beszámítás kivétele az utalásból">${I.x}</button>` : ''}${kosar ? '' : nyomtatGomb('kimeno', b.id, `${b.kod} · „${b.szamlaszam}”`)}</div>`;
+        const marad = b.marad != null ? Number(b.marad) : (nyitott ? b.hatralek - b.levonva : b.hatralek);
+        const masik = nyitott ? Math.max(0, Math.round((Number(b.fuggo || 0) - Number(b.levonva)) * 100) / 100) : 0;   // más nyitott utalásban beszámításra adva (1.27)
+        const resz = b.reszt > 0 || marad > 0.005 || masik > 0.005;
+        return `<div class="szamla-sor"><div class="bal"><a class="k" ${link(`#/kimeno/ceg/${u.ceg_id}?szamla=${b.id}`)}>– ${esc(b.kod)}</a><span class="szsz">„${esc(b.szamlaszam)}”</span>${badge(b.statusz === 'FIZETVE' ? 'FIZETVE' : (nyitott ? 'BESZAMITASRA_ADVA' : 'NYITOTT'))}${resz ? `<span class="kicsi szurke" title="Részbeszámítás">számla ${fmtOsszeg(b.osszeg, u.penznem)}${masik > 0.005 ? ` · más utalásban ${fmtOsszeg(masik, u.penznem)}` : ''}${b.statusz === 'NYITOTT' && marad > 0.005 ? ` · nyitva ${nyitott ? 'marad' : 'maradt'} ${fmtOsszeg(marad, u.penznem)}` : ''}</span>` : ''}${b.bejovok && b.bejovok.length ? `<span class="kicsi" title="Ezeket a bejövő számlákat rendezi a beszámítás">→ rendezi: ${b.bejovok.map((x) => `<a class="mono" ${link(`#/bejovo/ceg/${u.ceg_id}/kotes/${x.kotes_id}?szamla=${x.id}`)}>${esc(x.k)}</a> „${esc(x.szamlaszam)}” ${fmtOsszeg(x.osszeg, u.penznem)}${x.statusz === 'BESZAMITVA' ? ' ' + badge('BESZAMITVA') : ''}`).join(', ')}</span>` : ''}</div><span class="o negativ">−${fmtOsszeg(b.levonva, u.penznem)}</span>${szerkeszthet && nyitott ? `<button class="btn btn-outline piros btn-sm btn-ikon" type="button" ${kosar ? `data-uk-bz-ki="${b.id}"` : `data-act="beszamitas-ki" data-szamla="${b.id}"`} title="Beszámítás kivétele az utalásból" aria-label="Beszámítás kivétele az utalásból">${I.x}</button>` : ''}${kosar ? '' : nyomtatGomb('kimeno', b.id, `${b.kod} · „${b.szamlaszam}”`)}</div>`;
       }).join('')}`;
   }
   /** Az utalás összesítő sorai: beszámításnál „Bejövő számlák − Beszámítás = UTALANDÓ”, különben ÖSSZESEN */
@@ -3327,9 +3344,9 @@
     const ajanlott = Math.round(Math.min(hatralek, belefer) * 100) / 100;
     // az utalás bejövő számlái: a felhasználó megjelölheti, melyiket rendezi a beszámítás (nem kötelező)
     const bejovok = [];
-    d.kotesek.forEach((k) => k.szamlak.forEach((b) => { if (b.statusz === 'UTALASHOZ_ADVA' && Number(b.hatralek) > 0) bejovok.push(Object.assign({ kotes_kod: k.kotes_kod }, b)); }));
+    d.kotesek.forEach((k) => k.szamlak.forEach((b) => { if ((b.statusz === 'UTALASHOZ_ADVA' || (b.reszosszeg && b.fuggo_sor)) && Number(b.tetel_osszeg) > 0) bejovok.push(Object.assign({ kotes_kod: k.kotes_kod }, b)); }));
     formModal(`Beszámítás – ${esc(s.kod)} → ${esc(u.uid)}`, `
-      <div class="info-doboz">A kimenő számla (<b>„${esc(s.szamlaszam)}”</b>) hátraléka <b>${fmtOsszeg(hatralek, s.penznem)}</b>. Az utalásban (<b class="mono">${esc(u.uid)}</b>) most <b>${fmtOsszeg(u.osszeg, u.penznem)}</b> van – legfeljebb ennyi vonható le belőle.${belefer <= 0 ? ' <b>Most nincs mit levonni:</b> előbb adj bejövő számlát az utaláshoz.' : (ajanlott < hatralek - 0.005 ? ' A számla <b>többi része nyitva marad</b> (részbeszámítás).' : '')}</div>
+      <div class="info-doboz">A kimenő számla (<b>„${esc(s.szamlaszam)}”</b>) még szabad része <b>${fmtOsszeg(hatralek, s.penznem)}</b>${Number(s.fuggo) > 0 ? ` (más utalásban beszámításra adva: ${fmtOsszeg(s.fuggo, s.penznem)})` : ''}. Az utalásban (<b class="mono">${esc(u.uid)}</b>) most <b>${fmtOsszeg(u.osszeg, u.penznem)}</b> van – legfeljebb ennyi vonható le belőle.${belefer <= 0 ? ' <b>Most nincs mit levonni:</b> előbb adj bejövő számlát az utaláshoz.' : (ajanlott < hatralek - 0.005 ? ' A számla <b>többi része nyitva marad</b> (részbeszámítás).' : '')}</div>
       ${inp('osszeg', `Beszámított összeg (${esc(s.penznem)})`, { ertek: ajanlott.toFixed(2).replace('.', ','), kotelezo: true, inputmode: 'decimal', segit: `Alapból a legtöbb, ami belefér: <b>${fmtOsszeg(ajanlott, s.penznem)}</b>. Írj kevesebbet, ha csak egy részét számítod be.` })}
       ${bejovok.length ? `<div class="mezo"><label>Melyik bejövő számlá(ka)t rendezi a beszámítás? <small>(nem kötelező – pipáld ki, ha meg akarod jelölni)</small></label>
         <div class="valaszto-lista" data-bejovo-lista>
@@ -3349,8 +3366,9 @@
   async function utalasKimenoValaszto(utalasId, cegId, penznem) {
     const m = modal({ cim: `NYITOTT ${esc(penznem)} kimenő számlák – beszámítás`, html: '<div class="toltes"></div>' });
     try {
-      const d = await api('kimeno_szamlak', { ceg_id: cegId, statusz: 'NYITOTT' });
-      const lista = d.szamlak.filter((s) => s.penznem === penznem && !s.beszamitas_uid && foErtek(s) > 0);
+      const [d, ut] = await Promise.all([api('kimeno_szamlak', { ceg_id: cegId, statusz: 'NYITOTT' }), api('utalas', { id: utalasId })]);
+      // amelyiknek van még szabad része, és ebben az utalásban még nincs beszámítva (más nyitott utalásban lehet – 1.27)
+      const lista = d.szamlak.filter((s) => s.penznem === penznem && foErtek(s) > 0 && !String(s.beszamitas_uid || '').split(', ').includes(ut.utalas.uid));
       if (!lista.length) { m.tartalom.innerHTML = `<div class="ures">Nincs beszámítható NYITOTT ${esc(penznem)} kimenő számla ennél a cégnél.</div>`; return; }
       m.tartalom.innerHTML = `<div class="info-doboz">Válaszd ki, melyik kimenő számlát vonjuk le az utalásból. A következő lépésben az összeg is megadható – alapból annyi, amennyi az utalásba belefér.</div>`
         + lista.map((s) => `<div class="szamla-sor" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px dashed #e2e2e2"><span><span class="mono">${esc(s.kod)}</span> „${esc(s.szamlaszam)}”<br><span class="kicsi szurke">határidő ${fmtDatum(s.fizetesi_hatarido)}${Number(s.reszt) > 0 ? ` · hátralék (eredeti ${fmtOsszeg(s.osszeg, penznem)})` : ''}</span></span><b>${fmtOsszeg(foErtek(s), penznem)}</b><button class="btn btn-outline btn-sm btn-ikon" type="button" data-bz="${s.id}" aria-label="Beszámítás">${I.plus}</button></div>`).join('');
@@ -3521,7 +3539,7 @@
       const r = await api('utalas_kotes_hozzaad', { utalas_id: uid, kotes_id: Number(el.dataset.kotes) });
       r.utalas_id = uid; UtalasKosar.set({ id: uid, uid: r.uid, penznem: r.penznem, osszeg: r.osszeg, db: r.utalas_db }); await utalashozAdvaPopup(r, r.db); render();
     },
-    'utalasbol-ki': async (el) => { const r = await api('utalas_szamla_eltavolit', { szamla_id: Number(el.dataset.szamla) }); toast(`${esc(r.kod)} kivéve az utalásból (${esc(r.uid)}) – utalás összege: ${fmtOsszeg(r.osszeg)}`); render(); },
+    'utalasbol-ki': async (el) => { const r = await api('utalas_szamla_eltavolit', { szamla_id: Number(el.dataset.szamla), utalas_id: Number(el.dataset.utalas) || undefined }); toast(`${esc(r.kod)}${r.reszosszeg ? ' részösszege' : ''} kivéve az utalásból (${esc(r.uid)}) – utalás összege: ${fmtOsszeg(r.osszeg)}`); render(); },
     // részösszeg az utaláshoz (1.26): a számlából csak egy rész megy az utalásba – előbb az utalás (mint az UTALÁSHOZ), aztán az összeg
     'utalashoz-resz': async (el) => {
       const s = (await api('bejovo_szamla', { id: Number(el.dataset.szamla) })).szamla;
@@ -3531,8 +3549,9 @@
     },
     'utalas-reszosszeg': async (el) => {
       const s = (await api('bejovo_szamla', { id: Number(el.dataset.szamla) })).szamla;
-      if (!s.utalas_id) { toast('A számla nincs utalásban.'); return; }
-      await reszosszegModal(s.utalas_id, s, { modosit: true });
+      const utalasId = Number(el.dataset.utalas) || s.utalas_id;
+      if (!utalasId) { toast('A számla nincs utalásban.'); return; }
+      await reszosszegModal(utalasId, s, { modosit: true });
     },
     // beszámítás (1.25): kimenő számla levonása az utalásból – ugyanaz az út, mint az UTALÁSHOZ (utalás választás), aztán az összeg
     'beszamitas-utalasba': async (el) => {
@@ -3541,7 +3560,7 @@
       if (!uid) return;
       await beszamitasModal(uid, s);
     },
-    'beszamitas-ki': async (el) => { const r = await api('utalas_kimeno_eltavolit', { szamla_id: Number(el.dataset.szamla) }); toast(`${esc(r.kod)} beszámítása kivéve az utalásból (${esc(r.uid)}) – utalandó: ${fmtOsszeg(r.osszeg, r.penznem)}`); render(); },
+    'beszamitas-ki': async (el) => { const r = await api('utalas_kimeno_eltavolit', { szamla_id: Number(el.dataset.szamla), uid: el.dataset.uid || undefined }); toast(`${esc(r.kod)} beszámítása kivéve az utalásból (${esc(r.uid)}) – utalandó: ${fmtOsszeg(r.osszeg, r.penznem)}`); render(); },
     'utalas-kimeno-valaszt': (el) => utalasKimenoValaszto(Number(el.dataset.utalas), Number(el.dataset.ceg), el.dataset.penznem),
     'utalas-nyit': async (el) => { const d = await api('utalas', { uid: el.dataset.uid }); nav(`#/utalas/${d.utalas.id}`); },
     'uid-mutat': (el) => toast(`Utaláshoz adva: <a href="#/utalas/${esc(el.dataset.utalas)}">${esc(el.dataset.uid)}</a>`, '', 5000),
@@ -3553,7 +3572,7 @@
     'utalas-szamla-valaszt': (el) => utalasSzamlaValaszto(Number(el.dataset.utalas), Number(el.dataset.ceg), el.dataset.penznem),
     'utalas-utalva': (el) => utalvaModal(Number(el.dataset.utalas), el.dataset.uid, Number(el.dataset.osszeg), el.dataset.penznem),
     'utalas-torol': async (el) => { if (await confirmModal('Utalás törlése', `<p>Törlöd a(z) <b class="mono">${esc(el.dataset.uid)}</b> utalást? A benne lévő számlák visszakerülnek FIZETENDŐ státuszba.</p>`, { ok: 'Törlés', okOsztaly: 'btn-piros' })) { await api('utalas_torol', { utalas_id: Number(el.dataset.utalas) }); UtalasKosar.torol(Number(el.dataset.utalas)); toast('Utalás törölve'); history.back(); } },
-    'utalas-visszanyit': async (el) => { if (await confirmModal('Utalás visszanyitása', `<p>Visszanyitod a(z) <b class="mono">${esc(el.dataset.uid)}</b> utalást? A számlái visszakerülnek UTALÁSHOZ ADVA státuszba.</p>`, { ok: 'Visszanyitás' })) { await api('utalas_visszanyit', { utalas_id: Number(el.dataset.utalas) }); toast('Utalás visszanyitva'); render(); } },
+    'utalas-visszanyit': async (el) => { if (await confirmModal('Utalás visszanyitása', `<p>Visszanyitod a(z) <b class="mono">${esc(el.dataset.uid)}</b> utalást? A számlái visszakerülnek UTALÁSHOZ ADVA státuszba, a részösszegek újra függők lesznek.</p>`, { ok: 'Visszanyitás' })) { await api('utalas_visszanyit', { utalas_id: Number(el.dataset.utalas) }); toast('Utalás visszanyitva'); render(); } },
     'utalas-szerk': async (el) => { const d = await api('utalas', { id: Number(el.dataset.utalas) }); formModal(jog('ir') ? 'Utalás adatai' : `Megjegyzés – ${esc(d.utalas.uid)}`, `${jog('ir') ? inp('banki_hivatkozas', 'Banki hivatkozás', { ertek: d.utalas.banki_hivatkozas, opc: true }) : ''}${megjegyzesMezo(d.utalas)}`, async (a, f, m) => { await api('utalas_modosit', { utalas_id: d.utalas.id, megjegyzes: megjegyzesErtek(a), banki_hivatkozas: a.banki_hivatkozas }); m.bezar(); toast('Mentve', 'siker'); render(); }); },
     'mu-szuro': (el) => { App.mindenUtalasSzuro[el.dataset.k] = el.dataset.v; if (el.closest('.fulek')) fulCsusztat(el, render); else render(); },
     'kimeno-uj': (el) => kimenoSzamlaForm(Number(el.dataset.ceg)),

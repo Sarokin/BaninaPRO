@@ -43,7 +43,7 @@ function act_szamlak_lista(array $be): array
                             b.konyveles_kikuldve, f.nev AS kikuldte_nev, COALESCE(r.reszt, 0) AS reszt, b.beszam, b.megjegyzes
                        FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id JOIN cegek c ON c.id = k.ceg_id
                        LEFT JOIN utalasok u ON u.id = b.utalas_id LEFT JOIN felhasznalok f ON f.id = b.konyveles_kikuldte
-                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "BEJOVO" GROUP BY szamla_id) r ON r.szamla_id = b.id
+                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "BEJOVO" AND datum IS NOT NULL GROUP BY szamla_id) r ON r.szamla_id = b.id
                       WHERE ' . $felt('b') . $pnz('k');
         $params = array_merge($params, $p, $pp);
     }
@@ -57,7 +57,7 @@ function act_szamlak_lista(array $be): array
                             s.konyveles_kikuldve, f.nev AS kikuldte_nev, COALESCE(r.reszt, 0) AS reszt, NULL AS beszam, s.megjegyzes
                        FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id
                        LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id LEFT JOIN felhasznalok f ON f.id = s.konyveles_kikuldte
-                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" GROUP BY szamla_id) r ON r.szamla_id = s.id
+                       LEFT JOIN (SELECT szamla_id, SUM(osszeg) AS reszt FROM reszteljesitesek WHERE irany = "KIMENO" AND datum IS NOT NULL GROUP BY szamla_id) r ON r.szamla_id = s.id
                       WHERE ' . $felt('s') . $pnz('s');
         $params = array_merge($params, $p, $pp);
     }

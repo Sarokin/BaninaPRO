@@ -16,7 +16,7 @@ function act_cegek(array $be): array
     $be_sum = db_all(
         'SELECT k.ceg_id, k.penznem,
                 SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN b.osszeg - COALESCE(rb.reszt, 0) ELSE 0 END) AS nyitott,
-                SUM(CASE WHEN b.statusz = "FIZETENDO" THEN 1 ELSE 0 END) AS fizetendo_db
+                SUM(CASE WHEN b.statusz = "FIZETENDO" AND (COALESCE(rb.fuggo, 0) = 0 OR ABS(b.osszeg - COALESCE(rb.reszt, 0) - COALESCE(rb.fuggo, 0)) > 0.005) THEN 1 ELSE 0 END) AS fizetendo_db
            FROM bejovo_szamlak b JOIN kotesek k ON k.id = b.kotes_id' . RESZT_BEJOVO_JOIN . '
           GROUP BY k.ceg_id, k.penznem'
     );

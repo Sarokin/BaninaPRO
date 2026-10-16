@@ -28,17 +28,17 @@ function kotes_sor_feldolgoz(array $k): array
 
 /*
  * Kötés-összesítők – a részteljesítésekkel:
- *   fizetendo    = FIZETENDŐ számlák hátraléka (összeg − részteljesítés)
- *   utalas_alatt = UTALÁSHOZ ADVA számlák hátraléka
+ *   fizetendo    = FIZETENDŐ számlák még szabad része (összeg − utalt részteljesítés − nyitott utalásokban függő részek, 1.27)
+ *   utalas_alatt = UTALÁSHOZ ADVA számlák hátraléka + a FIZETENDŐ számlák nyitott utalásokban függő részei
  *   fizetett     = FIZETVE/BESZÁMÍTVA számlák teljes összege + a nyitott számlák részteljesítései
  *   teljes       = minden számla eredeti összege (fizetendo + utalas_alatt + fizetett)
  */
 const KOTES_SQL = 'SELECT k.*, c.nev AS ceg_nev, fl.felhasznalonev AS letrehozta_nev, fm.felhasznalonev AS modositotta_nev,
         COUNT(b.id) AS db,
         SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN 1 ELSE 0 END) AS nyitott_db,
-        SUM(CASE WHEN b.statusz = "FIZETENDO" THEN 1 ELSE 0 END) AS fizetendo_db,
-        COALESCE(SUM(CASE WHEN b.statusz = "FIZETENDO" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS fizetendo,
-        COALESCE(SUM(CASE WHEN b.statusz = "UTALASHOZ_ADVA" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS utalas_alatt,
+        SUM(CASE WHEN b.statusz = "FIZETENDO" AND (COALESCE(rb.fuggo, 0) = 0 OR ABS(b.osszeg - COALESCE(rb.reszt, 0) - COALESCE(rb.fuggo, 0)) > 0.005) THEN 1 ELSE 0 END) AS fizetendo_db,
+        COALESCE(SUM(CASE WHEN b.statusz = "FIZETENDO" THEN b.osszeg - COALESCE(rb.reszt, 0) - COALESCE(rb.fuggo, 0) END), 0) AS fizetendo,
+        COALESCE(SUM(CASE WHEN b.statusz = "UTALASHOZ_ADVA" THEN b.osszeg - COALESCE(rb.reszt, 0) WHEN b.statusz = "FIZETENDO" THEN COALESCE(rb.fuggo, 0) END), 0) AS utalas_alatt,
         COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN b.osszeg ELSE COALESCE(rb.reszt, 0) END), 0) AS fizetett,
         COALESCE(SUM(b.osszeg), 0) AS teljes,
         COALESCE(SUM(rb.reszt), 0) AS reszt
@@ -60,8 +60,8 @@ const BEJOVO_OSSZESITO_MEZOK = ' COUNT(b.id) AS db,
         SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN 1 ELSE 0 END) AS nyitott_db,
         SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN 1 ELSE 0 END) AS fizetett_db,
         COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS nyitott,
-        COALESCE(SUM(CASE WHEN b.statusz = "FIZETENDO" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS fizetendo,
-        COALESCE(SUM(CASE WHEN b.statusz = "UTALASHOZ_ADVA" THEN b.osszeg - COALESCE(rb.reszt, 0) END), 0) AS utalas_alatt,
+        COALESCE(SUM(CASE WHEN b.statusz = "FIZETENDO" THEN b.osszeg - COALESCE(rb.reszt, 0) - COALESCE(rb.fuggo, 0) END), 0) AS fizetendo,
+        COALESCE(SUM(CASE WHEN b.statusz = "UTALASHOZ_ADVA" THEN b.osszeg - COALESCE(rb.reszt, 0) WHEN b.statusz = "FIZETENDO" THEN COALESCE(rb.fuggo, 0) END), 0) AS utalas_alatt,
         COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN b.osszeg ELSE COALESCE(rb.reszt, 0) END), 0) AS fizetett,
         COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETVE","BESZAMITVA") THEN b.osszeg END), 0) AS fizetett_szamlak,
         COALESCE(SUM(CASE WHEN b.statusz IN ("FIZETENDO","UTALASHOZ_ADVA") THEN rb.reszt END), 0) AS reszt,
@@ -220,8 +220,10 @@ function bejovo_sor_feldolgoz(array $s): array
     $s['osszeg'] = (float)$s['osszeg'];
     $s['reszt'] = (float)($s['reszt'] ?? 0);
     $s['reszt_db'] = (int)($s['reszt_db'] ?? 0);
-    $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'], 2);
-    $s['utalas_osszeg'] = isset($s['utalas_osszeg']) ? (float)$s['utalas_osszeg'] : null;   // részösszeg az utaláshoz (1.26)
+    $s['fuggo'] = (float)($s['fuggo'] ?? 0);
+    $s['fuggo_db'] = (int)($s['fuggo_db'] ?? 0);
+    $s['hatralek'] = array_key_exists('hatralek', $s) ? (float)$s['hatralek'] : round($s['osszeg'] - $s['reszt'] - $s['fuggo'], 2);   // a még szabad rész (1.27)
+    unset($s['utalas_osszeg']);   // 1.26 maradvány, nem használt
     if (array_key_exists('utalas_lezarva', $s)) {
         $s['utalas_lezarva'] = (int)($s['utalas_lezarva'] ?? 0) === 1;
     }
@@ -443,9 +445,9 @@ function act_bejovo_szamla_modosit(array $be): array
     if ((float)$s['reszt'] > 0 && (float)$osszeg <= (float)$s['reszt']) {
         hiba('A számla összege (' . fmt_osszeg($osszeg) . " {$s['penznem']}) nem lehet kisebb vagy egyenlő a már felvezetett részteljesítéseknél (" . fmt_osszeg($s['reszt']) . " {$s['penznem']}). Előbb töröld a részteljesítést.");
     }
-    // részösszeg az utalásban (1.26): a hátralék maradjon nagyobb a részösszegnél
-    if ($s['utalas_osszeg'] !== null && round((float)$osszeg - (float)$s['reszt'], 2) <= (float)$s['utalas_osszeg'] + 0.005) {
-        hiba('A számla hátraléka (' . fmt_osszeg(round((float)$osszeg - (float)$s['reszt'], 2)) . " {$s['penznem']}) nem lehet kisebb vagy egyenlő az utaláshoz adott részösszegnél (" . fmt_osszeg((float)$s['utalas_osszeg']) . " {$s['penznem']}). Előbb módosítsd a részösszeget az utalásban.");
+    // utalás(ok)ban függő részek (1.27): az összeg nem lehet kisebb a részteljesítések és a függő részek együttesénél
+    if ((float)$s['fuggo'] > 0 && (float)$osszeg < (float)$s['reszt'] + (float)$s['fuggo'] - 0.005) {
+        hiba('A számla összege (' . fmt_osszeg($osszeg) . " {$s['penznem']}) nem lehet kisebb a részteljesítések és az utalás(ok)ban lévő részek együttesénél (" . fmt_osszeg((float)$s['reszt'] + (float)$s['fuggo']) . " {$s['penznem']}). Előbb vedd ki vagy csökkentsd a részösszeget az utalásban.");
     }
 
     db_tx(function () use ($id, $s, $szamlaszam, $telj, $kelt, $hatarido, $osszeg, $beszam, $megj, $mj, $u) {
@@ -481,7 +483,7 @@ function act_bejovo_szamla_torol(array $be): array
         hiba('Csak FIZETENDŐ státuszú számla törölhető. (Utalásból előbb távolítsd el.)');
     }
     if ((int)$s['reszt_db'] > 0) {
-        hiba('A számlához részteljesítés tartozik (' . fmt_osszeg($s['reszt']) . " {$s['penznem']}) – előbb töröld a részteljesítéseket a szerkesztő ablakban.");
+        hiba('A számlához részteljesítés vagy utalásban lévő rész tartozik (' . fmt_osszeg((float)$s['reszt'] + (float)$s['fuggo']) . " {$s['penznem']}) – előbb vedd ki az utalás(ok)ból, és töröld a részteljesítéseket a szerkesztő ablakban.");
     }
     db_exec('DELETE FROM bejovo_szamlak WHERE id = ?', [$id]);
     audit_ir('BEJOVO', $id, 'TOROL', "Számla törölve: {$s['kod']} „{$s['szamlaszam']}” (" . fmt_osszeg($s['osszeg']) . " {$s['penznem']}, határidő " . audit_ertek('fizetesi_hatarido', $s['fizetesi_hatarido']) . ')', [], (int)$s['kotes_id']);
