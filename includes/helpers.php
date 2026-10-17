@@ -229,6 +229,12 @@ function kimeno_kod(int $ev, string $penznem, int $sorszam): string
     return sprintf('%04d-%s-%06d', $ev, $penznem, $sorszam);
 }
 
+/** Generált banki azonosító (1.28): bank-pénznem-év-sorszám, mint az utalás UID-ja – pl. TATRA-EUR-2026-000001 */
+function bank_azonosito(string $bank, string $penznem, int $ev, int $sorszam): string
+{
+    return sprintf('%s-%s-%04d-%06d', $bank, $penznem, $ev, $sorszam);
+}
+
 // ---------------------------------------------------------------------------
 //  Kimenet
 // ---------------------------------------------------------------------------

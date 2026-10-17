@@ -759,7 +759,7 @@
       const o = BankKosar.osszegek();
       m.tartalom.innerHTML = `
         ${kiesett.length ? `<div class="figyelem-doboz">${kiesett.length} számla kikerült a gyűjtőből, mert közben már nem NYITOTT (fizetve lett vagy törölték): ${kiesett.map((x) => `<span class="mono">${esc(x.kod)}</span>`).join(', ')}.</div>` : ''}
-        <div class="uk-fej"><div class="uk-osszeg">${Object.keys(o).length ? Object.keys(o).map((p) => fmtOsszeg(o[p], p)).join(' · ') : '–'}</div><div class="uk-meta">${l.length} nyitott számla · ${Object.keys(cegek).length} cég · egy bankkivonati azonosítóhoz</div></div>
+        <div class="uk-fej"><div class="uk-osszeg">${Object.keys(o).length ? Object.keys(o).map((p) => fmtOsszeg(o[p], p)).join(' · ') : '–'}</div><div class="uk-meta">${l.length} nyitott számla · ${Object.keys(cegek).length} cég · ${Object.keys(o).length > 1 ? 'pénznemenként egy banki azonosítóhoz' : 'egy banki azonosítóhoz'}</div></div>
         <div class="reszletes uk-lista">${l.length ? Object.keys(cegek).map((cn) => `
           <div class="kotes-sor"><a class="kod" href="#/kimeno/ceg/${cegek[cn][0].ceg_id}" data-act="nav" data-href="#/kimeno/ceg/${cegek[cn][0].ceg_id}">${esc(cn)}</a><span>${cegek[cn].length} db</span></div>
           ${cegek[cn].map((x) => `<div class="szamla-sor"><div class="bal"><a class="k" href="#/kimeno/ceg/${x.ceg_id}?szamla=${x.id}" data-act="nav" data-href="#/kimeno/ceg/${x.ceg_id}?szamla=${x.id}">${esc(x.kod)}</a><span class="szsz">„${esc(x.szamlaszam)}”</span>${x.fizetesi_hatarido ? `<span class="kicsi szurke">határidő ${fmtDatum(x.fizetesi_hatarido)}</span>` : ''}</div><span class="o${negOszt(x.hatralek)}">${fmtOsszeg(x.hatralek, x.penznem)}</span><button class="btn btn-outline piros btn-sm btn-ikon" type="button" data-bk-ki="${x.id}" title="Kivétel a gyűjtőből" aria-label="Kivétel a gyűjtőből">${I.x}</button></div>`).join('')}`).join('') : `<div class="ures">A gyűjtő üres.</div>`}
@@ -3462,55 +3462,51 @@
   }
 
   // ---------------------------------------------------- bank hozzárendelés
+  /** A bankok, amelyekhez a kimenő számlák jóváírása rendelhető (1.28) – a szerver BANKOK listájával egyezzen */
+  const BANKOK = ['TATRA BANKA', 'UNICREDIT', 'RAIFFEISEN'];
+  /**
+   * Bankhoz adás (1.28): csak a dátum és a bank kötelező. A pénznem a számlákból jön, a banki azonosítót a program
+   * generálja (TATRA-EUR-2026-000001) – mindkettő már az ablakban látszik. Két pénznemű gyűjtőnél pénznemenként egy azonosító.
+   */
   function bankHozzarendelModal(ids) {
     ids = (ids || BankKosar.ids()).map(Number).filter((x) => x > 0);
     if (!ids.length) return;
-    const { m, form } = formModal(`${ids.length} számla bankkivonati azonosítóhoz adása`, `
-      ${inp('datum', 'Dátum (jóváírás napja)', { tipus: 'date', ertek: App.ma, kotelezo: true })}
-      ${inp('azonosito', 'Banki azonosító (bankkivonat / tranzakció azonosítója)', { kotelezo: true, placeholder: 'bármilyen formátum lehet', attr: 'autocapitalize="characters"' })}
-      <div data-bank-ell></div>`,
+    const { form } = formModal(`${ids.length} számla bankhoz adása`, `
+      <div class="mezo-sor">
+        ${inp('datum', 'Dátum (jóváírás napja)', { tipus: 'date', ertek: App.ma, kotelezo: true })}
+        <div class="mezo"><label>Bank</label><select name="bank" required><option value="">– válaszd ki –</option>${BANKOK.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join('')}</select></div>
+      </div>
+      <div class="bank-auto" data-bank-auto><div class="toltes"></div></div>`,
       async (a, f, mm) => {
-        if (!a.azonosito) throw new Error('Add meg a banki azonosítót!');
         if (!a.datum) throw new Error('Add meg a dátumot!');
-        await bankHozzarendelFut(ids, a.datum, a.azonosito, false, mm);
+        if (!a.bank) throw new Error('Válaszd ki a bankot!');
+        await bankHozzarendelFut(ids, a.datum, a.bank, mm);
       }, { ok: 'Hozzárendelés', okOsztaly: 'btn-zold' });
-    // élő ellenőrzés
-    const mezo = $('[name=azonosito]', form);
-    const ell = $('[data-bank-ell]', form);
-    let ido = null;
-    mezo.addEventListener('input', () => {
-      clearTimeout(ido);
-      ido = setTimeout(async () => {
-        const v = mezo.value.trim();
-        if (!v) { ell.innerHTML = ''; return; }
-        try {
-          const r = await api('bank_azonosito_ellenoriz', { azonosito: v });
-          if (mezo.value.trim() !== v) return;
-          ell.innerHTML = r.hasznalt ? duplaFigyelmeztetes(r) : '<div class="ellenorzes szabad">✓ Ezt a banki azonosítót még nem használtad.</div>';
-        } catch (e) { ell.innerHTML = ''; }
-      }, 350);
-    });
+    // automatikusan kitöltött rész: pénznem a számlákból + a generált azonosító – a bank vagy a dátum változásakor frissül
+    const doboz = $('[data-bank-auto]', form);
+    let hivas = 0;
+    const frissit = async () => {
+      const sajat = ++hivas;
+      try {
+        const r = await api('bank_azonosito_javaslat', { szamla_ids: ids, bank: form.bank.value, datum: form.datum.value });
+        if (sajat !== hivas) return;
+        doboz.innerHTML = `<div class="bank-auto-cim">Automatikusan kitöltve</div>${r.csoportok.map((c) => `
+          <div class="bank-auto-sor"><span class="cimke">Pénznem</span><b data-auto-penznem>${esc(c.penznem)}</b><span class="kicsi szurke">${c.db} számla · ${fmtOsszeg(c.osszeg, c.penznem)}</span></div>
+          <div class="bank-auto-sor"><span class="cimke">Banki azonosító</span>${c.azonosito ? `<b class="mono" data-generalt="${esc(c.penznem)}">${esc(c.azonosito)}</b>` : '<span class="szurke">a bank kiválasztása után készül el</span>'}</div>`).join('')}
+          ${r.csoportok.length > 1 ? '<div class="kicsi szurke" style="margin-top:4px">A számlák két pénzneműek: pénznemenként külön banki azonosítót kapnak.</div>' : ''}`;
+      } catch (e) { if (sajat === hivas) doboz.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`; }
+    };
+    form.bank.addEventListener('change', () => { const h = $('[data-hiba]', form); if (h && form.bank.value) h.classList.add('rejtett'); frissit(); });
+    form.datum.addEventListener('change', frissit);
+    frissit();
   }
-  function duplaFigyelmeztetes(r) {
-    return `<div class="figyelem-doboz"><b>Itt valami nem stimmel!</b> Ezt a banki azonosítót (<b>${esc(r.kivonat.azonosito)}</b>, ${fmtDatum(r.kivonat.datum)}) már használtad ezekhez a számlákhoz:<ul style="margin:6px 0 6px 18px;padding:0">${r.szamlak.map((s) => `<li><span class="mono">${esc(s.kod)}</span> „${esc(s.szamlaszam)}” – ${esc(s.ceg_nev)} – ${fmtOsszeg(s.hatralek != null ? s.hatralek : s.osszeg, s.penznem)}</li>`).join('')}</ul>Biztos, hogy a mostani számlákat is ez az azonosító fedezi? (A „Hozzárendelés” gomb megnyomása után még egyszer rákérdezek.)</div>`;
-  }
-  async function bankHozzarendelFut(ids, datum, azonosito, megerositve, m) {
-    try {
-      const r = await api('bank_hozzarendel', { szamla_ids: ids, datum, azonosito, megerositve });
-      m.bezar();
-      BankKosar.urit();
-      await uzenetModal(`<div class="fo">FIZETVE</div><div class="kis" style="margin-top:8px">${r.db} számla a(z) <b>${esc(azonosito)}</b> banki azonosítóhoz rendelve${r.uj ? '' : ' (már korábban használt azonosító – megerősítve)'}.</div>`, { pipa: true });
-      render();
-    } catch (e) {
-      if (e.kod === 'DUPLA') {
-        const ok = await confirmModal('Itt valami nem stimmel!', `${duplaFigyelmeztetes(e.extra)}`, { ok: 'Igen, ez fedezi', megse: 'Nem', okOsztaly: 'btn-piros' });
-        if (!ok) return;
-        const biztos = await visszaszamlaloModal('Biztos?', 5);
-        if (!biztos) return;
-        return bankHozzarendelFut(ids, datum, azonosito, true, m);
-      }
-      throw e;
-    }
+  async function bankHozzarendelFut(ids, datum, bank, m) {
+    const r = await api('bank_hozzarendel', { szamla_ids: ids, datum, bank });
+    m.bezar();
+    BankKosar.urit();
+    await uzenetModal(`<div class="fo">FIZETVE</div><div class="kis" style="margin-top:8px">${r.db} számla a(z) <b>${esc(bank)}</b> bankhoz adva, jóváírás: ${fmtDatum(datum)}<br>Banki azonosító:</div>
+      ${r.azonositok.map((c) => `<div class="bank-azon-nagy mono" data-vegleges>${esc(c.azonosito)}</div>${r.azonositok.length > 1 ? `<div class="kis">${c.db} számla · ${esc(c.penznem)}</div>` : ''}`).join('')}`, { pipa: true });
+    render();
   }
 
   // ------------------------------------------------------------ admin űrlap

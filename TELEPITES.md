@@ -321,12 +321,21 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   NYITOTT számla a **banki gyűjtőbe** kerül – a jobb alsó sarokban megjelenik a sárga, **oszlopos bank-épület** ikonos
   gomb (a nyomtató és az utalási gyűjtő felett), rajta a gyűjtött számlák számával. Ugyanúgy működik, mint az utalási
   gyűjtő: bármelyik oldalon látszik, több cég számlája is gyűjthető, a böngésző megjegyzi. Rákattintva egy ablak mutatja
-  a gyűjtött számlákat cégenként (kivétel ×, Ürítés), és a **Bankazonosítóhoz adás (N)** gombbal jön a megszokott ablak:
-  dátum + banki azonosító → a számlák FIZETVE státuszt kapnak, a gyűjtő kiürül. Ha egy gyűjtött számla közben máshol
+  a gyűjtött számlákat cégenként (kivétel ×, Ürítés), és a **Bankazonosítóhoz adás (N)** gombbal jön a bankhoz adás
+  ablaka (lásd lent) → a számlák FIZETVE státuszt kapnak, a gyűjtő kiürül. Ha egy gyűjtött számla közben máshol
   fizetve lett, az ablak kiveszi és jelzi. (A korábbi nagy alsó gomb megszűnt.)
-* A banki azonosítót gépelés közben ellenőrzi. Ha már használtad: *„Itt valami nem stimmel! Ezt a banki azonosítót
-  már használtad ezekhez a számlákhoz: … Biztos, hogy a mostani számlákat is ez az azonosító fedezi?”*
-  → *Igen* → **„Biztos?” 5 másodperces visszaszámlálóval**, az IGEN csak utána aktív.
+* **Bankhoz adás – a banki azonosító automatikus (1.28):** az ablakban csak két dolgot kell megadni: a **dátumot** (a
+  jóváírás napja, alapból a mai nap) és a **bankot** a legördítőből: **TATRA BANKA · UNICREDIT · RAIFFEISEN**. A többit
+  a program tölti ki, és már a *Hozzárendelés* gomb előtt kiírja:
+  * **Pénznem:** a számlák pénzneme (darabszámmal és összeggel);
+  * **Banki azonosító:** egyedi, generált azonosító – *bank-pénznem-év-sorszám*, pl. `TATRA-EUR-2026-000001`. A sorszám
+    bankonként, pénznemenként és évenként (a jóváírás dátumának évével) fut, és soha nem ismétlődik, a fizetés
+    visszavonása után sem.
+  * Ha a gyűjtőben EUR és HUF számla is van, pénznemenként külön azonosítót kap (pl. `UNICREDIT-EUR-2026-000004` és
+    `UNICREDIT-HUF-2026-000002`).
+  * A kész ablak a végleges azonosítót mutatja (ha közben valaki ugyanannál a banknál ugyanazt a számot elvitte, a
+    következőt kapja). Minden bankhoz adás új azonosítót kap: egy meglévő azonosítóhoz utólag nem adható számla. A kézzel
+    beírható banki azonosító mező megszűnt; a korábban beírt azonosítók változatlanul megmaradnak.
 * Irodavezető vagy admin a fizetést vissza tudja vonni (számla vissza NYITOTT-ba).
 * **Fizetés dátuma:** FIZETVE számlánál a kártyán zölddel *Fizetve: 2026.03.28.* + a banki azonosító.
 * **Beszámítás utalásba (1.25):** a kimenő számla (vagy egy része) levonható a partnernek utalandó bejövő számlák
@@ -684,6 +693,21 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.27.1-ről 1.28.0-ra (kimenő számlák bankhoz adása: bank legördítőből, automatikus pénznem és banki
+azonosító):** **adatbázis-módosítás van** – futtasd le phpMyAdmin-ban (SQL fül; többször is lefuttatható, adatot nem módosít;
+ugyanez a `sql/frissites_1.28.sql`; a belső szerveren a telepítő magától pótolja):
+
+```sql
+ALTER TABLE `sorszamok`
+  MODIFY `tipus` ENUM('KOTES','UTALAS','KIMENO','BANK_TATRA','BANK_UNICREDIT','BANK_RAIFFEISEN') NOT NULL;
+```
+
+A bankhoz adás ablakában a kézi banki azonosító helyett bank-legördítő (TATRA BANKA, UNICREDIT, RAIFFEISEN); a pénznem és az
+egyedi banki azonosító (`TATRA-EUR-2026-000001`) automatikus, és már mentés előtt látszik (*Kimenő számlák* rész). Töltsd fel a
+frissített `includes/api_kimeno.php`, `includes/helpers.php`, `includes/jogok.php`, `assets/app.js`, `assets/app.css`,
+`sql/schema.sql`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat. A belső szerveren a „BaninaPro App
+Updater” ikon elég: a sémaváltozás miatt magától átadja a teljes telepítőnek, az pótolja az új értékeket.
 
 **Frissítés 1.27.0-ról 1.27.1-re (üres fizetési határidő = teljesítés + 30 nap megerősítéssel; „Fizetettek elrejtése” az
 összevetésben):** adatbázis-módosítás nincs. Új bejövő számlánál az üresen hagyott fizetési határidő a teljesítéstől számított
@@ -1230,6 +1254,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| „Adatbázis-hiba” a kimenő számlák bankhoz adásakor, a naplóban „Data truncated for column 'tipus'” (1.28) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.28.sql` fájlt (egy `ALTER TABLE sorszamok …`, lásd az 1.27.1 → 1.28.0 frissítést) phpMyAdmin-ban |
 | „Column 'datum' cannot be null” (részösszeg utaláshoz adásakor, 1.27) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.27.sql` fájlt phpMyAdmin-ban |
 | „Unknown column 'utalas_osszeg'” vagy „Unknown column 'r.utalas_id'” (utalás oldal / bejövő számlák, 1.26) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.26.sql` fájlt phpMyAdmin-ban |
 | „Table 'beszamitasok' doesn't exist” (utalás oldal / kimenő számlák, 1.25) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.25.sql` fájlt phpMyAdmin-ban |
@@ -1275,4 +1300,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.27.1 (2026-10-17)
+Verzió: 1.28.0 (2026-10-17)

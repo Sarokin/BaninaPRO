@@ -578,6 +578,13 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .modal.nagy-uzenet .osszeg-nagy { font-size: 36px; font-weight: 900; margin: 10px 0 4px; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 .modal.nagy-uzenet .osszeg-nagy.negativ { color: var(--piros); }
 .modal.nagy-uzenet .kis { color: var(--szoveg-2); font-size: 14px; }
+/* 1.28 bankhoz adás: az automatikusan kitöltött pénznem és a generált banki azonosító (csak olvasható), a kész ablakban nagyban */
+.bank-auto { border: 1.5px dashed var(--vonal); border-radius: var(--radius-sm); padding: 10px 14px; margin: 2px 0 6px; background: var(--felulet-2); }
+.bank-auto-cim { font-size: 11.5px; font-weight: 800; color: var(--halvany); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.bank-auto-sor { padding: 4px 0; }
+.bank-auto-sor .cimke { display: block; font-size: 12.5px; color: var(--szoveg-2); }
+.bank-auto-sor b { font-size: 17px; margin-right: 6px; overflow-wrap: anywhere; }
+.modal .bank-azon-nagy { font-size: 22px; font-weight: 800; margin: 8px 0 2px; overflow-wrap: anywhere; }
 /* 1.27.1: üresen hagyott fizetési határidő – a kapott dátum nagyban, a megerősítő kérdés felett */
 .modal .datum-nagy { text-align: center; font-size: 32px; font-weight: 900; letter-spacing: -.5px; font-variant-numeric: tabular-nums; color: var(--narancs-2); margin: 12px 0; }
 .szamlalo { font-size: 54px; font-weight: 900; color: var(--narancs); font-variant-numeric: tabular-nums; margin: 6px 0 12px; line-height: 1; }

@@ -82,7 +82,7 @@ const MUVELET_JOGOK = [
     'ceg_letrehoz' => 'ir', 'kotes_letrehoz' => 'ir', 'bejovo_szamla_letrehoz' => 'ir', 'kimeno_letrehoz' => 'ir',
     'utalas_letrehoz' => 'ir', 'utalas_hatarertek_letrehoz' => 'ir', 'utalas_szamla_hozzaad' => 'ir', 'utalas_kotes_hozzaad' => 'ir', 'utalas_szamla_eltavolit' => 'ir', 'utalas_utalva' => 'ir', 'utalas_lezar' => 'ir',
     'utalas_kimeno_hozzaad' => 'ir', 'utalas_kimeno_eltavolit' => 'ir', 'utalas_szamla_osszeg' => 'ir',
-    'bank_hozzarendel' => 'ir', 'reszteljesites_hozzaad' => 'ir',
+    'bank_hozzarendel' => 'ir', 'bank_azonosito_javaslat' => 'ir', 'reszteljesites_hozzaad' => 'ir',
     'import_elemzes' => 'ir', 'import_csoportok' => 'ir', 'import_vegrehajt' => 'ir', 'archiv_szamlak_athelyez' => 'ir',
     // --- törlés, visszavonás (Irodavezető és Admin)
     'kotes_torol' => 'torol', 'bejovo_szamla_torol' => 'torol', 'kimeno_torol' => 'torol', 'utalas_torol' => 'torol', 'reszteljesites_torol' => 'torol',

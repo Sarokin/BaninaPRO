@@ -251,22 +251,139 @@ function act_bank_azonosito_ellenoriz(array $be): array
 }
 
 /**
- * Kimenő számlák bankkivonati azonosítóhoz rendelése → FIZETVE.
- * Ha az azonosító már használt és nincs `megerositve`, DUPLA kóddal visszadobja
- * (a kliens ekkor mutatja a "Itt valami nem stimmel!" ablakot + 5 mp-es "Biztos?" kérdést).
+ * A bankok, amelyekhez a kimenő számlák jóváírása rendelhető (1.28): megjelenített név => a generált azonosító előtagja.
+ * A sorszám bankonként, pénznemenként és évenként fut (sorszamok.tipus = 'BANK_' . előtag): új bankhoz a sorszamok.tipus
+ * ENUM-ot is bővíteni kell (schema.sql + frissítő). Az app.js BANKOK listája ugyanez.
+ */
+const BANKOK = ['TATRA BANKA' => 'TATRA', 'UNICREDIT' => 'UNICREDIT', 'RAIFFEISEN' => 'RAIFFEISEN'];
+
+/**
+ * A következő szabad generált banki azonosító (bank + pénznem + év). $foglal = true: a sorszámot le is foglalja (csak
+ * tranzakcióban, a hozzárendeléskor); false: csak előnézet a képernyőre, semmit nem ír. A korábban kézzel beírt, véletlenül
+ * egyező azonosítót átugorja.
+ */
+function bank_kovetkezo_azonosito(string $elotag, string $penznem, int $ev, bool $foglal): string
+{
+    $tipus = 'BANK_' . $elotag;
+    $n = $foglal ? kovetkezo_sorszam($tipus, $ev, $penznem)
+        : (int)(db_val('SELECT utolso FROM sorszamok WHERE tipus = ? AND ev = ? AND penznem = ?', [$tipus, $ev, $penznem]) ?? 0) + 1;
+    for ($i = 0; $i < 1000; $i++) {
+        $az = bank_azonosito($elotag, $penznem, $ev, $n);
+        if (db_val('SELECT id FROM banki_kivonatok WHERE azonosito_norm = ?', [norm_azonosito($az)]) === null) {
+            return $az;
+        }
+        $n = $foglal ? kovetkezo_sorszam($tipus, $ev, $penznem) : $n + 1;
+    }
+    hiba('Nem sikerült szabad banki azonosítót generálni.');
+}
+
+/** A bankhoz adandó kimenő számlák zárolva és ellenőrizve (NYITOTT, nincs nyitott utalásban beszámításra adva) */
+function bank_szamlak_zarolva(array $ids): array
+{
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $szamlak = db_all("SELECT s.id, s.kod, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt,
+                              (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = 'NYITOTT' LIMIT 1) AS beszamitas_uid
+                         FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) FOR UPDATE", $ids);
+    if (count($szamlak) !== count($ids)) {
+        hiba('Valamelyik számla nem található.');
+    }
+    foreach ($szamlak as $s) {
+        if ($s['statusz'] !== 'NYITOTT') {
+            hiba("A(z) {$s['kod']} számla már FIZETVE státuszú.");
+        }
+        if (!empty($s['beszamitas_uid'])) {
+            hiba("A(z) {$s['kod']} számla beszámításra van adva az utalásban ({$s['beszamitas_uid']}) – vagy az utalás teljesítésével rendeződik, vagy előbb vedd ki az utalásból.");
+        }
+    }
+    return $szamlak;
+}
+
+/** A számlák egy kivonathoz: FIZETVE a megadott nappal + változásnapló; vissza: a naplóba írható kódok (hátralékkal) */
+function bank_szamlak_fizetve(array $szamlak, int $kivId, string $datum, string $az, string $leiras, array $u): array
+{
+    $ids = array_map(fn(array $s): int => (int)$s['id'], $szamlak);
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    db_exec("UPDATE kimeno_szamlak SET statusz = 'FIZETVE', banki_kivonat_id = ?, fizetve_datum = ?, modositotta = ? WHERE id IN ($in)", array_merge([$kivId, $datum, $u['id']], $ids));
+    $kodok = [];
+    foreach ($szamlak as $s) {
+        $hatralek = fmt_osszeg((float)$s['osszeg'] - (float)$s['reszt']) . " {$s['penznem']}";
+        audit_ir('KIMENO', (int)$s['id'], 'STATUSZ', "Fizetve – $leiras: „{$az}”" . ((float)$s['reszt'] > 0 ? " (a hátralék: $hatralek)" : ''),
+            [['m' => 'Státusz', 'r' => 'NYITOTT', 'u' => 'FIZETVE'], ['m' => 'Fizetés dátuma', 'r' => '–', 'u' => audit_ertek('fizetve_datum', $datum)], ['m' => 'Banki azonosító', 'r' => '–', 'u' => $az]], null, $u);
+        $kodok[] = "{$s['kod']} ($hatralek" . ((float)$s['reszt'] > 0 ? ', részteljesítés után' : '') . ')';
+    }
+    return $kodok;
+}
+
+/** Pénznemenkénti csoportok, EUR elöl (pénznem => számlasorok) */
+function bank_penznem_csoportok(array $szamlak): array
+{
+    $cs = [];
+    foreach ($szamlak as $s) {
+        $cs[$s['penznem']][] = $s;
+    }
+    uksort($cs, fn(string $a, string $b): int => [$a !== 'EUR', $a] <=> [$b !== 'EUR', $b]);
+    return $cs;
+}
+
+/**
+ * Előnézet a bankhoz adás ablakához (1.28): a számlák pénzneme(i) és pénznemenként a következő generált azonosító.
+ * Csak olvas, semmit nem foglal: a végleges azonosító a hozzárendeléskor születik (ha közben más elvitte ezt a számot,
+ * a következőt kapja – a kész ablak a véglegeset mutatja).
+ */
+function act_bank_azonosito_javaslat(array $be): array
+{
+    csak_bejelentkezve();
+    $ids = be_int_lista($be, 'szamla_ids', 'számlák');
+    $datum = be_datum($be, 'datum', false, 'dátum') ?? date('Y-m-d');
+    $bank = be_valaszt($be, 'bank', array_keys(BANKOK), '', 'bank');
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $szamlak = db_all("SELECT s.id, s.penznem, s.osszeg, COALESCE(rk.reszt, 0) AS reszt FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) AND s.statusz = 'NYITOTT'", $ids);
+    $ki = [];
+    foreach (bank_penznem_csoportok($szamlak) as $pn => $sorok) {
+        $ki[] = ['penznem' => $pn, 'db' => count($sorok), 'osszeg' => round(array_sum(array_map(fn(array $s): float => (float)$s['osszeg'] - (float)$s['reszt'], $sorok)), 2),
+                 'azonosito' => $bank !== '' ? bank_kovetkezo_azonosito(BANKOK[$bank], $pn, (int)substr($datum, 0, 4), false) : null];
+    }
+    return ['bank' => $bank, 'datum' => $datum, 'csoportok' => $ki];
+}
+
+/**
+ * Kimenő számlák bankhoz adása → FIZETVE.
+ * bank (1.28, a felület így hívja): a bank a BANKOK közül, az azonosítót a program generálja – pénznemenként egy új kivonat
+ *   (TATRA-EUR-2026-000001), a dátum a jóváírás napja, az év is ebből. Vissza: azonositok = [{penznem, azonosito, db}].
+ * azonosito (régi, kézzel beírt mód – az API-ban megmaradt): ha az azonosító már használt és nincs `megerositve`,
+ *   DUPLA kóddal visszadobja.
  */
 function act_bank_hozzarendel(array $be): array
 {
     $u = csak_bejelentkezve();
     $ids = be_int_lista($be, 'szamla_ids', 'számlák');
     $datum = be_datum($be, 'datum', true, 'dátum');
+    $bank = be_valaszt($be, 'bank', array_keys(BANKOK), '', 'bank');
+    if ($bank !== '') {
+        $csop = db_tx(function () use ($ids, $datum, $bank, $u) {
+            $ki = [];
+            foreach (bank_penznem_csoportok(bank_szamlak_zarolva($ids)) as $pn => $sorok) {
+                $az = bank_kovetkezo_azonosito(BANKOK[$bank], $pn, (int)substr($datum, 0, 4), true);
+                db_exec('INSERT INTO banki_kivonatok (azonosito, azonosito_norm, datum, letrehozta) VALUES (?, ?, ?, ?)', [$az, norm_azonosito($az), $datum, $u['id']]);
+                $kivId = (int)db()->lastInsertId();
+                $ki[] = ['penznem' => $pn, 'azonosito' => $az, 'kivonat_id' => $kivId, 'db' => count($sorok),
+                         'kodok' => bank_szamlak_fizetve($sorok, $kivId, $datum, $az, "$bank, banki azonosító", $u)];
+            }
+            return $ki;
+        });
+        foreach ($csop as $c) {
+            naplo('BANK_HOZZARENDEL', "$bank, generált banki azonosító „{$c['azonosito']}” ($datum) → {$c['db']} kimenő számla FIZETVE: " . implode(', ', $c['kodok']));
+        }
+        return ['kivonat_id' => $csop[0]['kivonat_id'], 'db' => count($ids), 'uj' => true, 'bank' => $bank,
+                'azonositok' => array_map(fn(array $c): array => ['penznem' => $c['penznem'], 'azonosito' => $c['azonosito'], 'db' => $c['db']], $csop)];
+    }
+
     $az = be_szoveg($be, 'azonosito', 100, true, 'banki azonosító');
     $norm = norm_azonosito($az);
     if ($norm === '') {
         hiba('Érvénytelen banki azonosító: legalább egy betűt vagy számot tartalmaznia kell.');
     }
     $megerositve = be_bool($be, 'megerositve');
-
     $e = db_tx(function () use ($ids, $datum, $az, $norm, $megerositve, $u) {
         $kiv = db_row('SELECT * FROM banki_kivonatok WHERE azonosito_norm = ? FOR UPDATE', [$norm]);
         if ($kiv && !$megerositve) {
@@ -284,28 +401,7 @@ function act_bank_hozzarendel(array $be): array
             $kivId = (int)$kiv['id'];
             $uj = false;
         }
-        $in = implode(',', array_fill(0, count($ids), '?'));
-        $szamlak = db_all("SELECT s.id, s.kod, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt,
-                                  (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = 'NYITOTT' LIMIT 1) AS beszamitas_uid
-                             FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) FOR UPDATE", $ids);
-        if (count($szamlak) !== count($ids)) {
-            hiba('Valamelyik számla nem található.');
-        }
-        $kodok = [];
-        foreach ($szamlak as $s) {
-            if ($s['statusz'] !== 'NYITOTT') {
-                hiba("A(z) {$s['kod']} számla már FIZETVE státuszú.");
-            }
-            if (!empty($s['beszamitas_uid'])) {
-                hiba("A(z) {$s['kod']} számla beszámításra van adva az utalásban ({$s['beszamitas_uid']}) – vagy az utalás teljesítésével rendeződik, vagy előbb vedd ki az utalásból.");
-            }
-            $kodok[] = $s['kod'] . ' (' . fmt_osszeg((float)$s['osszeg'] - (float)$s['reszt']) . ' ' . $s['penznem'] . ((float)$s['reszt'] > 0 ? ', részteljesítés után' : '') . ')';
-        }
-        db_exec("UPDATE kimeno_szamlak SET statusz = 'FIZETVE', banki_kivonat_id = ?, fizetve_datum = ?, modositotta = ? WHERE id IN ($in)", array_merge([$kivId, $datum, $u['id']], $ids));
-        foreach ($szamlak as $s) {
-            audit_ir('KIMENO', (int)$s['id'], 'STATUSZ', "Fizetve – bankkivonati azonosító: „{$az}”" . ((float)$s['reszt'] > 0 ? ' (a hátralék: ' . fmt_osszeg((float)$s['osszeg'] - (float)$s['reszt']) . " {$s['penznem']})" : ''),
-                [['m' => 'Státusz', 'r' => 'NYITOTT', 'u' => 'FIZETVE'], ['m' => 'Fizetés dátuma', 'r' => '–', 'u' => audit_ertek('fizetve_datum', $datum)], ['m' => 'Banki azonosító', 'r' => '–', 'u' => $az]], null, $u);
-        }
+        $kodok = bank_szamlak_fizetve(bank_szamlak_zarolva($ids), $kivId, $datum, $az, 'bankkivonati azonosító', $u);
         return ['kivonat_id' => $kivId, 'uj' => $uj, 'kodok' => $kodok, 'db' => count($ids)];
     });
     naplo('BANK_HOZZARENDEL', "banki azonosító „{$az}” ($datum" . ($e['uj'] ? ', új' : ', MÁR HASZNÁLT – megerősítve') . ") → {$e['db']} kimenő számla FIZETVE: " . implode(', ', $e['kodok']));

@@ -138,9 +138,10 @@ CREATE TABLE IF NOT EXISTS `cegek` (
 --  KOTES  → 2026-HUF-000001
 --  UTALAS → U-HUF-2026-000001
 --  KIMENO → 2026-HUF-000001 (kimenő számla)
+--  BANK_* → TATRA-EUR-2026-000001 (1.28: generált banki azonosító, bankonként – a kimenő számlák bankhoz adásakor)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `sorszamok` (
-  `tipus`    ENUM('KOTES','UTALAS','KIMENO') NOT NULL,
+  `tipus`    ENUM('KOTES','UTALAS','KIMENO','BANK_TATRA','BANK_UNICREDIT','BANK_RAIFFEISEN') NOT NULL,
   `ev`       SMALLINT UNSIGNED NOT NULL,
   `penznem`  ENUM('HUF','EUR') NOT NULL,
   `utolso`   INT UNSIGNED NOT NULL DEFAULT 0,
