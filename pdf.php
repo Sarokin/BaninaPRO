@@ -5,7 +5,7 @@
  * Hívás: POST /pdf.php  (űrlap)
  *   tetelek = JSON tömb: [{"t":"bejovo","id":12}, {"t":"kotes","id":3}, ...]
  *             összevetés: {"t":"osszevetes","id":…,"q":{"ceg":5,"pn":"EUR","tol":"2026-01-01","ig":"2026-10-04","nap":"2026-10-04"}}
- *             (nap: a vizsgált időpont – 1.20, hiányában a mai nap)
+ *             (nap: a vizsgált időpont – 1.20, hiányában a mai nap; "fizetett_rejt":1 – 1.27.1, a vizsgált napon fizetett számlák nélkül)
  *             állapot vizsgálat: {"t":"allapot","id":…,"q":{"i":"KIMENO","ceg":5,"kotes":0,"tol":"2026-01-01","ig":"2026-01-31","nap":"2026-01-14"}}
  *   csrf    = a munkamenet CSRF-tokenje
  *   szin    = 'ff' → fekete-fehér nyomtatóra optimalizált PDF (1.20), minden más → színes
@@ -102,13 +102,14 @@ try {
             $ig = (string)($q['ig'] ?? '');
             $nap = (string)($q['nap'] ?? '');
             $nap = ny_datum_ok($nap) ? $nap : date('Y-m-d');   // 1.20 előtti kosártétel: a mai állapot
+            $rejt = filter_var($q['fizetett_rejt'] ?? false, FILTER_VALIDATE_BOOLEAN);   // 1.27.1: a vizsgált napon fizetett számlák nélkül
             if ($ceg === false || !in_array($pn, ['HUF', 'EUR'], true) || !ny_datum_ok($tol) || !ny_datum_ok($ig) || $tol > $ig) {
                 continue;
             }
-            $kulcs = "osszevetes:$ceg:$pn:$tol:$ig:$nap";
+            $kulcs = "osszevetes:$ceg:$pn:$tol:$ig:$nap:" . (int)$rejt;
             if (!isset($latott[$kulcs])) {
                 $latott[$kulcs] = true;
-                $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap]];
+                $tetelek[] = ['t' => 'osszevetes', 'id' => (int)$ceg, 'q' => ['ceg' => (int)$ceg, 'pn' => $pn, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap, 'fizetett_rejt' => $rejt]];
             }
             continue;
         }

@@ -114,6 +114,14 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
     importálódik („Importálás változatlanul”), a régi kihagyás / toldalék opciók megmaradtak.
 * Számla adatai: számlaszám, számla kelte, teljesítési dátum, fizetési határidő, összeg (**lehet negatív**),
   BESZÁM (szabad szöveg, pl. a raktári ellenőrző irat száma), megjegyzés.
+* **Üresen hagyott fizetési határidő (1.27.1):** új bejövő számlánál a határidő üresen hagyható – ilyenkor a
+  **sztenderd 30 napos** határidő lesz, a **teljesítés dátumától** számítva (pl. teljesítés 2026.01.31. → határidő
+  2026.03.02.). Rögzítéskor egy kis ablak megmutatja a kapott dátumot, és megkérdezi: *Biztos így szeretnéd rögzíteni?*
+  * **Igen, így rögzítem** → a számla ezzel a határidővel kerül be;
+  * **Nem, megadom** → vissza az űrlapra, semmi nem rögzül, a határidő mező kiemelve vár a dátumra.
+
+  Ha az űrlapon más is hiányzik (számlaszám, összeg…), előbb az szól, a kérdés csak utána jön. Szerkesztésnél a határidő
+  továbbra is kötelező; a kimenő számlákat ez nem érinti.
 * **Részösszeg az utaláshoz (1.27):** a kártya **Részösszeg** gombjával a számlából csak egy rész megy az utalásba (pl.
   16 000-ből 6 000); a többi rögtön szabad marad, és bármikor másik nyitott utalásba mehet – a számla egyszerre több utalásban
   is lehet. A kártyán sárga csipek mutatják az utalásokat, a főérték a még szabad rész; az utalás teljesítése után a rész
@@ -406,6 +414,22 @@ A kereső tájékoztató szövege alatt apró, szürke betűvel mindig látszik 
     nekem” / „ennyivel tartoztam neki”), a fejlécében: *mai állapot* vagy *2026.01.14. napi állapot*;
   * a vizsgált nap a címsorba is bekerül, így a lekérdezés újratöltés után is megmarad, és a „Teljes összevetés a
     kosárba + PDF” is ezzel a nappal készül (a PDF szakaszcímében: *állapot 2026.01.14.*).
+* **Fizetettek elrejtése – kapcsoló (1.27.1):** a dátummezők alatt egy csúszka. Bekapcsolva a **vizsgált időpontban
+  fizetett / beszámított** számlák **mindkét oldalon** (bejövő és kimenő) eltűnnek a listából, így csak a nyitott tételek
+  látszanak; a csupa fizetett számlából álló kötés sem jelenik meg.
+  * **Csak a megjelenítést szűri – semmilyen számlaműveletet nem végez:** egyetlen számla státusza, dátuma vagy bármely
+    adata sem változik, az adatbázisba nem ír semmit (ugyanúgy olvas, mint a *Lekérdezés* gomb). Kikapcsolva minden
+    számla visszajön.
+  * Az elrejtett számlák az összegekből is kimaradnak: az oszlopok fejlécében a látható számlák összege áll, a *Fizetve*
+    sor helyén *Részteljesítés a vizsgált napig* (a látható, még fizetetlen számlák addigi részteljesítései), alatta
+    halványan *Elrejtve: N fizetett számla* és az összegük; a felső sárga dobozban, hány bejövő és kimenő számla nem
+    látszik. A **NYITOTT egyenleg nem változik** (a fizetett számlák abba sosem számítanak bele), és a cég egyenlege a lap
+    tetején sem.
+  * Átkapcsoláskor csak a részletes lista frissül, a lap nem ugrik a tetejére. A kapcsoló állása a címsorba kerül
+    (`fizetett_rejt=1`), így újratöltés és visszalépés után is megmarad; a menüből újra megnyitott oldalon alapból ki van kapcsolva.
+  * A sárga gomb ilyenkor *Teljes összevetés a kosárba + PDF (fizetettek nélkül)*: a PDF is a fizetettek nélkül készül
+    (megjegyzés: hány számla maradt ki, a táblázatban a *FIZETVE* oszlop helyén *Részteljesítés*), és a kosárban külön
+    tétel, mint a kapcsoló nélküli változat.
 * *Banki kivonatok* fül: keresés banki azonosítóra, egy kattintásra látszik, mely kimenő számlákat fedi le.
   Az összegek egy oszlopban, jobbra igazítva állnak (1.18.2); telefonon az azonosító és a cégek alatt (ugyanígy az utalások listájában).
 * Árfolyam: **MNB hivatalos** (SOAP webszolgáltatás) → ha nem elérhető: ECB (frankfurter.app) → open.er-api.com →
@@ -660,6 +684,14 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.27.0-ról 1.27.1-re (üres fizetési határidő = teljesítés + 30 nap megerősítéssel; „Fizetettek elrejtése” az
+összevetésben):** adatbázis-módosítás nincs. Új bejövő számlánál az üresen hagyott fizetési határidő a teljesítéstől számított
+30 nap lesz, rögzítés előtt egy ablak megmutatja és rákérdez (*Bejövő számlák* rész). Az Összevetés oldalon új kapcsoló: a
+vizsgált időpontban fizetett / beszámított számlák mindkét oldalon eltűnnek a listából és az összegekből – csak szűrés,
+számlaadat nem változik (*Összevetés / Összesítő* rész); a PDF is követi. Töltsd fel a frissített `assets/app.js`,
+`assets/app.css`, `includes/api_riport.php`, `includes/nyomtatas.php`, `pdf.php`, `includes/config.php` (csak a verziószám) és
+`TELEPITES.md` fájlokat; a belső szerveren a „BaninaPro App Updater” ikon elég.
 
 **Frissítés 1.26.0-ról 1.27.0-ra (egy számla több utalásban – a részösszeg függő részteljesítés):** **adatbázis-módosítás
 van** – futtasd le a `sql/frissites_1.27.sql` fájlt phpMyAdmin-ban (a `reszteljesitesek.datum` üres lehet = függő rész; az
@@ -1243,4 +1275,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.27.0 (2026-10-17)
+Verzió: 1.27.1 (2026-10-17)

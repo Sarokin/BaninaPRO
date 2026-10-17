@@ -112,6 +112,13 @@
     const b = new Date(d + 'T00:00:00');
     return Math.round((b - a) / 86400000);
   }
+  /** ÉÉÉÉ-HH-NN + n naptári nap (UTC-ben számolva, így az óraátállítás nem csúsztatja); hibás dátumra '' */
+  function datumPlusz(d, n) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d || ''));
+    return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + n)).toISOString().slice(0, 10) : '';
+  }
+  /** Bejövő számla sztenderd fizetési határideje (1.27.1): üresen hagyva a teljesítéstől számított ennyi nap */
+  const ALAP_HATARIDO_NAP = 30;
   function hataridoOszt(d) {
     const n = napokMulva(d);
     if (n < 0) return 'lejart';
@@ -409,7 +416,7 @@
   const KOSAR_TIPUS = { osszevetes: 'Összevetés', allapot: 'Állapot vizsgálat', ceg: 'Cég', kotes: 'Kötés', bejovo: 'Bejövő számla', utalas: 'Utalás', kimeno: 'Kimenő számla', kivonat: 'Banki kivonat' };
   /** A lekérdezést hordozó kosártételek 'q' mezője (típusonként tisztítva) */
   const KOSAR_Q = {
-    osszevetes: (q) => Object.assign({ ceg: Number(q.ceg), pn: String(q.pn), tol: String(q.tol), ig: String(q.ig) }, q.nap ? { nap: String(q.nap) } : {}),
+    osszevetes: (q) => Object.assign({ ceg: Number(q.ceg), pn: String(q.pn), tol: String(q.tol), ig: String(q.ig) }, q.nap ? { nap: String(q.nap) } : {}, q.fizetett_rejt ? { fizetett_rejt: 1 } : {}),
     allapot: (q) => ({ i: String(q.i), ceg: Number(q.ceg), kotes: Number(q.kotes) || 0, tol: String(q.tol), ig: String(q.ig), nap: String(q.nap) }),
   };
   const Kosar = {
@@ -522,7 +529,8 @@
     return (h >>> 1) || 1;
   }
   function osszevetesTetel(q, cegNev) {
-    return { t: 'osszevetes', id: lekerdezesId(`${q.ceg}|${q.pn}|${q.tol}|${q.ig}|${q.nap}`), cimke: `${cegNev} · ${q.pn} · teljesítés ${fmtDatum(q.tol)} – ${fmtDatum(q.ig)} · ${fmtDatum(q.nap)} napi állapot`, q };
+    const rejt = !!q.fizetett_rejt;   // 1.27.1: a vizsgált napon fizetett számlák nélkül – külön tétel, mint egy másik időszak
+    return { t: 'osszevetes', id: lekerdezesId(`${q.ceg}|${q.pn}|${q.tol}|${q.ig}|${q.nap}${rejt ? '|rejt' : ''}`), cimke: `${cegNev} · ${q.pn} · teljesítés ${fmtDatum(q.tol)} – ${fmtDatum(q.ig)} · ${fmtDatum(q.nap)} napi állapot${rejt ? ' · fizetettek nélkül' : ''}`, q };
   }
   /** Az állapot vizsgálat kosár-tételként (1.19): a PDF-ben saját szakasz – a vizsgált napi egyenleg és a számlák az akkori állapotukkal */
   function allapotTetel(q, cimke) {
@@ -1985,9 +1993,10 @@
       const tab = query.tab === 'bank' ? 'bank' : 'egyenleg';
       const ev = App.ma.slice(0, 4);
       // nap: a VIZSGÁLT IDŐPONT (1.20) – alapból mindig a mai nap; a számlák állapota és az egyenleg erre a napra szól
-      const q = { ceg: query.ceg || '', penznem: query.penznem || 'EUR', tol: query.tol || `${ev}-01-01`, ig: query.ig || App.ma, nap: query.nap || App.ma };
+      // rejt: „Fizetettek elrejtése” (1.27.1) – a vizsgált napon fizetett / beszámított számlák mindkét oldalon kimaradnak
+      const q = { ceg: query.ceg || '', penznem: query.penznem || 'EUR', tol: query.tol || `${ev}-01-01`, ig: query.ig || App.ma, nap: query.nap || App.ma, rejt: query.fizetett_rejt === '1' };
       main.innerHTML = `<h1>Összevetés / Összesítő</h1>
-        <div class="fulek" style="--n:2;--i:${tab === 'bank' ? 1 : 0}"><button type="button" class="${tab === 'egyenleg' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes${qs({ ceg: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: query.nap })}">Cég egyenlege</button><button type="button" class="${tab === 'bank' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes?tab=bank">Banki kivonatok</button></div>
+        <div class="fulek" style="--n:2;--i:${tab === 'bank' ? 1 : 0}"><button type="button" class="${tab === 'egyenleg' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes${qs({ ceg: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: query.nap, fizetett_rejt: query.fizetett_rejt })}">Cég egyenlege</button><button type="button" class="${tab === 'bank' ? 'aktiv' : ''}" data-act="ful-nav" data-href="#/osszevetes?tab=bank">Banki kivonatok</button></div>
         <div data-tartalom></div>`;
       const box = $('[data-tartalom]', main);
       if (tab === 'bank') return rajzolBankKivonatok(box, query);
@@ -1996,6 +2005,8 @@
         <div data-urlap class="${q.ceg ? '' : 'rejtett'}">
           <div class="mezo"><label>Pénznem</label><div class="valaszto">${['HUF', 'EUR'].map((p) => `<label><input type="radio" name="ov-penznem" value="${p}" ${q.penznem === p ? 'checked' : ''}><span>${p}</span></label>`).join('')}</div></div>
           <div class="mezo-sor ov-datumok"><div class="mezo"><label>Teljesítés dátuma -tól</label><input type="date" data-ov="tol" value="${esc(q.tol)}" required></div><div class="mezo"><label>-ig</label><input type="date" data-ov="ig" value="${esc(q.ig)}" required></div><div class="mezo"><label>Vizsgált időpont</label><input type="date" data-ov="nap" value="${esc(q.nap)}" required title="A számlák állapota és az egyenleg erre a napra szól (alapból a mai nap)"></div></div>
+          <label class="ov-kapcsolo${q.rejt ? ' be' : ''}"><span class="csuszka"><input type="checkbox" role="switch" data-act="ov-fizetett-rejt" aria-label="Fizetettek elrejtése" ${q.rejt ? 'checked' : ''}><span class="palya"><span class="golyo"></span></span></span>
+            <span class="szoveg"><b>Fizetettek elrejtése</b><small>A vizsgált időpontban fizetett / beszámított számlák mindkét oldalon eltűnnek a listából és az összegekből.</small></span></label>
           <button class="btn btn-blokk" type="button" data-act="ov-lekerdez">${I.scale} Lekérdezés</button>
           <div data-reszletek></div>
         </div>`;
@@ -2039,7 +2050,7 @@
   async function rajzolReszletek(box, q) {
     box.innerHTML = '<div class="toltes"></div>';
     try {
-      const d = await api('osszevetes_reszletek', { ceg_id: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: q.nap });
+      const d = await api('osszevetes_reszletek', { ceg_id: q.ceg, penznem: q.penznem, tol: q.tol, ig: q.ig, nap: q.nap, fizetett_rejt: !!q.rejt });
       const pn = d.penznem;
       const b = d.bejovo, k = d.kimeno;
       // a számlák a vizsgált napi állapotukkal (1.20): összeg = fizetetlennél a vizsgált napi hátralék, különben az összeg
@@ -2047,36 +2058,64 @@
       const fizNap = (s, cimke) => (s.fizetve_datum ? `<span class="fiz-nap${s.fizetve_datum <= d.nap ? ' korabban' : ''}">${s.fizetve_becsult ? 'határidő ~' : cimke} ${fmtDatum(s.fizetve_datum)}</span>` : '');
       const reszt = (s) => (s.allapot === 'FIZETETLEN' && s.reszt_napon > 0 ? `<span class="kicsi szurke">eredeti ${fmtOsszeg(s.osszeg, pn)} · részt. −${fmtOsszeg(s.reszt_napon, pn)}</span>` : '');
       const nemLet = (o) => (o.nem_letezett_db ? ` · ${o.nem_letezett_db} még nem létezett` : '');
+      // „Fizetettek elrejtése” (1.27.1): a vizsgált napon rendezett számlák sem a listában, sem az összegekben – a fizetett rész
+      // ilyenkor a látható számlák részteljesítése, alatta az elrejtett számlák száma és összege
+      const rejt = !!d.fizetett_rejt;
+      const fizetveSor = (o, cimke, rejtCimke) => (rejt
+        ? `<div class="reszossz"><span>Részteljesítés a vizsgált napig${nemLet(o)}</span><b>${fmtOsszeg(o.fizetve, pn)}</b></div><div class="reszossz elrejtve" data-elrejtve><span>Elrejtve: ${o.rejtett_db} ${rejtCimke} számla</span><b>${fmtOsszeg(o.rejtett_osszeg, pn)}</b></div>`
+        : `<div class="reszossz"><span>${cimke}${nemLet(o)}</span><b>${fmtOsszeg(o.fizetve, pn)}</b></div>`);
+      const ures = (o, irany) => `<div class="ures">${rejt && o.rejtett_db ? `Nincs fizetetlen ${irany} számla az időszakban – a fizetettek el vannak rejtve.` : `Nincs ${irany} számla az időszakban.`}</div>`;
       box.innerHTML = `
         <div class="info-doboz" style="margin-top:14px"><b>${esc(d.ceg.nev)}</b> · ${pn} · teljesítés ${fmtDatum(d.tol)} – ${fmtDatum(d.ig)} · <b data-ov-nap>${fmtDatum(d.nap)}</b> napi állapot<br>
-          NYITOTT egyenleg: <b class="${negOszt(d.egyenleg_nyitott)}">${fmtOsszeg(d.egyenleg_nyitott, pn)}</b> · FIZETVE egyenleg: <b class="${negOszt(d.egyenleg_fizetve)}">${fmtOsszeg(d.egyenleg_fizetve, pn)}</b>
-          <span class="kicsi szurke">(bejövő − kimenő; pozitív: én tartozom, negatív: ő tartozik)</span></div>
-        <button class="btn btn-sarga btn-blokk" type="button" style="margin-top:10px" data-act="ov-kosarba-pdf" data-ceg="${d.ceg.id}" data-ceg-nev="${esc(d.ceg.nev)}" data-pn="${esc(pn)}" data-tol="${esc(d.tol)}" data-ig="${esc(d.ig)}" data-nap="${esc(d.nap)}" title="A teljes összevetés (egyenleg, bejövő és kimenő számlák) a nyomtatási kosárba, és PDF új lapon">${I.print} Teljes összevetés a kosárba + PDF</button>
+          NYITOTT egyenleg: <b class="${negOszt(d.egyenleg_nyitott)}">${fmtOsszeg(d.egyenleg_nyitott, pn)}</b>${rejt ? '' : ` · FIZETVE egyenleg: <b class="${negOszt(d.egyenleg_fizetve)}">${fmtOsszeg(d.egyenleg_fizetve, pn)}</b>`}
+          <span class="kicsi szurke">(bejövő − kimenő; pozitív: én tartozom, negatív: ő tartozik)</span>${rejt ? `<br><span data-ov-rejt><b>Fizetettek elrejtve:</b> a vizsgált napon fizetett / beszámított ${b.osszesites.rejtett_db} bejövő és ${k.osszesites.rejtett_db} kimenő számla nem látszik, és az összegekben sem szerepel.</span>` : ''}</div>
+        <button class="btn btn-sarga btn-blokk" type="button" style="margin-top:10px" data-act="ov-kosarba-pdf" data-ceg="${d.ceg.id}" data-ceg-nev="${esc(d.ceg.nev)}" data-pn="${esc(pn)}" data-tol="${esc(d.tol)}" data-ig="${esc(d.ig)}" data-nap="${esc(d.nap)}" data-rejt="${rejt ? 1 : 0}" title="A teljes összevetés (egyenleg, bejövő és kimenő számlák${rejt ? ', a fizetettek nélkül' : ''}) a nyomtatási kosárba, és PDF új lapon">${I.print} Teljes összevetés a kosárba + PDF${rejt ? ' (fizetettek nélkül)' : ''}</button>
         <div class="ketoszlop">
           <div>
             <div class="oszlop-fej be"><span>Bejövő számlák egyenleg összesen</span><span class="o">${fmtOsszeg(b.osszesites.osszes, pn)}</span></div>
             <div class="oszlop-test">
               <div class="reszossz"><span>Fizetetlen a vizsgált napon</span><b>${fmtOsszeg(b.osszesites.nyitott, pn)}</b></div>
-              <div class="reszossz"><span>Fizetve / beszámítva${nemLet(b.osszesites)}</span><b>${fmtOsszeg(b.osszesites.fizetve, pn)}</b></div>
+              ${fizetveSor(b.osszesites, 'Fizetve / beszámítva', 'fizetett / beszámított')}
               <div class="reszletes">${b.kotesek.length ? b.kotesek.map((kt) => `
                 <div class="kotes-sor"><a class="kod" href="#/bejovo/ceg/${d.ceg.id}/kotes/${kt.kotes_pk}">${esc(kt.kotes_kod)}${kt.kotes_megnevezes ? `<small>${esc(kt.kotes_megnevezes)}</small>` : ''}</a><span class="jobb"><span class="${negOszt(kt.osszeg)}">${fmtOsszeg(kt.osszeg, pn)}</span>${nyomtatGomb('kotes', kt.kotes_pk, kt.kotes_kod + (kt.kotes_megnevezes ? ' · ' + kt.kotes_megnevezes : ''))}</span></div>
                 ${kt.szamlak.map((s) => `<div class="szamla-sor${s.allapot === 'MEG_NEM_LETEZETT' ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><a class="k" href="#/bejovo/ceg/${d.ceg.id}/kotes/${kt.kotes_pk}?szamla=${s.id}">${esc(s.k)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}${s.utalas_uid ? `<span class="mono kicsi">${esc(s.utalas_uid)}</span>` : ''}<span class="kicsi szurke">telj. ${fmtDatum(s.teljesites_datum)}</span>${fizNap(s, 'utalva')}${reszt(s)}</div><span class="o${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span>${nyomtatGomb('bejovo', s.id, `${kt.kotes_kod}-${s.k} · „${s.szamlaszam}”`)}</div>`).join('')}
-              `).join('') : '<div class="ures">Nincs bejövő számla az időszakban.</div>'}</div>
+              `).join('') : ures(b.osszesites, 'bejövő')}</div>
             </div>
           </div>
           <div>
             <div class="oszlop-fej ki"><span>Kimenő számlák egyenleg összesen</span><span class="o">${fmtOsszeg(k.osszesites.osszes, pn)}</span></div>
             <div class="oszlop-test">
               <div class="reszossz"><span>Fizetetlen a vizsgált napon</span><b>${fmtOsszeg(k.osszesites.nyitott, pn)}</b></div>
-              <div class="reszossz"><span>Fizetve${nemLet(k.osszesites)}</span><b>${fmtOsszeg(k.osszesites.fizetve, pn)}</b></div>
+              ${fizetveSor(k.osszesites, 'Fizetve', 'fizetett')}
               <div class="reszletes">${k.szamlak.length ? k.szamlak.map((s) => `
                 <div class="kotes-sor"><a class="kod" href="#/kimeno/ceg/${d.ceg.id}?szamla=${s.id}">${esc(s.kod)}</a><span class="jobb"><span class="${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span>${nyomtatGomb('kimeno', s.id, `${s.kod} · „${s.szamlaszam}”`)}</span></div>
                 <div class="szamla-sor${s.allapot === 'MEG_NEM_LETEZETT' ? ' nem-letezett' : ''}" data-allapot-sor="${s.id}"><div class="bal"><span class="szsz">„${esc(s.szamlaszam)}”</span>${badge(s.allapot)}<span class="kicsi szurke">telj. ${fmtDatum(s.teljesites_datum)}</span>${fizNap(s, 'fizetve')}${s.banki_azonosito ? `<span class="kicsi">bank: ${esc(s.banki_azonosito)}</span>` : ''}${reszt(s)}</div><span class="o${negOszt(ertek(s))}">${fmtOsszeg(ertek(s), pn)}</span></div>
-              `).join('') : '<div class="ures">Nincs kimenő számla az időszakban.</div>'}</div>
+              `).join('') : ures(k.osszesites, 'kimenő')}</div>
             </div>
           </div>
         </div>`;
     } catch (e) { box.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`; }
+  }
+  /**
+   * Az összevetés lekérdezése az űrlap szerint – a Lekérdezés gomb és a „Fizetettek elrejtése” kapcsoló (1.27.1) is ezt hívja.
+   * Ha csak a kapcsoló változott (vagy semmi), a címsor csendben frissül, és csak a részletes lista rajzolódik újra:
+   * a cég egyenlege és a görgetés marad. Más cég / időszak / nap: új lekérdezés a címsoron át.
+   */
+  function ovLekerdez() {
+    const ceg = $('[data-act=ov-ceg]').value;
+    const pn = ($('input[name=ov-penznem]:checked') || {}).value || 'EUR';
+    const tol = $('[data-ov=tol]').value, ig = $('[data-ov=ig]').value, nap = $('[data-ov=nap]').value;
+    const rejt = !!($('[data-act=ov-fizetett-rejt]') || {}).checked;
+    if (!ceg) return toast('Előbb válassz céget!', 'hiba');
+    if (!tol || !ig) return toast('A tól–ig dátum megadása kötelező!', 'hiba');
+    if (tol > ig) return toast('A kezdő dátum nem lehet későbbi a záró dátumnál!', 'hiba');
+    if (!nap) return toast('Add meg a vizsgált időpontot!', 'hiba');
+    const q = { ceg, penznem: pn, tol, ig, nap };
+    const uj = '#/osszevetes' + qs(Object.assign({}, q, { fizetett_rejt: rejt ? '1' : '' }));
+    const r = route().query;
+    if (qs({ ceg: r.ceg, penznem: r.penznem, tol: r.tol, ig: r.ig, nap: r.nap }) !== qs(q)) return nav(uj);
+    if (location.hash !== uj) { try { history.replaceState(null, '', location.pathname + location.search + uj); } catch (e) { /* mindegy */ } }
+    rajzolReszletek($('[data-reszletek]'), Object.assign({ rejt }, q));
   }
   async function rajzolBankKivonatok(box, query) {
     const q = query.q || '';
@@ -2977,13 +3016,14 @@
       ${uzletkoto ? `<div class="info-doboz">Üzletkötőként a számla adatait nem módosíthatod: a <b>BESZÁM</b>-ot beírhatod vagy módosíthatod (törölni nem), a megjegyzéshez hozzáfűzhetsz.</div><div class="alsor" style="margin-bottom:10px"><span>„${esc(szamla.szamlaszam)}”</span><span>Kelt: ${fmtDatum(szamla.kelt)}</span><span>Határidő: <b>${fmtDatum(szamla.fizetesi_hatarido)}</b></span><span><b>${fmtOsszeg(szamla.osszeg, kotes.penznem)}</b></span></div>` : lezart ? '<div class="info-doboz">A számla már FIZETVE/BESZÁMÍTVA státuszú: csak a BESZÁM és a megjegyzés módosítható.</div>' : ''}
       ${korlatozott ? '' : inp('szamlaszam', 'Számlaszám (a számlán szereplő, bármilyen formátum)', { ertek: szamla && szamla.szamlaszam, kotelezo: true, placeholder: 'pl. SZ-2026/00017', attr: 'autocapitalize="characters"' })}
       ${korlatozott ? '' : `<div class="mezo-sor">${inp('kelt', 'Számla kelte', { tipus: 'date', ertek: (szamla && szamla.kelt) || App.ma, kotelezo: true })}${inp('teljesites_datum', 'Teljesítési dátum', { tipus: 'date', ertek: (szamla && szamla.teljesites_datum) || App.ma, kotelezo: true })}</div>`}
-      ${korlatozott ? '' : `<div class="mezo-sor">${inp('fizetesi_hatarido', 'Fizetési határidő', { tipus: 'date', ertek: szamla && szamla.fizetesi_hatarido, kotelezo: true })}${inp('osszeg', `Számla összege (${kotes.penznem})`, { ertek: szamla ? String(szamla.osszeg).replace('.', ',') : '', kotelezo: true, inputmode: 'text', placeholder: 'pl. 12 500 vagy -2 000', segit: szerk && Number(szamla.reszt) > 0 ? `Ez a számla <b>eredeti</b> összege. A részteljesítések (${fmtOsszeg(szamla.reszt, kotes.penznem)}) után a hátralék: <b>${fmtOsszeg(szamla.hatralek, kotes.penznem)}</b>.` : 'Lehet mínusz szám is (jóváíró / beszámítandó tétel).' })}</div>`}
+      ${korlatozott ? '' : `<div class="mezo-sor">${inp('fizetesi_hatarido', 'Fizetési határidő', { tipus: 'date', ertek: szamla && szamla.fizetesi_hatarido, kotelezo: szerk, segit: szerk ? '' : `Ha üresen hagyod: a teljesítéstől számított ${ALAP_HATARIDO_NAP} nap (rögzítés előtt rákérdezünk).` })}${inp('osszeg', `Számla összege (${kotes.penznem})`, { ertek: szamla ? String(szamla.osszeg).replace('.', ',') : '', kotelezo: true, inputmode: 'text', placeholder: 'pl. 12 500 vagy -2 000', segit: szerk && Number(szamla.reszt) > 0 ? `Ez a számla <b>eredeti</b> összege. A részteljesítések (${fmtOsszeg(szamla.reszt, kotes.penznem)}) után a hátralék: <b>${fmtOsszeg(szamla.hatralek, kotes.penznem)}</b>.` : 'Lehet mínusz szám is (jóváíró / beszámítandó tétel).' })}</div>`}
       ${inp('beszam', 'BESZÁM', { ertek: szamla && szamla.beszam, opc: !(uzletkoto && beszamVan), kotelezo: uzletkoto && beszamVan, placeholder: 'pl. raktári ellenőrző irat száma', segit: uzletkoto && beszamVan ? 'A kitöltött BESZÁM csak módosítható, üresre nem állítható.' : '' })}
       ${megjegyzesMezo(szamla)}
       ${szerk ? resztSzakasz('BEJOVO', szamla) : ''}`,
       async (a, f, m) => {
         if (!korlatozott && f.dataset.foglalt === '1') throw new Error('Ebben a kötésben már szerepel ez a számlaszám – egy kötésen belül ugyanaz a számlaszám csak egyszer rögzíthető (másik kötésben igen).');
         if (uzletkoto && beszamVan && !String(a.beszam || '').trim()) throw new Error('A BESZÁM nem törölhető – ha egyszer ki lett töltve, csak módosítani lehet.');
+        if (!szerk && !a.fizetesi_hatarido && !(await alapHataridoMegerosites(a, f))) return;
         a.megjegyzes = megjegyzesErtek(a); delete a.megjegyzes_uj; delete a.megjegyzes_regi;
         if (szerk) { await api('bejovo_szamla_modosit', Object.assign({ id: szamla.id }, a)); toast(uzletkoto ? 'BESZÁM / megjegyzés mentve' : 'Számla mentve', 'siker'); }
         else { const r = await api('bejovo_szamla_letrehoz', Object.assign({ kotes_id: kotes.id }, a)); toast('Új számla: ' + esc(r.kod), 'siker'); }
@@ -2992,6 +3032,35 @@
     const allapot = { frissit: false };
     if (!korlatozott) szamlaszamEllenorzes(form, Object.assign({ kotes_id: kotes.id }, szerk ? { kiveve_bejovo_id: szamla.id } : {}));
     if (szerk) resztInit(form, 'BEJOVO', szamla, allapot);
+  }
+  /**
+   * Új bejövő számla üresen hagyott fizetési határidővel (1.27.1): a sztenderd határidő a teljesítéstől számított
+   * ALAP_HATARIDO_NAP nap. Egy kis ablak megmutatja a kapott dátumot, és csak jóváhagyás után kerül az adatok közé.
+   * Előbb a többi kötelező mezőt nézi (a szerver sorrendjében és szövegével), hogy hiányos űrlapnál ne kérdezzen feleslegesen.
+   * true: mehet a rögzítés; false: a felhasználó maga adja meg (a határidő mező kiemelve).
+   */
+  async function alapHataridoMegerosites(a, form) {
+    if (!a.szamlaszam) throw new Error('Hiányzó adat: számlaszám');
+    if (!a.teljesites_datum) throw new Error('Hiányzó dátum: teljesítési dátum');
+    if (!a.kelt) throw new Error('Hiányzó dátum: számla kelte');
+    if (!a.osszeg) throw new Error('Hiányzó adat: számla összege');
+    const hat = datumPlusz(a.teljesites_datum, ALAP_HATARIDO_NAP);
+    if (!hat) return true;   // hibás teljesítési dátum: a szerver hibaüzenete szól
+    const mezo = $('[name=fizetesi_hatarido]', form);
+    const ok = await confirmModal('Üresen maradt a fizetési határidő', `<p>A fizetési határidőt üresen hagytad, így a <b>sztenderd ${ALAP_HATARIDO_NAP} napos</b> fizetési határidő lett beállítva, a teljesítés napjától (${fmtDatum(a.teljesites_datum)}) számítva:</p>
+      <div class="datum-nagy" data-alap-hatarido>${fmtDatum(hat)}</div>
+      <p><b>Biztos így szeretnéd rögzíteni?</b></p>`, { ok: 'Igen, így rögzítem', megse: 'Nem, megadom', okOsztaly: 'btn-zold', osztaly: 'hatarido-kerdes' });
+    if (!ok) {
+      if (mezo) {
+        mezo.classList.add('figyelem');
+        mezo.addEventListener('input', () => mezo.classList.remove('figyelem'), { once: true });
+        if (window.innerWidth >= 640) mezo.focus(); else mezo.scrollIntoView({ block: 'center' });
+      }
+      return false;
+    }
+    a.fizetesi_hatarido = hat;
+    if (mezo) mezo.value = hat;   // ha a szerver más miatt visszadobja, a jóváhagyott dátum a mezőben marad, és nem kérdez újra
+    return true;
   }
   /**
    * RÉSZTELJESÍTÉSEK szakasz a számla szerkesztő ablakában.
@@ -3628,7 +3697,7 @@
     },
     'idoszak-ceg-torol': async () => { App.kotesIdoszak = null; await kotesekFrissit(); },
     'ov-kosarba-pdf': (el) => {
-      const tetel = osszevetesTetel({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig, nap: el.dataset.nap }, el.dataset.cegNev || '');
+      const tetel = osszevetesTetel(Object.assign({ ceg: Number(el.dataset.ceg), pn: el.dataset.pn, tol: el.dataset.tol, ig: el.dataset.ig, nap: el.dataset.nap }, el.dataset.rejt === '1' ? { fizetett_rejt: 1 } : {}), el.dataset.cegNev || '');
       const r = Kosar.hozzaad([tetel]);
       pdfKuldes([tetel]);   // a PDF csak ezt az összevetést tartalmazza; a kosárban marad, más tételekkel együtt is nyomtatható
       kosarLapFrissit();
@@ -3672,18 +3741,7 @@
     'hat-penznem': (el) => { App.hataridoSzuro.penznem = el.dataset.v || null; rajzolHataridok(); hataridoSzuroToast(); },
     'hat-ceg': (el) => { App.hataridoSzuro.ceg = el.dataset.id ? Number(el.dataset.id) : null; App.hataridoSzuro.cegNev = el.dataset.nev || ''; rajzolHataridok(); hataridoSzuroToast(); },
     'hat-reset': () => { App.hataridoSzuro = { ceg: null, cegNev: '', penznem: null, irany: 'MIND', utalasAlatt: App.hataridoSzuro.utalasAlatt }; rajzolHataridok(); hataridoSzuroToast(); },
-    'ov-lekerdez': () => {
-      const r = route();
-      const ceg = $('[data-act=ov-ceg]').value;
-      const pn = ($('input[name=ov-penznem]:checked') || {}).value || 'EUR';
-      const tol = $('[data-ov=tol]').value, ig = $('[data-ov=ig]').value, nap = $('[data-ov=nap]').value;
-      if (!ceg) return toast('Előbb válassz céget!', 'hiba');
-      if (!tol || !ig) return toast('A tól–ig dátum megadása kötelező!', 'hiba');
-      if (tol > ig) return toast('A kezdő dátum nem lehet későbbi a záró dátumnál!', 'hiba');
-      if (!nap) return toast('Add meg a vizsgált időpontot!', 'hiba');
-      const uj = '#/osszevetes' + qs({ ceg, penznem: pn, tol, ig, nap });
-      if (('#' + r.path.join('/')) && location.hash === uj) rajzolReszletek($('[data-reszletek]'), { ceg, penznem: pn, tol, ig, nap }); else nav(uj);
-    },
+    'ov-lekerdez': () => ovLekerdez(),
     'jelszo-szem': (el) => {
       const be = el.parentElement.querySelector('[data-jelszo]'); if (!be) return;
       const mutat = !be.classList.contains('jelszo-latszik');
@@ -3761,7 +3819,11 @@
       BankKosar.frissit();
     } else if (el.matches('[data-act=ov-ceg]')) {
       const r = route();
-      nav('#/osszevetes' + qs({ ceg: el.value, penznem: r.query.penznem || 'EUR', tol: r.query.tol || '', ig: r.query.ig || '', nap: r.query.nap || '' }));
+      nav('#/osszevetes' + qs({ ceg: el.value, penznem: r.query.penznem || 'EUR', tol: r.query.tol || '', ig: r.query.ig || '', nap: r.query.nap || '', fizetett_rejt: r.query.fizetett_rejt || '' }));
+    } else if (el.matches('[data-act=ov-fizetett-rejt]')) {
+      const k = el.closest('.ov-kapcsolo');
+      if (k) k.classList.toggle('be', el.checked);
+      ovLekerdez();
     } else if (el.matches('[data-act=idoszak-mezo]')) {
       idoszakMezoValt(el);
     } else if (el.matches('[data-act=mu-ceg]')) {

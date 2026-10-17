@@ -116,7 +116,8 @@ function act_osszevetes_egyenleg(array $be): array
 }
 
 /**
- * Részletes összevetés: cég + pénznem + teljesítési dátum tól–ig (kötelező) + vizsgált időpont (nap, alapból ma – 1.20).
+ * Részletes összevetés: cég + pénznem + teljesítési dátum tól–ig (kötelező) + vizsgált időpont (nap, alapból ma – 1.20)
+ * + fizetett_rejt (1.27.1, a „Fizetettek elrejtése” kapcsoló).
  * Bejövő számlák kötésenként csoportosítva, kimenő számlák listája,
  * NYITOTT és FIZETVE egyenlegek az időszakra – a vizsgált napi állapot szerint.
  */
@@ -128,11 +129,12 @@ function act_osszevetes_reszletek(array $be): array
     $tol = be_datum($be, 'tol', true, 'dátum (-tól)');
     $ig = be_datum($be, 'ig', true, 'dátum (-ig)');
     $nap = be_datum($be, 'nap', false, 'vizsgált időpont') ?? date('Y-m-d');
+    $rejt = be_bool($be, 'fizetett_rejt');
     if ($tol > $ig) {
         hiba('A kezdő dátum nem lehet későbbi a záró dátumnál.');
     }
-    $d = osszevetes_reszletek_adat($cegId, $penznem, $tol, $ig, $nap);
-    naplo('OSSZEVETES_RESZLETEK', "cég #{$cegId} ({$d['ceg']['nev']}), $penznem, teljesítés $tol – $ig, állapot $nap napon");
+    $d = osszevetes_reszletek_adat($cegId, $penznem, $tol, $ig, $nap, $rejt);
+    naplo('OSSZEVETES_RESZLETEK', "cég #{$cegId} ({$d['ceg']['nev']}), $penznem, teljesítés $tol – $ig, állapot $nap napon" . ($rejt ? ', fizetettek elrejtve' : ''));
     return $d;
 }
 
@@ -140,16 +142,27 @@ function act_osszevetes_reszletek(array $be): array
  * Az összevetés adatai (cég + pénznem + teljesítési időszak + vizsgált nap) – az oldal és a PDF (nyomtatási kosár) is ezt
  * használja, így a kettő mindig ugyanazt mutatja. A számlák állapota és összegei a vizsgált napon (allapot_napon, 1.20):
  * a még nem létezett (később teljesült) számlák listában maradnak, de egyik összegbe sem számítanak bele.
+ * $fizetettRejt (1.27.1): a vizsgált napon rendezett (FIZETVE / BESZÁMÍTVA) számlák mindkét oldalon kimaradnak a listából és
+ * minden összegből; csak a számuk és az összegük marad meg (rejtett_db, rejtett_osszeg). A NYITOTT egyenleget nem érinti.
  * A bemenetet a hívó ellenőrzi; ha a cég nem létezik, hibát dob.
  */
-function osszevetes_reszletek_adat(int $cegId, string $penznem, string $tol, string $ig, ?string $nap = null): array
+function osszevetes_reszletek_adat(int $cegId, string $penznem, string $tol, string $ig, ?string $nap = null, bool $fizetettRejt = false): array
 {
     $nap = $nap ?? date('Y-m-d');
     $ceg = db_row('SELECT id, nev FROM cegek WHERE id = ?', [$cegId]);
     if (!$ceg) {
         hiba('A cég nem található.');
     }
-    $ures = fn(): array => ['nyitott' => 0.0, 'fizetve' => 0.0, 'osszes' => 0.0, 'reszt' => 0.0, 'db' => 0, 'nem_letezett_db' => 0];
+    $ures = fn(): array => ['nyitott' => 0.0, 'fizetve' => 0.0, 'osszes' => 0.0, 'reszt' => 0.0, 'db' => 0, 'nem_letezett_db' => 0, 'rejtett_db' => 0, 'rejtett_osszeg' => 0.0];
+    // „Fizetettek elrejtése”: a vizsgált napon rendezett számla csak a rejtett számlálóba kerül (true: kimarad)
+    $rejtve = function (array &$o, array $s) use ($fizetettRejt): bool {
+        if (!$fizetettRejt || !in_array($s['allapot'], ALLAPOT_RENDEZETT, true)) {
+            return false;
+        }
+        $o['rejtett_db']++;
+        $o['rejtett_osszeg'] = round($o['rejtett_osszeg'] + $s['osszeg'], 2);
+        return true;
+    };
     // nyitott = a vizsgált napi hátralék, fizetve = rendezett összeg + a fizetetlen számla addigi részteljesítése;
     // $osszegKulcs: a teljes forgalom mezője (összesítő: osszes, kötés: osszeg)
     $gyujt = function (array &$o, array $s, string $osszegKulcs = 'osszes'): void {
@@ -169,6 +182,9 @@ function osszevetes_reszletek_adat(int $cegId, string $penznem, string $tol, str
     $kotesek = [];
     $bejOssz = $ures();
     foreach ($bej as $s) {
+        if ($rejtve($bejOssz, $s)) {
+            continue;
+        }
         $kk = $s['kotes_kod'];
         $kotesek[$kk] = $kotesek[$kk] ?? ['kotes_pk' => $s['kotes_pk'], 'kotes_kod' => $kk, 'kotes_megnevezes' => $s['kotes_megnevezes'],
                                            'osszeg' => 0.0, 'nyitott' => 0.0, 'fizetve' => 0.0, 'reszt' => 0.0, 'db' => 0, 'nem_letezett_db' => 0, 'szamlak' => []];
@@ -179,15 +195,20 @@ function osszevetes_reszletek_adat(int $cegId, string $penznem, string $tol, str
     $kim = allapot_sorok('KIMENO', $cegId, null, $tol, $ig, $nap, $penznem);
     usort($kim, fn(array $a, array $b): int => $a['kod'] <=> $b['kod']);
     $kimOssz = $ures();
+    $kimLista = [];
     foreach ($kim as $s) {
+        if ($rejtve($kimOssz, $s)) {
+            continue;
+        }
         $gyujt($kimOssz, $s);
+        $kimLista[] = $s;
     }
 
     return [
         'ceg' => ['id' => (int)$ceg['id'], 'nev' => $ceg['nev']],
-        'penznem' => $penznem, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap,
+        'penznem' => $penznem, 'tol' => $tol, 'ig' => $ig, 'nap' => $nap, 'fizetett_rejt' => $fizetettRejt,
         'bejovo' => ['osszesites' => $bejOssz, 'kotesek' => array_values($kotesek)],
-        'kimeno' => ['osszesites' => $kimOssz, 'szamlak' => $kim],
+        'kimeno' => ['osszesites' => $kimOssz, 'szamlak' => $kimLista],
         'egyenleg_nyitott' => round($bejOssz['nyitott'] - $kimOssz['nyitott'], 2),
         'egyenleg_fizetve' => round($bejOssz['fizetve'] - $kimOssz['fizetve'], 2),
     ];
