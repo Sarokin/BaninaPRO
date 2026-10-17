@@ -726,11 +726,11 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
             $sorok = [];
             $t = [];
             foreach ($kiv as $k) {
-                $szamlak = db_all(KIMENO_SQL . 'WHERE s.banki_kivonat_id = ? ORDER BY s.kod', [(int)$k['id']]);
+                $szamlak = banki_kivonat_szamlai((int)$k['id']);   // 1.29: a részösszeggel fedezett számlák is (fedezett = amennyit ez a kivonat fedez)
                 $ossz = [];
                 foreach ($szamlak as $s) {
-                    $ossz[$s['penznem']] = ($ossz[$s['penznem']] ?? 0) + (float)$s['hatralek'];
-                    $t[$s['penznem']] = ($t[$s['penznem']] ?? 0) + (float)$s['hatralek'];
+                    $ossz[$s['penznem']] = ($ossz[$s['penznem']] ?? 0) + $s['fedezett'];
+                    $t[$s['penznem']] = ($t[$s['penznem']] ?? 0) + $s['fedezett'];
                 }
                 $osszTxt = implode("\n", array_map(fn($pn, $v) => ny_osszeg($v, $pn), array_keys($ossz), $ossz));
                 // a kivonat a fő sor (sötét sáv), alatta az általa lefedett számlák (1.21)
@@ -738,7 +738,13 @@ function pdf_lista(array $tetelek, array $felhasznalo, bool $ff = false): string
                             'stilus' => 'fo', 'vastag' => [0 => true, 3 => true]];
                 foreach ($szamlak as $s) {
                     $reszt = (float)$s['reszt'] > 0;
-                    $sorok[] = ['cellak' => [$s['kod'] . ' · „' . $s['szamlaszam'] . '”' . ($reszt ? ' (eredeti ' . ny_osszeg($s['osszeg']) . ', részteljesítés ' . ny_osszeg($s['reszt']) . ')' : ''), ny_datum($s['fizetve_datum']), '', ny_osszeg($s['hatralek'], $s['penznem']), $s['ceg_nev']],
+                    if ($s['reszben']) {
+                        // részösszeg (1.29): csak egy részét fedezi ez a kivonat – a dátum a kivonaté
+                        $sorok[] = ['cellak' => [$s['kod'] . ' · „' . $s['szamlaszam'] . '” (részösszeg, a számla ' . ny_osszeg($s['osszeg']) . ')', ny_datum($k['datum']), '', ny_osszeg($s['fedezett'], $s['penznem']), $s['ceg_nev']],
+                                   'en' => [0 => '(partial amount, invoice total ' . ny_osszeg($s['osszeg']) . ')']];
+                        continue;
+                    }
+                    $sorok[] = ['cellak' => [$s['kod'] . ' · „' . $s['szamlaszam'] . '”' . ($reszt ? ' (eredeti ' . ny_osszeg($s['osszeg']) . ', részteljesítés ' . ny_osszeg($s['reszt']) . ')' : ''), ny_datum($s['fizetve_datum']), '', ny_osszeg($s['fedezett'], $s['penznem']), $s['ceg_nev']],
                                'en' => $reszt ? [0 => '(original ' . ny_osszeg($s['osszeg']) . ', partial payments ' . ny_osszeg($s['reszt']) . ')'] : []];
                 }
             }

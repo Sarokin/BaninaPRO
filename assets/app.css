@@ -585,6 +585,19 @@ body.van-utalas-fab.van-bank-fab .nezet { padding-bottom: calc(336px + var(--saf
 .bank-auto-sor .cimke { display: block; font-size: 12.5px; color: var(--szoveg-2); }
 .bank-auto-sor b { font-size: 17px; margin-right: 6px; overflow-wrap: anywhere; }
 .modal .bank-azon-nagy { font-size: 22px; font-weight: 800; margin: 8px 0 2px; overflow-wrap: anywhere; }
+/* 1.29 részösszeg a bankhoz adásban: alapból csak egy kis gomb; kinyitva számlánként az összeg (alapból a teljes hátralék) */
+.bank-resz-nyit { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 2px 0 6px; }
+.bank-resz { border: 1.5px solid rgba(254,131,2,.45); border-radius: var(--radius-sm); padding: 10px 14px; margin: 2px 0 6px; background: var(--narancs-tint); }
+.bank-resz-fej { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bank-resz-sor { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 8px 0; border-top: 1px dashed var(--vonal); }
+.bank-resz-sor .bal { min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.bank-resz-mezo { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.bank-resz-mezo input { width: 120px; text-align: right; font: inherit; font-variant-numeric: tabular-nums; padding: 8px 10px; border: 1.5px solid var(--vonal); border-radius: 10px; background: var(--felulet); }
+.bank-resz-mezo input.resz { border-color: var(--narancs); box-shadow: 0 0 0 3px rgba(254,131,2,.14); }
+.bank-resz-mezo input.hibas { border-color: var(--piros); box-shadow: 0 0 0 3px rgba(214,69,65,.14); }
+.bank-resz-jel { grid-column: 1 / -1; font-size: 12.5px; color: var(--halvany); }
+.bank-resz-jel.resz { color: var(--narancs-2); font-weight: 700; }
+.bank-resz-jel.hiba { color: var(--piros-2); font-weight: 700; }
 /* 1.27.1: üresen hagyott fizetési határidő – a kapott dátum nagyban, a megerősítő kérdés felett */
 .modal .datum-nagy { text-align: center; font-size: 32px; font-weight: 900; letter-spacing: -.5px; font-variant-numeric: tabular-nums; color: var(--narancs-2); margin: 12px 0; }
 .szamlalo { font-size: 54px; font-weight: 900; color: var(--narancs); font-variant-numeric: tabular-nums; margin: 6px 0 12px; line-height: 1; }

@@ -227,10 +227,38 @@ function act_kimeno_torol(array $be): array
 //  BANKI KIVONAT azonosítók
 // ---------------------------------------------------------------------------
 
+/** SQL-feltétel (s = kimeno_szamlak, bk = banki_kivonatok): a számlát ez a kivonat fedezi – egészében (FIZETVE vele) vagy
+    részösszeggel (1.29: hozzá kötött részteljesítés) */
+const KIVONAT_SZAMLAI = '(s.banki_kivonat_id = bk.id OR s.id IN (SELECT r.szamla_id FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.banki_kivonat_id = bk.id))';
+
+/**
+ * Egy kivonat által fedezett kimenő számlák. fedezett = amennyit ez a kivonat fedez (FIZETVE-nél a végső hátralék,
+ * részösszegnél a hozzá kötött részteljesítés); reszben = csak részösszeggel (a számla nyitott maradt vagy később más rendezte).
+ */
 function banki_kivonat_szamlai(int $kivonatId): array
 {
-    $sorok = db_all(KIMENO_SQL . 'WHERE s.banki_kivonat_id = ? ORDER BY s.kod', [$kivonatId]);
-    return reszt_csatol(array_map('kimeno_sor_feldolgoz', $sorok), 'KIMENO');
+    $sorok = db_all(KIMENO_SQL . 'WHERE s.banki_kivonat_id = ? OR s.id IN (SELECT r.szamla_id FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.banki_kivonat_id = ?) ORDER BY s.kod', [$kivonatId, $kivonatId]);
+    $resz = [];
+    foreach (db_all('SELECT szamla_id, SUM(osszeg) AS o FROM reszteljesitesek WHERE irany = "KIMENO" AND banki_kivonat_id = ? GROUP BY szamla_id', [$kivonatId]) as $r) {
+        $resz[(int)$r['szamla_id']] = (float)$r['o'];
+    }
+    $ki = reszt_csatol(array_map('kimeno_sor_feldolgoz', $sorok), 'KIMENO');
+    foreach ($ki as &$s) {
+        $teljes = $s['banki_kivonat_id'] === $kivonatId;
+        $s['fedezett'] = round(($teljes ? $s['hatralek'] : 0) + ($resz[$s['id']] ?? 0), 2);
+        $s['reszben'] = !$teljes;
+    }
+    unset($s);
+    return $ki;
+}
+
+/** A kivonat-rekord törlése, ha már semmit nem fedez (se FIZETVE számla, se részteljesítés nem tartozik hozzá) */
+function bank_kivonat_ures_torol(?int $kivonatId): void
+{
+    if ($kivonatId && db_val('SELECT 1 FROM kimeno_szamlak WHERE banki_kivonat_id = ? LIMIT 1', [$kivonatId]) === null
+        && db_val('SELECT 1 FROM reszteljesitesek WHERE banki_kivonat_id = ? LIMIT 1', [$kivonatId]) === null) {
+        db_exec('DELETE FROM banki_kivonatok WHERE id = ?', [$kivonatId]);
+    }
 }
 
 /** Azonnali ellenőrzés gépelés közben: használták-e már ezt a banki azonosítót? */
@@ -281,7 +309,7 @@ function bank_kovetkezo_azonosito(string $elotag, string $penznem, int $ev, bool
 function bank_szamlak_zarolva(array $ids): array
 {
     $in = implode(',', array_fill(0, count($ids), '?'));
-    $szamlak = db_all("SELECT s.id, s.kod, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt,
+    $szamlak = db_all("SELECT s.id, s.kod, s.szamlaszam, s.statusz, s.osszeg, s.penznem, COALESCE(rk.reszt, 0) AS reszt,
                               (SELECT ut.uid FROM beszamitasok bz JOIN utalasok ut ON ut.id = bz.utalas_id WHERE bz.kimeno_id = s.id AND ut.statusz = 'NYITOTT' LIMIT 1) AS beszamitas_uid
                          FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) FOR UPDATE", $ids);
     if (count($szamlak) !== count($ids)) {
@@ -314,6 +342,50 @@ function bank_szamlak_fizetve(array $szamlak, int $kivId, string $datum, string 
     return $kodok;
 }
 
+/**
+ * Részösszeg bankhoz adással (1.29): részteljesítés a jóváírás napjával és a generált azonosítóval, a kivonathoz kötve –
+ * a számla NYITOTT marad a maradékkal, azt később egy másik bankhoz adás fedezi. Vissza: a naplóba írható kód.
+ */
+function bank_szamla_reszben(array $s, float $osszeg, int $kivId, string $datum, string $az, string $bank, array $u): string
+{
+    db_exec('INSERT INTO reszteljesitesek (irany, szamla_id, osszeg, datum, banki_azonosito, banki_kivonat_id, letrehozta) VALUES ("KIMENO", ?, ?, ?, ?, ?, ?)',
+        [(int)$s['id'], number_format($osszeg, 2, '.', ''), $datum, $az, $kivId, $u['id']]);
+    db_exec('UPDATE kimeno_szamlak SET modositotta = ? WHERE id = ?', [$u['id'], (int)$s['id']]);
+    $regi = round((float)$s['osszeg'] - (float)$s['reszt'], 2);
+    $marad = round($regi - $osszeg, 2);
+    audit_ir('KIMENO', (int)$s['id'], 'RESZT', 'Részösszeg bankhoz adással: ' . fmt_osszeg($osszeg) . " {$s['penznem']} (" . audit_ertek('kelt', $datum) . ", $bank, banki azonosító: $az) – a számla NYITOTT marad",
+        [['m' => 'Hátralék', 'r' => fmt_osszeg($regi) . " {$s['penznem']}", 'u' => fmt_osszeg($marad) . " {$s['penznem']}"]], null, $u);
+    return "{$s['kod']} (részben " . fmt_osszeg($osszeg) . " {$s['penznem']}, maradék " . fmt_osszeg($marad) . ')';
+}
+
+/**
+ * A bankhoz adás számlánkénti összege (1.29, osszegek = {szamla_id: összeg}): hiányzik vagy egyenlő a hátralékkal → null
+ * (egészében, FIZETVE); kisebb → a részösszeg. Több a hátraléknál, nulla vagy negatív: hiba. Jóváíró (nem pozitív hátralékú)
+ * számla csak egészében adható bankhoz.
+ */
+function bank_szamla_osszeg(array $osszegek, array $s): ?float
+{
+    $kulcs = (string)$s['id'];
+    if (!array_key_exists($kulcs, $osszegek) || trim((string)$osszegek[$kulcs]) === '') {
+        return null;
+    }
+    $hatralek = round((float)$s['osszeg'] - (float)$s['reszt'], 2);
+    $o = (float)be_osszeg($osszegek, $kulcs, true, "a(z) {$s['kod']} számla összege");
+    if (abs($o - $hatralek) < 0.005) {
+        return null;
+    }
+    if ($hatralek <= 0) {
+        hiba("A(z) {$s['kod']} jóváíró számla csak a teljes összegével (" . fmt_osszeg($hatralek) . " {$s['penznem']}) adható bankhoz.");
+    }
+    if ($o <= 0) {
+        hiba("A(z) {$s['kod']} számlánál a bankhoz adott összeg pozitív szám legyen.");
+    }
+    if ($o > $hatralek) {
+        hiba("A(z) {$s['kod']} számlánál a bankhoz adott összeg (" . fmt_osszeg($o) . " {$s['penznem']}) több, mint a hátraléka (" . fmt_osszeg($hatralek) . " {$s['penznem']}).");
+    }
+    return $o;
+}
+
 /** Pénznemenkénti csoportok, EUR elöl (pénznem => számlasorok) */
 function bank_penznem_csoportok(array $szamlak): array
 {
@@ -337,10 +409,13 @@ function act_bank_azonosito_javaslat(array $be): array
     $datum = be_datum($be, 'datum', false, 'dátum') ?? date('Y-m-d');
     $bank = be_valaszt($be, 'bank', array_keys(BANKOK), '', 'bank');
     $in = implode(',', array_fill(0, count($ids), '?'));
-    $szamlak = db_all("SELECT s.id, s.penznem, s.osszeg, COALESCE(rk.reszt, 0) AS reszt FROM kimeno_szamlak s" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) AND s.statusz = 'NYITOTT'", $ids);
+    $szamlak = db_all("SELECT s.id, s.kod, s.szamlaszam, s.penznem, s.osszeg, c.nev AS ceg_nev, COALESCE(rk.reszt, 0) AS reszt
+                         FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id" . RESZT_KIMENO_JOIN . "WHERE s.id IN ($in) AND s.statusz = 'NYITOTT' ORDER BY c.nev, s.kod", $ids);
     $ki = [];
     foreach (bank_penznem_csoportok($szamlak) as $pn => $sorok) {
-        $ki[] = ['penznem' => $pn, 'db' => count($sorok), 'osszeg' => round(array_sum(array_map(fn(array $s): float => (float)$s['osszeg'] - (float)$s['reszt'], $sorok)), 2),
+        $lista = array_map(fn(array $s): array => ['id' => (int)$s['id'], 'kod' => $s['kod'], 'szamlaszam' => $s['szamlaszam'], 'ceg_nev' => $s['ceg_nev'],
+            'osszeg' => (float)$s['osszeg'], 'reszt' => (float)$s['reszt'], 'hatralek' => round((float)$s['osszeg'] - (float)$s['reszt'], 2)], $sorok);
+        $ki[] = ['penznem' => $pn, 'db' => count($sorok), 'osszeg' => round(array_sum(array_column($lista, 'hatralek')), 2), 'szamlak' => $lista,
                  'azonosito' => $bank !== '' ? bank_kovetkezo_azonosito(BANKOK[$bank], $pn, (int)substr($datum, 0, 4), false) : null];
     }
     return ['bank' => $bank, 'datum' => $datum, 'csoportok' => $ki];
@@ -349,7 +424,9 @@ function act_bank_azonosito_javaslat(array $be): array
 /**
  * Kimenő számlák bankhoz adása → FIZETVE.
  * bank (1.28, a felület így hívja): a bank a BANKOK közül, az azonosítót a program generálja – pénznemenként egy új kivonat
- *   (TATRA-EUR-2026-000001), a dátum a jóváírás napja, az év is ebből. Vissza: azonositok = [{penznem, azonosito, db}].
+ *   (TATRA-EUR-2026-000001), a dátum a jóváírás napja, az év is ebből. osszegek (1.29, nem kötelező): {szamla_id: összeg} –
+ *   a hátraléknál kisebb összegből részteljesítés lesz a kivonathoz kötve (a számla NYITOTT marad), különben FIZETVE.
+ *   Vissza: azonositok = [{penznem, azonosito, db, egeszben, reszben, osszeg}].
  * azonosito (régi, kézzel beírt mód – az API-ban megmaradt): ha az azonosító már használt és nincs `megerositve`,
  *   DUPLA kóddal visszadobja.
  */
@@ -360,22 +437,43 @@ function act_bank_hozzarendel(array $be): array
     $datum = be_datum($be, 'datum', true, 'dátum');
     $bank = be_valaszt($be, 'bank', array_keys(BANKOK), '', 'bank');
     if ($bank !== '') {
-        $csop = db_tx(function () use ($ids, $datum, $bank, $u) {
+        $osszegek = is_array($be['osszegek'] ?? null) ? $be['osszegek'] : [];
+        $csop = db_tx(function () use ($ids, $datum, $bank, $osszegek, $u) {
             $ki = [];
             foreach (bank_penznem_csoportok(bank_szamlak_zarolva($ids)) as $pn => $sorok) {
+                // előbb minden összeg ellenőrzése, hogy hiba esetén sorszám se fogyjon
+                $egesz = [];
+                $resz = [];
+                $jovairas = 0.0;
+                foreach ($sorok as $s) {
+                    $o = bank_szamla_osszeg($osszegek, $s);
+                    if ($o === null) {
+                        $egesz[] = $s;
+                        $jovairas += (float)$s['osszeg'] - (float)$s['reszt'];
+                    } else {
+                        $resz[] = [$s, $o];
+                        $jovairas += $o;
+                    }
+                }
                 $az = bank_kovetkezo_azonosito(BANKOK[$bank], $pn, (int)substr($datum, 0, 4), true);
                 db_exec('INSERT INTO banki_kivonatok (azonosito, azonosito_norm, datum, letrehozta) VALUES (?, ?, ?, ?)', [$az, norm_azonosito($az), $datum, $u['id']]);
                 $kivId = (int)db()->lastInsertId();
-                $ki[] = ['penznem' => $pn, 'azonosito' => $az, 'kivonat_id' => $kivId, 'db' => count($sorok),
-                         'kodok' => bank_szamlak_fizetve($sorok, $kivId, $datum, $az, "$bank, banki azonosító", $u)];
+                $kodok = $egesz ? bank_szamlak_fizetve($egesz, $kivId, $datum, $az, "$bank, banki azonosító", $u) : [];
+                foreach ($resz as [$s, $o]) {
+                    $kodok[] = bank_szamla_reszben($s, $o, $kivId, $datum, $az, $bank, $u);
+                }
+                $ki[] = ['penznem' => $pn, 'azonosito' => $az, 'kivonat_id' => $kivId, 'db' => count($sorok), 'egeszben' => count($egesz),
+                         'reszben' => count($resz), 'osszeg' => round($jovairas, 2), 'kodok' => $kodok];
             }
             return $ki;
         });
         foreach ($csop as $c) {
-            naplo('BANK_HOZZARENDEL', "$bank, generált banki azonosító „{$c['azonosito']}” ($datum) → {$c['db']} kimenő számla FIZETVE: " . implode(', ', $c['kodok']));
+            naplo('BANK_HOZZARENDEL', "$bank, generált banki azonosító „{$c['azonosito']}” ($datum, " . fmt_osszeg($c['osszeg']) . " {$c['penznem']}) → "
+                . "{$c['egeszben']} kimenő számla FIZETVE, {$c['reszben']} részben: " . implode(', ', $c['kodok']));
         }
         return ['kivonat_id' => $csop[0]['kivonat_id'], 'db' => count($ids), 'uj' => true, 'bank' => $bank,
-                'azonositok' => array_map(fn(array $c): array => ['penznem' => $c['penznem'], 'azonosito' => $c['azonosito'], 'db' => $c['db']], $csop)];
+                'azonositok' => array_map(fn(array $c): array => ['penznem' => $c['penznem'], 'azonosito' => $c['azonosito'], 'db' => $c['db'],
+                    'egeszben' => $c['egeszben'], 'reszben' => $c['reszben'], 'osszeg' => $c['osszeg']], $csop)];
     }
 
     $az = be_szoveg($be, 'azonosito', 100, true, 'banki azonosító');
@@ -422,15 +520,18 @@ function act_bank_kivonatok(array $be): array
         $p[] = '%' . norm_azonosito($q) . '%';
     }
     if ($cegId !== null) {
-        $w[] = 'EXISTS (SELECT 1 FROM kimeno_szamlak s2 WHERE s2.banki_kivonat_id = bk.id AND s2.ceg_id = ?)';
+        $w[] = 'EXISTS (SELECT 1 FROM kimeno_szamlak s WHERE ' . KIVONAT_SZAMLAI . ' AND s.ceg_id = ?)';
         $p[] = $cegId;
     }
+    // összeg pénznemenként = a vele FIZETVE számlák végső hátraléka + a hozzá kötött részösszegek (1.29)
+    $osszeg = fn(string $pn): string => 'COALESCE((SELECT SUM(s.osszeg - COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0)) FROM kimeno_szamlak s WHERE s.banki_kivonat_id = bk.id AND s.penznem = "' . $pn . '"), 0)'
+        . ' + COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r JOIN kimeno_szamlak s ON s.id = r.szamla_id WHERE r.irany = "KIMENO" AND r.banki_kivonat_id = bk.id AND s.penznem = "' . $pn . '"), 0)';
     $sorok = db_all(
         'SELECT bk.id, bk.azonosito, bk.datum, bk.letrehozva,
-                (SELECT COUNT(*) FROM kimeno_szamlak s WHERE s.banki_kivonat_id = bk.id) AS db,
-                COALESCE((SELECT SUM(s.osszeg - COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0)) FROM kimeno_szamlak s WHERE s.banki_kivonat_id = bk.id AND s.penznem = "HUF"), 0) AS osszeg_HUF,
-                COALESCE((SELECT SUM(s.osszeg - COALESCE((SELECT SUM(r.osszeg) FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id), 0)) FROM kimeno_szamlak s WHERE s.banki_kivonat_id = bk.id AND s.penznem = "EUR"), 0) AS osszeg_EUR,
-                (SELECT GROUP_CONCAT(DISTINCT c.nev ORDER BY c.nev SEPARATOR ", ") FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id WHERE s.banki_kivonat_id = bk.id) AS cegek
+                (SELECT COUNT(*) FROM kimeno_szamlak s WHERE ' . KIVONAT_SZAMLAI . ') AS db,
+                ' . $osszeg('HUF') . ' AS osszeg_HUF,
+                ' . $osszeg('EUR') . ' AS osszeg_EUR,
+                (SELECT GROUP_CONCAT(DISTINCT c.nev ORDER BY c.nev SEPARATOR ", ") FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id WHERE ' . KIVONAT_SZAMLAI . ') AS cegek
            FROM banki_kivonatok bk ' . ($w ? 'WHERE ' . implode(' AND ', $w) . ' ' : '') . 'ORDER BY bk.datum DESC, bk.id DESC LIMIT 500',
         $p
     );
@@ -477,10 +578,8 @@ function act_kimeno_fizetes_visszavon(array $be): array
         db_exec('UPDATE kimeno_szamlak SET statusz = "NYITOTT", banki_kivonat_id = NULL, fizetve_datum = NULL, modositotta = ? WHERE id = ?', [$u['id'], $id]);
         audit_ir('KIMENO', $id, 'STATUSZ', 'Fizetés visszavonva – a számla újra NYITOTT',
             [['m' => 'Státusz', 'r' => 'FIZETVE', 'u' => 'NYITOTT'], ['m' => 'Fizetés dátuma', 'r' => audit_ertek('fizetve_datum', $s['fizetve_datum']), 'u' => '–'], ['m' => 'Banki azonosító', 'r' => (string)($s['banki_azonosito'] ?? '–'), 'u' => '–']], null, $u);
-        // ha a kivonathoz már nem tartozik számla, a kivonat-rekord törlődik
-        if ($s['banki_kivonat_id'] && (int)db_val('SELECT COUNT(*) FROM kimeno_szamlak WHERE banki_kivonat_id = ?', [$s['banki_kivonat_id']]) === 0) {
-            db_exec('DELETE FROM banki_kivonatok WHERE id = ?', [$s['banki_kivonat_id']]);
-        }
+        // ha a kivonat már semmit nem fedez (számlát sem, részösszeget sem), a kivonat-rekord törlődik
+        bank_kivonat_ures_torol($s['banki_kivonat_id'] === null ? null : (int)$s['banki_kivonat_id']);
     });
     naplo('KIMENO_FIZETES_VISSZAVON', "kimenő számla {$s['kod']} fizetése visszavonva (" . szerep_nev($u['szerep']) . "), banki azonosító: „{$s['banki_azonosito']}”");
     return ['visszavonva' => true];

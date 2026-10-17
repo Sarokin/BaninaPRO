@@ -336,6 +336,20 @@ A jobb alsó kerek gomb mindig az adott szint „új” gombja (gyár = új cég
   * A kész ablak a végleges azonosítót mutatja (ha közben valaki ugyanannál a banknál ugyanazt a számot elvitte, a
     következőt kapja). Minden bankhoz adás új azonosítót kap: egy meglévő azonosítóhoz utólag nem adható számla. A kézzel
     beírható banki azonosító mező megszűnt; a korábban beírt azonosítók változatlanul megmaradnak.
+* **Részösszeg a bankhoz adásban (1.29) – csak ha kell.** Alapból semmi nem változik: dátum + bank, a pénznem és az
+  azonosító automatikus, és minden számla a teljes hátralékával FIZETVE lesz. Ha a partner kevesebbet utalt, az ablakban a
+  kis **Részösszeg megadása** gombbal számlánként átírható az összeg (alapból a teljes hátralék áll benne). Példa: a számla
+  712 EUR, a partner 612-t utalt → 612-re írod: a 612 EUR **részteljesítés** lesz ugyanazzal a generált banki azonosítóval és
+  a jóváírás dátumával, a számla NYITOTT marad 100 EUR hátralékkal, és ezt a maradékot később egy másik bankhoz adás fedezi
+  (egészében vagy újra részben). A *Mégis a teljes összegek* gomb becsuk és mindent visszaállít.
+  * Az ablak a jóváírás összegét mutatja (pl. *2 számla · 912 EUR*); a kész ablak címe ilyenkor *BANKHOZ ADVA*, alatta:
+    *1 számla FIZETVE · 1 részben – a maradék nyitott marad*. Részösszeg nélkül a kész ablak a megszokott *FIZETVE*.
+  * A *Banki kivonatok* listában a kivonat a részösszeggel fedezett számlát is mutatja (narancs „részösszeg” jelzés, a
+    fedezett összeg), a kivonat összege is ezzel számol, és a PDF is. A főoldali kereső a részösszeg banki azonosítójára
+    is megtalálja a számlát.
+  * A részösszeg a számla szerkesztő ablakában a részteljesítések között látszik, és ott törölhető (irodavezető / admin),
+    amíg a számla nyitott. Ha egy kivonat már semmit nem fedez (a fizetést visszavonták, a részösszeget törölték), a
+    kivonat is törlődik; a sorszáma nem adódik ki újra.
 * Irodavezető vagy admin a fizetést vissza tudja vonni (számla vissza NYITOTT-ba).
 * **Fizetés dátuma:** FIZETVE számlánál a kártyán zölddel *Fizetve: 2026.03.28.* + a banki azonosító.
 * **Beszámítás utalásba (1.25):** a kimenő számla (vagy egy része) levonható a partnernek utalandó bejövő számlák
@@ -693,6 +707,24 @@ a jelszavával léphet be (ha van), vagy új regisztrációs kódot kap. A sajá
 **Meglévő telepítés frissítése 1.1-ről:** futtasd le az `sql/frissites_1.2.sql` fájlt phpMyAdmin-ban,
 és töltsd fel az új fájlokat (`includes/webauthn.php`, `includes/api_passkey.php`, `assets/qr.js`, frissített
 `app.js`, `app.css`, `index.php`, `api.php`, `auth.php`, `config.php`).
+
+**Frissítés 1.28.0-ról 1.29.0-ra (részösszeg a kimenő számlák bankhoz adásában – csak ha kell):** **adatbázis-módosítás
+van** – futtasd le phpMyAdmin-ban (SQL fül; előfeltétel az 1.28-as frissítő; csak egyszer futtatható, másodszor „Duplicate
+column name” hibát ad, az nem baj; ugyanez a `sql/frissites_1.29.sql`; a belső szerveren a telepítő magától pótolja):
+
+```sql
+ALTER TABLE `reszteljesitesek`
+  ADD COLUMN `banki_kivonat_id` INT UNSIGNED NULL COMMENT 'kimenő számla bankhoz adása részösszeggel (1.29): a jóváírás kivonata' AFTER `utalas_id`,
+  ADD KEY `ix_reszt_kivonat` (`banki_kivonat_id`),
+  ADD CONSTRAINT `fk_reszt_kivonat` FOREIGN KEY (`banki_kivonat_id`) REFERENCES `banki_kivonatok` (`id`) ON DELETE SET NULL;
+```
+
+A bankhoz adás alapból változatlan (dátum + bank, automatikus pénznem és azonosító, minden számla egészében); az ablak kis
+*Részösszeg megadása* gombjával számlánként kisebb összeg is megadható, abból részteljesítés lesz a generált azonosítóval, a
+számla a maradékkal NYITOTT marad (*Kimenő számlák* rész). Töltsd fel a frissített `includes/api_kimeno.php`,
+`includes/api_reszteljesites.php`, `includes/api_kereses.php`, `includes/nyomtatas.php`, `assets/app.js`, `assets/app.css`,
+`sql/schema.sql`, `includes/config.php` (csak a verziószám) és `TELEPITES.md` fájlokat. A belső szerveren a „BaninaPro App
+Updater” ikon elég: a sémaváltozás miatt magától átadja a teljes telepítőnek.
 
 **Frissítés 1.27.1-ről 1.28.0-ra (kimenő számlák bankhoz adása: bank legördítőből, automatikus pénznem és banki
 azonosító):** **adatbázis-módosítás van** – futtasd le phpMyAdmin-ban (SQL fül; többször is lefuttatható, adatot nem módosít;
@@ -1254,6 +1286,7 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Excel import: egy cég kétszer szerepel a rendszerben | az egyeztetésnél „Új cég” maradt egy hasonló név – a „Cégek egyeztetése” kártyán válaszd a meglévő céget (a legördülő a hasonlókat százalékkal mutatja); a már létrejött duplát a cég oldalán törölheted, ha nincs kötése |
 | Excel import: „Az import megszakadt” | a szerver időkorlátja / hálózat – a már bekerült adagok bent maradnak; a fájl újra feltölthető, a bent lévő sorok „már megvan” jelzést kapnak, csak a hiányzók mennek be |
 | Excel import: „Az elemzés lejárt” | 2 óránál régebbi előnézet vagy másik böngésző – töltsd fel újra a fájlt |
+| „Unknown column 'banki_kivonat_id'” vagy „Adatbázis-hiba” a keresőben, a banki kivonatoknál, bankhoz adáskor vagy fizetés visszavonásakor (1.29) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.29.sql` fájlt phpMyAdmin-ban (lásd az 1.28.0 → 1.29.0 frissítést) |
 | „Adatbázis-hiba” a kimenő számlák bankhoz adásakor, a naplóban „Data truncated for column 'tipus'” (1.28) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.28.sql` fájlt (egy `ALTER TABLE sorszamok …`, lásd az 1.27.1 → 1.28.0 frissítést) phpMyAdmin-ban |
 | „Column 'datum' cannot be null” (részösszeg utaláshoz adásakor, 1.27) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.27.sql` fájlt phpMyAdmin-ban |
 | „Unknown column 'utalas_osszeg'” vagy „Unknown column 'r.utalas_id'” (utalás oldal / bejövő számlák, 1.26) | a frissítő SQL nem futott le – futtasd le a `sql/frissites_1.26.sql` fájlt phpMyAdmin-ban |
@@ -1300,4 +1333,4 @@ hátralék). A PDF-nyomtatás cégek táblázata a partnerkódot is mutatja.
 | Kikapcsolt QR-belépésnél valaki nem tud belépni | nincs jelszava vagy elfelejtette – Admin → Felhasználók → ceruza → Új jelszó |
 | Fejlesztéshez részletes hibák | `includes/config.php` → `APP_DEBUG = true` (élesben legyen `false`!) |
 
-Verzió: 1.28.0 (2026-10-17)
+Verzió: 1.29.0 (2026-10-17)

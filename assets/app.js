@@ -3467,6 +3467,9 @@
   /**
    * Bankhoz adás (1.28): csak a dátum és a bank kötelező. A pénznem a számlákból jön, a banki azonosítót a program
    * generálja (TATRA-EUR-2026-000001) – mindkettő már az ablakban látszik. Két pénznemű gyűjtőnél pénznemenként egy azonosító.
+   * Részösszeg (1.29) csak külön kérésre: a „Részösszeg megadása” gomb nyitja a számlánkénti összegeket (alapból a teljes
+   * hátralék); a kisebb összegből részteljesítés lesz ugyanazzal az azonosítóval, a számla NYITOTT marad a maradékkal.
+   * Becsukva (ez az alap) minden számla egészében megy, pontosan mint eddig – a felhasználók ezt a menetet szokták meg.
    */
   function bankHozzarendelModal(ids) {
     ids = (ids || BankKosar.ids()).map(Number).filter((x) => x > 0);
@@ -3476,14 +3479,65 @@
         ${inp('datum', 'Dátum (jóváírás napja)', { tipus: 'date', ertek: App.ma, kotelezo: true })}
         <div class="mezo"><label>Bank</label><select name="bank" required><option value="">– válaszd ki –</option>${BANKOK.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join('')}</select></div>
       </div>
-      <div class="bank-auto" data-bank-auto><div class="toltes"></div></div>`,
+      <div class="bank-auto" data-bank-auto><div class="toltes"></div></div>
+      <div data-bank-resz></div>`,
       async (a, f, mm) => {
         if (!a.datum) throw new Error('Add meg a dátumot!');
         if (!a.bank) throw new Error('Válaszd ki a bankot!');
-        await bankHozzarendelFut(ids, a.datum, a.bank, mm);
+        await bankHozzarendelFut(ids, a.datum, a.bank, reszOsszegek(), mm);
       }, { ok: 'Hozzárendelés', okOsztaly: 'btn-zold' });
-    // automatikusan kitöltött rész: pénznem a számlákból + a generált azonosító – a bank vagy a dátum változásakor frissül
     const doboz = $('[data-bank-auto]', form);
+    const reszDoboz = $('[data-bank-resz]', form);
+    let lista = null;            // a számlák a javaslatból (sorrendben) – a részösszeg-mezőkhöz
+    const szamla = {};           // id → számla
+    let reszNyitva = false;
+    const szam = (v) => { const t = String(v || '').replace(/\s/g, '').replace(',', '.'); const n = Number(t); return t !== '' && Number.isFinite(n) ? Math.round(n * 100) / 100 : NaN; };
+    const mezoErtek = (sz) => { const i = reszNyitva && $(`[data-resz-osszeg="${sz.id}"]`, reszDoboz); const v = i ? szam(i.value) : sz.hatralek; return Number.isNaN(v) ? sz.hatralek : v; };
+    // csak a teljes hátraléktól eltérő összegek mennek el; becsukva semmi (minden számla egészében)
+    const reszOsszegek = () => {
+      if (!reszNyitva) return null;
+      const o = {};
+      $$('[data-resz-osszeg]', reszDoboz).forEach((i) => { const sz = szamla[i.dataset.reszOsszeg]; if (sz && szam(i.value) !== sz.hatralek) o[sz.id] = i.value.trim(); });
+      return Object.keys(o).length ? o : null;
+    };
+    // pénznemenként a jóváírás összege (részösszegnél a beírt összegekkel) az automatikus dobozban
+    const osszegFrissit = () => {
+      if (!lista) return;
+      const o = {};
+      lista.forEach((sz) => { o[sz.penznem] = Math.round(((o[sz.penznem] || 0) + mezoErtek(sz)) * 100) / 100; });
+      $$('[data-auto-osszeg]', doboz).forEach((el) => { const pn = el.dataset.autoOsszeg; el.textContent = `${lista.filter((sz) => sz.penznem === pn).length} számla · ${fmtOsszeg(o[pn] || 0, pn)}`; });
+    };
+    const jelol = (i) => {
+      const sz = szamla[i.dataset.reszOsszeg];
+      const v = szam(i.value);
+      const [t, o] = Number.isNaN(v) ? ['érvénytelen összeg', 'hiba'] : v === sz.hatralek ? ['teljes összeg – FIZETVE lesz', ''] : v <= 0 ? ['pozitív összeg kell', 'hiba']
+        : v > sz.hatralek ? [`több, mint a hátralék (${fmtOsszeg(sz.hatralek, sz.penznem)})`, 'hiba'] : [`részben – a maradék ${fmtOsszeg(Math.round((sz.hatralek - v) * 100) / 100, sz.penznem)} nyitott marad`, 'resz'];
+      const jel = $(`[data-resz-jel="${sz.id}"]`, reszDoboz);
+      jel.textContent = t; jel.className = `bank-resz-jel ${o}`;
+      i.classList.toggle('resz', o === 'resz'); i.classList.toggle('hibas', o === 'hiba');
+      osszegFrissit();
+    };
+    const reszRajzol = () => {
+      if (!lista) { reszDoboz.innerHTML = ''; return; }
+      reszDoboz.innerHTML = !reszNyitva
+        ? `<div class="bank-resz-nyit"><button type="button" class="btn btn-outline btn-sm" data-resz-nyit>Részösszeg megadása</button><span class="kicsi szurke">csak ha a partner nem a teljes összeget utalta</span></div>`
+        : `<div class="bank-resz">
+            <div class="bank-resz-fej"><b>Részösszeg</b><button type="button" class="btn btn-outline btn-sm" data-resz-csuk>${I.x} Mégis a teljes összegek</button></div>
+            <div class="kicsi szurke">Annál a számlánál írd át az összeget, amelyiket ez a jóváírás csak részben fedez. A maradék nyitott marad, és később egy másik bankhoz adás fedezi.</div>
+            ${lista.map((sz) => `<div class="bank-resz-sor">
+              <div class="bal"><span class="mono">${esc(sz.kod)}</span> „${esc(sz.szamlaszam)}”<br><span class="kicsi szurke">${esc(sz.ceg_nev)} · hátralék ${fmtOsszeg(sz.hatralek, sz.penznem)}</span></div>
+              ${sz.hatralek > 0 ? `<label class="bank-resz-mezo"><input type="text" inputmode="decimal" autocomplete="off" data-resz-osszeg="${sz.id}" value="${esc(String(sz.hatralek).replace('.', ','))}" aria-label="${esc(sz.kod)} – bankhoz adott összeg"><span>${esc(sz.penznem)}</span></label>` : '<span class="kicsi szurke">jóváíró számla – csak a teljes összegével</span>'}
+              <div class="bank-resz-jel" data-resz-jel="${sz.id}"></div></div>`).join('')}
+          </div>`;
+      $$('[data-resz-osszeg]', reszDoboz).forEach(jelol);
+      osszegFrissit();
+    };
+    reszDoboz.addEventListener('click', (e) => {
+      if (e.target.closest('[data-resz-nyit]')) { reszNyitva = true; reszRajzol(); const i = $('[data-resz-osszeg]', reszDoboz); if (i && window.innerWidth >= 640) i.focus(); }
+      else if (e.target.closest('[data-resz-csuk]')) { reszNyitva = false; reszRajzol(); }
+    });
+    reszDoboz.addEventListener('input', (e) => { if (e.target.matches('[data-resz-osszeg]')) jelol(e.target); });
+    // automatikusan kitöltött rész: pénznem a számlákból + a generált azonosító – a bank vagy a dátum változásakor frissül
     let hivas = 0;
     const frissit = async () => {
       const sajat = ++hivas;
@@ -3491,21 +3545,30 @@
         const r = await api('bank_azonosito_javaslat', { szamla_ids: ids, bank: form.bank.value, datum: form.datum.value });
         if (sajat !== hivas) return;
         doboz.innerHTML = `<div class="bank-auto-cim">Automatikusan kitöltve</div>${r.csoportok.map((c) => `
-          <div class="bank-auto-sor"><span class="cimke">Pénznem</span><b data-auto-penznem>${esc(c.penznem)}</b><span class="kicsi szurke">${c.db} számla · ${fmtOsszeg(c.osszeg, c.penznem)}</span></div>
+          <div class="bank-auto-sor"><span class="cimke">Pénznem</span><b data-auto-penznem>${esc(c.penznem)}</b><span class="kicsi szurke" data-auto-osszeg="${esc(c.penznem)}">${c.db} számla · ${fmtOsszeg(c.osszeg, c.penznem)}</span></div>
           <div class="bank-auto-sor"><span class="cimke">Banki azonosító</span>${c.azonosito ? `<b class="mono" data-generalt="${esc(c.penznem)}">${esc(c.azonosito)}</b>` : '<span class="szurke">a bank kiválasztása után készül el</span>'}</div>`).join('')}
           ${r.csoportok.length > 1 ? '<div class="kicsi szurke" style="margin-top:4px">A számlák két pénzneműek: pénznemenként külön banki azonosítót kapnak.</div>' : ''}`;
+        if (!lista) {
+          lista = r.csoportok.flatMap((c) => c.szamlak.map((sz) => Object.assign({ penznem: c.penznem }, sz)));
+          lista.forEach((sz) => { szamla[sz.id] = sz; });
+          reszRajzol();
+        }
+        osszegFrissit();
       } catch (e) { if (sajat === hivas) doboz.innerHTML = `<div class="hiba-doboz">${esc(e.message)}</div>`; }
     };
     form.bank.addEventListener('change', () => { const h = $('[data-hiba]', form); if (h && form.bank.value) h.classList.add('rejtett'); frissit(); });
     form.datum.addEventListener('change', frissit);
     frissit();
   }
-  async function bankHozzarendelFut(ids, datum, bank, m) {
-    const r = await api('bank_hozzarendel', { szamla_ids: ids, datum, bank });
+  async function bankHozzarendelFut(ids, datum, bank, osszegek, m) {
+    const r = await api('bank_hozzarendel', Object.assign({ szamla_ids: ids, datum, bank }, osszegek ? { osszegek } : {}));
     m.bezar();
     BankKosar.urit();
-    await uzenetModal(`<div class="fo">FIZETVE</div><div class="kis" style="margin-top:8px">${r.db} számla a(z) <b>${esc(bank)}</b> bankhoz adva, jóváírás: ${fmtDatum(datum)}<br>Banki azonosító:</div>
-      ${r.azonositok.map((c) => `<div class="bank-azon-nagy mono" data-vegleges>${esc(c.azonosito)}</div>${r.azonositok.length > 1 ? `<div class="kis">${c.db} számla · ${esc(c.penznem)}</div>` : ''}`).join('')}`, { pipa: true });
+    const resz = r.azonositok.some((c) => c.reszben > 0);   // részösszeg is volt (1.29) – különben pontosan a megszokott ablak
+    await uzenetModal(`<div class="fo">${resz ? 'BANKHOZ ADVA' : 'FIZETVE'}</div><div class="kis" style="margin-top:8px">${r.db} számla a(z) <b>${esc(bank)}</b> bankhoz adva, jóváírás: ${fmtDatum(datum)}<br>Banki azonosító:</div>
+      ${r.azonositok.map((c) => `<div class="bank-azon-nagy mono" data-vegleges>${esc(c.azonosito)}</div>${resz
+        ? `<div class="kis" data-vegleges-reszlet>${c.egeszben ? `${c.egeszben} számla FIZETVE` : ''}${c.egeszben && c.reszben ? ' · ' : ''}${c.reszben ? `${c.reszben} részben – a maradék nyitott marad` : ''} · ${fmtOsszeg(c.osszeg, c.penznem)}</div>`
+        : r.azonositok.length > 1 ? `<div class="kis">${c.db} számla · ${esc(c.penznem)}</div>` : ''}`).join('')}`, { pipa: true });
     render();
   }
 
@@ -3730,7 +3793,7 @@
       if (!box.classList.contains('rejtett')) { box.classList.add('rejtett'); return; }
       box.classList.remove('rejtett'); box.innerHTML = '<div class="toltes"></div>';
       const d = await api('bank_kivonat', { id: Number(el.dataset.id) });
-      box.innerHTML = `<div class="reszletes" style="margin-top:6px">${d.szamlak.map((s) => `<div class="szamla-sor"><div class="bal"><a class="k" href="#/kimeno/ceg/${s.ceg_id}?szamla=${s.id}">${esc(s.kod)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span><span class="kicsi">${esc(s.ceg_nev)}</span></div><span class="o">${fmtOsszeg(s.osszeg, s.penznem)}</span>${nyomtatGomb('kimeno', s.id, `${s.kod} · „${s.szamlaszam}”`)}</div>`).join('')}</div>`;
+      box.innerHTML = `<div class="reszletes" style="margin-top:6px">${d.szamlak.map((s) => `<div class="szamla-sor"><div class="bal"><a class="k" href="#/kimeno/ceg/${s.ceg_id}?szamla=${s.id}">${esc(s.kod)}</a><span class="szsz">„${esc(s.szamlaszam)}”</span><span class="kicsi">${esc(s.ceg_nev)}</span>${s.reszben ? `<span class="kicsi narancs-szoveg">részösszeg · a számla ${fmtOsszeg(s.osszeg, s.penznem)}</span>` : ''}</div><span class="o">${fmtOsszeg(s.fedezett != null ? s.fedezett : s.osszeg, s.penznem)}</span>${nyomtatGomb('kimeno', s.id, `${s.kod} · „${s.szamlaszam}”`)}</div>`).join('')}</div>`;
     },
     'hat-irany': (el) => { App.hataridoSzuro.irany = el.dataset.v; rajzolHataridok(); hataridoSzuroToast(); },
     'hat-utalasalatt': () => { App.hataridoSzuro.utalasAlatt = !App.hataridoSzuro.utalasAlatt; rajzolHataridok(); toast(App.hataridoSzuro.utalasAlatt ? 'Az utaláshoz adott számlák is látszanak' : 'Csak a FIZETENDŐ / NYITOTT számlák látszanak'); },

@@ -321,13 +321,16 @@ CREATE TABLE IF NOT EXISTS `reszteljesitesek` (
   `datum`            DATE         NULL COMMENT 'az utalás dátuma; NULL = függő rész (1.27): nyitott utalásban van, még nem utalták',
   `banki_azonosito`  VARCHAR(100) NULL,
   `utalas_id`        INT UNSIGNED NULL COMMENT 'az utalás, amelyben a rész van / volt (részösszeg az utaláshoz, 1.26/1.27)',
+  `banki_kivonat_id` INT UNSIGNED NULL COMMENT 'kimenő számla bankhoz adása részösszeggel (1.29): a jóváírás kivonata',
   `letrehozva`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `letrehozta`       INT UNSIGNED NULL,
   PRIMARY KEY (`id`),
   KEY `ix_reszt_szamla` (`irany`, `szamla_id`),
   KEY `ix_reszt_datum` (`datum`),
   KEY `ix_reszt_utalas` (`utalas_id`),
-  CONSTRAINT `fk_reszt_utalas` FOREIGN KEY (`utalas_id`) REFERENCES `utalasok` (`id`) ON DELETE SET NULL
+  KEY `ix_reszt_kivonat` (`banki_kivonat_id`),
+  CONSTRAINT `fk_reszt_utalas` FOREIGN KEY (`utalas_id`) REFERENCES `utalasok` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_reszt_kivonat` FOREIGN KEY (`banki_kivonat_id`) REFERENCES `banki_kivonatok` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------

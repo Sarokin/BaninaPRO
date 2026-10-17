@@ -312,8 +312,9 @@ function act_kereses(array $be): array
     $talalatok['bejovo'] = kereses_rendez($lista, count($sorok));
 
     // ---------------------------------------------------------------- kimenő számlák
-    $p = [$like, $like, $like];
-    $w = ['s.kod LIKE ?', 's.szamlaszam LIKE ?', 'bk.azonosito LIKE ?'];
+    $p = [$like, $like, $like, $like];
+    // 1.29: a bankhoz adás részösszegének (részteljesítés) banki azonosítója is
+    $w = ['s.kod LIKE ?', 's.szamlaszam LIKE ?', 'bk.azonosito LIKE ?', 's.id IN (SELECT r.szamla_id FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.banki_kivonat_id IS NOT NULL AND r.banki_azonosito LIKE ?)'];
     if ($tomorLike) {
         $w[] = 's.szamlaszam_norm LIKE ?';
         $p[] = $tomorLike;
@@ -323,7 +324,8 @@ function act_kereses(array $be): array
     $w = array_merge($w, kereses_extra_feltetel($datum, $osszeg, ['s.kelt', 's.teljesites_datum', 's.fizetesi_hatarido', 's.fizetve_datum'], 's.osszeg', 's.penznem', $p));
     $sorok = db_all(
         'SELECT s.id, s.kod, s.szamlaszam, s.osszeg, s.penznem, s.statusz, s.kelt, s.teljesites_datum, s.fizetesi_hatarido, s.fizetve_datum,
-                c.id AS ceg_id, c.nev AS ceg_nev, bk.azonosito AS banki_azonosito,' . RESZT_KIMENO_MEZOK . '
+                c.id AS ceg_id, c.nev AS ceg_nev, bk.azonosito AS banki_azonosito,
+                (SELECT GROUP_CONCAT(r.banki_azonosito ORDER BY r.id SEPARATOR ", ") FROM reszteljesitesek r WHERE r.irany = "KIMENO" AND r.szamla_id = s.id AND r.banki_kivonat_id IS NOT NULL) AS resz_banki,' . RESZT_KIMENO_MEZOK . '
            FROM kimeno_szamlak s JOIN cegek c ON c.id = s.ceg_id LEFT JOIN banki_kivonatok bk ON bk.id = s.banki_kivonat_id' . RESZT_KIMENO_JOIN . '
           WHERE ' . implode(' OR ', $w) . '
           ORDER BY s.kelt DESC, s.id DESC LIMIT ' . KERESES_NYERS,
@@ -331,7 +333,7 @@ function act_kereses(array $be): array
     );
     $lista = [];
     foreach ($sorok as $s) {
-        [$pont, $mi] = kereses_pont(['azonosító' => $s['kod'], 'számlaszám' => $s['szamlaszam'], 'banki azonosító' => $s['banki_azonosito']], $qh, $tomor);
+        [$pont, $mi] = kereses_pont(['azonosító' => $s['kod'], 'számlaszám' => $s['szamlaszam'], 'banki azonosító' => $s['banki_azonosito'], 'részösszeg banki azonosítója' => $s['resz_banki']], $qh, $tomor);
         $talalat = $mi;
         if ($pont > 2) {
             $d = kereses_datum_talalat($s, ['kelt' => 'kelt', 'teljesites_datum' => 'teljesítés', 'fizetesi_hatarido' => 'határidő', 'fizetve_datum' => 'fizetve'], $datum);
@@ -347,6 +349,8 @@ function act_kereses(array $be): array
             }
         } elseif ($mi === 'banki azonosító') {
             $talalat = 'banki azonosító: ' . $s['banki_azonosito'];
+        } elseif ($mi === 'részösszeg banki azonosítója') {
+            $talalat = 'részösszeg banki azonosítója: ' . $s['resz_banki'];
         }
         $lista[] = [
             'tipus' => 'kimeno', 'id' => (int)$s['id'], 'pont' => $pont, 'kelt' => $s['kelt'],

@@ -202,7 +202,7 @@ function act_reszteljesites_torol(array $be): array
     }
     $irany = $r['irany'];
     $szamlaId = (int)$r['szamla_id'];
-    $s = db_tx(function () use ($irany, $szamlaId, $id) {
+    $s = db_tx(function () use ($irany, $szamlaId, $id, $r) {
         $s = reszt_szamla_betolt($irany, $szamlaId, true);
         if (!$s['nyitott']) {
             hiba('A számla már rendezett (' . ny_statusz_nev($s['statusz']) . ') – a részteljesítés nem törölhető. (Admin: fizetés visszavonása / utalás visszanyitása után lehet.)');
@@ -226,6 +226,9 @@ function act_reszteljesites_torol(array $be): array
             }
         }
         db_exec('DELETE FROM reszteljesitesek WHERE id = ?', [$id]);
+        if ($irany === 'KIMENO' && function_exists('bank_kivonat_ures_torol')) {
+            bank_kivonat_ures_torol($r['banki_kivonat_id'] === null ? null : (int)$r['banki_kivonat_id']);   // bankhoz adás részösszege volt (1.29)
+        }
         return $s;
     });
     $regi = $s;
